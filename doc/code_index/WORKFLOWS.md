@@ -241,7 +241,7 @@ carry those choices into launch and recovery.
    `runtime-sync`; this never clones, resets, or changes an already running process. Frozen plan commits remain
    baseline provenance while each new run records the checkout commit seen at start.
 4. Execute through [launch and queue](../agent_contracts/hparam_workflow.md#launch-and-queue),
-   with [snapshot revalidation](../agent_contracts/hparam_workflow.md#execution-snapshot-and-launch-revalidation).
+   with [launch verification](../agent_contracts/hparam_workflow.md#execution-snapshot-and-launch-revalidation).
    For a direct plan, `hparam-run-queue --execute` starts one detached
    [queue runner](../agent_contracts/hparam_workflow.md#direct-queue-runner) and returns; `experiment-monitor` reports its liveness.
    For a Slurm plan, `--execute` submits every launchable run once and returns.

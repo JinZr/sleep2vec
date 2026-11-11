@@ -104,7 +104,9 @@ Optional `inputs.init_checkpoint_path` is supported for `sleep2vec2` finetune
 and hparam recipes. Supply an absolute full finetune checkpoint path and publish
 on its execution host, including for Slurm.
 The plan freezes its SHA-256 in the resolved recipe and each run's input
-snapshots; registered-plan reads and the leaf script verify those bytes.
+snapshots; the leaf script verifies those bytes before training. Plan reads,
+launch passes, `run-stop` and `hparam-select` do not read the file, so it may be
+archived once no run of the plan will start again.
 `inputs.ckpt_path` remains final-evaluation-only for hparam and is not passed
 to training. Do not combine initialization with a pretrained-backbone input
 or a direct runtime resume checkpoint. An explicit null pretrained-backbone
@@ -126,24 +128,25 @@ semantic compatibility; the runtime load performs that check.
 ### Registration preflight
 
 New hparam plans are fully materialized in a
-temporary directory on the final destination filesystem. The staged frozen
-bundle is recompiled and validated with the same reader used after publication;
-each final candidate config is then checked with the recipe variant's canonical
+temporary directory on the final destination filesystem. Registration reads the
+staged plan once, checking the recorded `recipe.resolved.yaml` digest and that
+`plan.json` carries the same recipe; each final candidate config is then checked
+with the recipe variant's canonical
 `load_finetune_config` and `validate_model_config` in the planner's current Python
 and code environment. This applies equally to explicit configurations and
 parameter grids after all YAML overrides. Consultation checks captured input bytes; registration independently
-checks the exact frozen candidate bytes. Launch, including dry-run, repeats the
-frozen config check for prospective `planned`/`pending` runs before submission;
-active/terminal-only calls and monitoring do not load candidate configs.
+checks the exact frozen candidate bytes. Launch does not reload candidate
+configs; it relies on their frozen hashes, which are checked where the bytes are
+used (see [launch verification](#execution-snapshot-and-launch-revalidation)).
 Identical config bytes share one canonical load only within each validation
 boundary, never across calls or rounds. These checks do not reread full sidecar
 tables for each candidate. Runtime overrides remain CLI arguments, not YAML
 model-config fields, and their per-combination checks are not deduplicated.
 
-Direct registration also checks frozen candidate bytes unless it follows the
-existing trusted staged-publication path. That internal path still strictly
-rereads frozen artifacts; it is not a persistent validation certificate or a
-general bypass for callers. The common publication/registration boundary is
+Registration commits only a staged plan that carries its execution-snapshot
+binding from this preflight. It does not reread, recompile or re-probe the
+plan; publication compares the staged tree hash before it moves the plan into
+place. The common publication/registration boundary is
 owned by [the workspace contract](experiment_workspace.md#publication-and-registration).
 
 The tool also validates managed output topology on the frozen execution host
@@ -239,8 +242,9 @@ as capacity allows. No preview file is written: `run_manifest.tsv` stays the
 only run record, and `launch_hparam_runs` returns the preview as the
 `LaunchResult.launch_rows` of a dry run. It does not grant scientific or test-access decisions.
 Python callers may pass `managed_scheduler.SchedulerHooks` to
-`hparam_runtime.launch_hparam_runs` to replace only the execution-snapshot
-check, launch-command, and process-start effects; the CLI has no such option,
+`hparam_runtime.launch_hparam_runs` to replace only the execution snapshot
+(the frozen file for a direct plan, the live probe at Slurm submission),
+launch-command, and process-start effects; the CLI has no such option,
 and manifest merges, events, and frozen-run validation are
 unchanged.
 
@@ -303,44 +307,54 @@ must pass its actual `argparse` implementation; rendered CLI text is not evidenc
 The snapshot stores the explicit execution environment, normalized supported
 options and digests, and every validated argv vector.
 
-Eligible execute waves live-reprobe the same target, using the configured
-workdir/conda/explicit-environment wrapper. Commit and derived CLI-option
-inventory may advance with a rolling checkout; launch records the actual commit
-and still validates every frozen argv against the live parser. Python, route,
-repository/module origin, explicit environment, clean importable code, and
-frozen artifact hashes remain fail-closed. The registered plan and
-`execution_snapshot.json` bytes are never rewritten to match a later checkout.
-Direct execution needs a capacity-eligible candidate and no missing-PID blocker;
-Slurm needs launchable rows. Output topology is rechecked before process start
-or submission. Dry-run and monitor do not probe or create the execution snapshot;
-the separate dry-run candidate-config check remains planner-local.
-External datasets, drivers, and environment outside explicit `execution.env`
-remain operational dependencies rather than snapshot contents. The eligible
-execute-wave probe above owns live frozen-argv compatibility. Before a direct
-managed child is spawned, one short lock covers the embedded launch verification
+Each launch pass reads the registered plan under the workspace run lock: the
+resolved-recipe digest, `plan.json`'s recipe against `recipe.resolved.yaml`
+(the launch command is rebuilt from its `execution` block), the step that
+registers the plan directory, and a canonical row for every plan run. The
+scheduler then checks each run it starts against its canonical frozen row. A
+direct launch does not re-probe the target from the manager: each run's launch
+command carries the frozen `execution_snapshot.json`, and before the managed
+child is spawned, one short lock covers the embedded launch verification
 of Python/version, repository root, hostname, module origin, tracked and
-untracked or ignored importable code, and frozen script/config hashes, followed
-by HEAD capture and `Popen`. A failure there commits `launch_failed` with the
-verifier's message in `scheduler_reason` and is not retried. The lock is released after spawn;
+untracked or ignored importable code, and frozen launch-script/config hashes,
+then the frozen argv against the live parser, followed by HEAD capture and
+`Popen`. A failure there commits `launch_failed` with the verifier's message in
+`scheduler_reason` and is not retried. The lock is released after spawn;
 this is a point-in-time launch observation, not a promise that checkout code
-bytes remain unchanged throughout the job. A Slurm job takes no lock: it writes
+bytes remain unchanged throughout the job. Commit and derived CLI-option
+inventory may advance with a rolling checkout; launch records the actual commit.
+The registered plan and `execution_snapshot.json` bytes are never rewritten to
+match a later checkout. The leaf launch script checks its frozen input
+snapshots, such as an init checkpoint, before training.
+Direct execution needs a capacity-eligible candidate and no missing-PID blocker;
+Slurm needs launchable rows. Output topology is rechecked for the runs about to
+start or be submitted. Dry-run and monitor do not probe, create or compare the
+execution snapshot and do not hash frozen files, so a dry run does not report
+byte drift. External datasets, drivers, and environment outside explicit
+`execution.env` remain operational dependencies rather than snapshot contents.
+A Slurm job takes no lock: it writes
 `git rev-parse HEAD` to `run_dir/runtime_commit` and checks its frozen config
 and launch-script hashes before `srun`.
 Target and leaf `PYTHONPATH` contain only `execution.workdir`; another manager
 checkout cannot satisfy missing imports.
 
-For Slurm execute, the live snapshot probe runs once before the submission
-pass. The shared lifecycle owner defines the
+For Slurm execute, the submission pass re-hashes each launchable run's
+`job.sbatch` and runs the live snapshot probe once from the submitting host.
+The probe compares the frozen snapshot except the rolling commit, CLI-option
+inventory and the probing host name, since a submission may come from another
+login node than the plan's. The shared lifecycle owner defines the
 [frozen job script](run_manifest.md#frozen-job-script),
 [submission and adoption](run_manifest.md#submission-and-adoption),
 the [monitor state table](run_manifest.md#monitor-state-table),
 and [stopping and lost runs](run_manifest.md#stopping-and-lost-runs).
 
-Supported historical boundary: a missing snapshot can be established only
+A direct plan launches only with the `execution_snapshot.json` its
+registration froze; a plan without one fails at its first launch and must be
+recreated. At a Slurm submission a missing snapshot can be established only
 while every run is `planned` or `pending` with no committed execution target.
-Once execution identity or later state exists, recreate the plan rather than
-upgrading it. Plans lacking frozen Python/commit identity also require recreation;
-removed `trial_*` plans and status files remain unmanaged and read-only.
+Plans lacking frozen Python/commit identity also require recreation. Removed
+`trial_*` plans lack the resolved-recipe digest and the runs list, so the plan
+reader rejects them.
 
 ### Selection and selected-candidate consumers
 

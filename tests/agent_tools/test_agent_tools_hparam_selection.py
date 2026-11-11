@@ -964,17 +964,6 @@ def test_epoch_number_rejects_non_integer_values(value):
     assert run_artifacts.epoch_number(value) is None
 
 
-def test_hparam_select_rejects_legacy_plan_without_rewriting_outputs(tmp_path: Path):
-    (tmp_path / "plan.json").write_text(json.dumps({"trials": [{"trial_id": "trial_000"}], "recipe": {}}))
-    ranking = tmp_path / "candidate_ranking.csv"
-    ranking.write_text("sentinel\n")
-
-    with pytest.raises(ValueError, match="Legacy hparam plan"):
-        hparam_selection.select_hparam_candidates(tmp_path)
-
-    assert ranking.read_text() == "sentinel\n"
-
-
 def test_hparam_select_rejects_historical_workspace_before_writing_ranking(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"

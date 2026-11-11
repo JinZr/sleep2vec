@@ -109,7 +109,7 @@ observed evidence, and none of them restores run status.
 | `run_manifest.tsv` | `<experiment.root>/` | Canonical [atomic commit](#atomic-commit) from plan registration, launch, monitor and stop | Only mutable lifecycle and execution-identity owner; one row per run |
 | `launch_manifest.tsv` | Older hparam plan directories | None | Removed projection; a leftover copy is inert and never read |
 | `experiment_manifest.tsv` | `<experiment.root>/` | `experiment-init` | Optional one-row index that must match `experiment.yaml` |
-| `trial_status.tsv` | Historical trees | None | Removed format; managed commands refuse a tree that contains it |
+| `trial_status.tsv` | Historical trees | None | Removed format; experiment status, monitor and finalize refuse a tree that contains it |
 | `run_status.tsv` | Older hparam plan directories | None | Removed projection; a leftover copy is inert and never read |
 
 ## Runtime artifact evidence

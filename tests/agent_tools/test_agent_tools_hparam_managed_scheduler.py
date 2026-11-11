@@ -17,26 +17,8 @@ from test_agent_tools_hparam_runtime import (
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
-from agent_tools import execution_snapshot, hparam_runtime, managed_scheduler, run_evidence
+from agent_tools import hparam_runtime, managed_scheduler, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
-
-
-def test_launch_without_canonical_status_keeps_snapshot_preflight_error(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "pending", "status": "pending", "gpus": "0"}])
-    planned = json.loads((tmp_path / "plan.json").read_text())["runs"]
-    for row in rows:
-        row.pop("status")
-    monkeypatch.setattr(managed_scheduler, "read_run_manifest", lambda _root: rows)
-    with pytest.raises(ValueError, match="Cannot establish an execution snapshot"):
-        managed_scheduler.launch_managed_runs(
-            tmp_path,
-            tmp_path,
-            planned,
-            {"target": "local"},
-            {},
-            dry_run=False,
-        )
-    assert not (tmp_path / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
 
 
 def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspace_creation(tmp_path: Path):
@@ -201,8 +183,6 @@ def test_hparam_run_queue_blocks_after_unsafe_process_identity(tmp_path: Path, m
         raise run_evidence.ProcessIdentityError("PID 123 was reused by a different process")
 
     monkeypatch.setattr(run_evidence, "process_identity_running", reject_identity)
-    # The hand-written plan froze no execution snapshot; the launch pass still observes before it fills capacity.
-    monkeypatch.setattr(execution_snapshot, "validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
     monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: pytest.fail("no start"))
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
 
@@ -299,30 +279,6 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
         and event["to"] == "finished"
         for event in events
     )
-
-
-def test_hparam_launch_rejects_partially_executed_plan_without_snapshot(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    launcher = FakeLauncher()
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-    plan = json.loads((plan_dir / "plan.json").read_text())
-    plan.pop("execution_snapshot")
-    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
-    (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).unlink()
-    calls = []
-    monkeypatch.setattr(
-        execution_snapshot,
-        "run_execution_command",
-        lambda *_args, **_kwargs: calls.append(True) or pytest.fail("started plan must fail before target probing"),
-    )
-
-    with pytest.raises(ValueError, match="after a hparam run has started"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    assert calls == []
-    assert not (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
 
 
 def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_is_unknown(tmp_path: Path):

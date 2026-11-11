@@ -1054,7 +1054,7 @@ def _materialize_hparam_plan(
         elif registration_state != "unregistered":
             shutil.rmtree(write_out)
         try:
-            artifacts.commit_hparam_plan(out, preflight_validated=True)
+            artifacts.commit_hparam_plan(out)
         except artifacts.HparamRegistrationPreflightError as exc:
             if not out_preexisted and out.exists() and not out.is_symlink():
                 shutil.rmtree(out)

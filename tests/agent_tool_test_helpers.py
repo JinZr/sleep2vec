@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import threading
@@ -397,3 +398,18 @@ class FakeLauncher:
 
     def assert_not_started(self) -> None:
         assert self.starts == [], f"Unexpected process starts: {self.commands}"
+
+
+def frozen_artifact_launch(_execution: dict, command: str) -> tuple[str, str]:
+    """FakeLauncher outcome that applies the launch command's own frozen-artifact hash check.
+
+    It reads the artifact list the command passes to its runtime_identity program and returns the definite
+    ``launch_failed`` outcome ``start_process`` reports when that program rejects a changed file."""
+    identity = json.loads(shlex.split(command)[-1])[0]
+    for artifact in json.loads(identity[5]):
+        if hashlib.sha256(Path(artifact["path"]).read_bytes()).hexdigest() != artifact["sha256"]:
+            return (
+                "launch_failed",
+                f"launch exit 2: Frozen run artifact changed before process start: {artifact['path']}",
+            )
+    return "launched", ""

@@ -464,7 +464,7 @@ Runtime identity and defaults belong to the
 [non-hparam identity](task_recipe.md#non-hparam-runtime-identity) and
 [hparam launch](hparam_workflow.md#launch-and-queue) contracts. The
 [execution snapshot contract](hparam_workflow.md#execution-snapshot-and-launch-revalidation)
-owns registration-time creation, live launch revalidation and the restricted
+owns registration-time creation, launch-time verification and the restricted
 missing-snapshot boundary; this workspace layout does not authorize rebinding
 historical plans.
 

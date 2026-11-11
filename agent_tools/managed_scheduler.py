@@ -478,19 +478,6 @@ def _launch_managed_runs(
         return _launch_slurm_runs(workspace, owner_dir, runs, execution, options)
     planned_by_key = {validated_run_key(run): run for run in runs}
     snapshot_path, expected_keys, workspace_by_key = _managed_launch_preflight(workspace, owner_dir, runs)
-    if (
-        not options.dry_run
-        and not snapshot_path.exists()
-        and any(
-            workspace_by_key[validated_run_key(run)].get("target") not in (None, "")
-            or (previous_status := workspace_by_key[validated_run_key(run)].get("status")) is None
-            or previous_status not in LAUNCHABLE_STATUSES
-            for run in runs
-        )
-    ):
-        validated_snapshot = options.hooks.validated_snapshot or exec_snapshot.validated_execution_snapshot
-        validated_snapshot(owner_dir, execution, runs, workspace_by_key)
-
     observed = observe_runs(
         owner_dir,
         workspace_by_key,

@@ -18,7 +18,6 @@ from agent_tools import (
     execution_snapshot,
     hparam_runtime,
     managed_scheduler,
-    plan_contract,
     plan_hparam,
     plan_rendering,
     plans,
@@ -238,7 +237,7 @@ def test_public_hparam_recipe_requires_complete_scheduler_contract(tmp_path: Pat
     assert not (tmp_path / "plan").exists()
 
 
-def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path: Path):
+def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path: Path, monkeypatch):
     recipe_path = _hparam_recipe(tmp_path)
     direct_plan_dir = tmp_path / "direct-plan"
     assert run_cli("plan", "--recipe", str(recipe_path), "--output-dir", str(direct_plan_dir)).returncode == 0
@@ -296,25 +295,11 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
     assert "hparam-run-queue" not in batch_script
 
     Path(run["scheduler_script"]).write_text(batch_script + "# changed\n")
-    with pytest.raises(ValueError, match="snapshot hash changed"):
-        run_artifacts.read_hparam_plan(slurm_plan_dir)
-
-
-def test_hparam_reader_uses_frozen_context_for_implicit_workdir(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path, execution={})
-    payload = yaml.safe_load(recipe.read_text())
-    payload["search"]["parameters"]["runtime.lr"] = [9.87654321e-7]
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    plan_dir = tmp_path / "plan"
-    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    assert result.returncode == 0, result.stderr
-
-    monkeypatch.setattr(plan_contract, "REPO_ROOT", Path("/controller/repo"))
-    monkeypatch.setattr(plan_hparam, "REPO_ROOT", Path("/controller/repo"))
-
-    plan = run_artifacts.read_hparam_plan(plan_dir)
-
-    assert plan["recipe"]["execution"].get("workdir") in (None, "")
+    monkeypatch.setattr(managed_scheduler.slurm, "user_jobs", lambda **_kwargs: pytest.fail("no squeue"))
+    monkeypatch.setattr(managed_scheduler.slurm, "submit", lambda *_args, **_kwargs: pytest.fail("no sbatch"))
+    # Submission re-hashes job.sbatch; inside the job, sha256sum --check then covers config.yaml and launch.sh.
+    with pytest.raises(ValueError, match="Frozen Slurm script changed before submission"):
+        hparam_runtime.launch_hparam_runs(slurm_plan_dir, dry_run=False)
 
 
 def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: Path, monkeypatch):

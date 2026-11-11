@@ -387,20 +387,6 @@ def test_hparam_plan_rejects_environment_semantic_aliases(tmp_path: Path, env_na
     assert f"execution.env.{env_name}" in result.stdout
 
 
-def test_hparam_runtime_rejects_legacy_status_filename(tmp_path: Path):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "version": "v0", "status": "planned"}])
-    legacy_status = tmp_path / "trial_status.tsv"
-    legacy_status.write_text("trial_id\tstatus\ntrial_000\tfailed\n")
-    current_manifest = (tmp_path / "run_manifest.tsv").read_bytes()
-    launcher = FakeLauncher()
-
-    with pytest.raises(ValueError, match="Legacy hparam status"):
-        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-    assert (tmp_path / "run_manifest.tsv").read_bytes() == current_manifest
-
-
 @pytest.mark.parametrize("field", ["target", "host", "path_context", "path_validation"])
 def test_hparam_doctor_rejects_removed_ssh_execution_fields(tmp_path: Path, field: str):
     value = {"target": "ssh", "host": "runtime-host", "path_context": "remote", "path_validation": "ssh"}[field]

@@ -12,7 +12,6 @@ import yaml
 
 from agent_tools import (
     execution_snapshot,
-    hparam_runtime,
     managed_scheduler,
     plan_contract,
     plan_hparam,
@@ -219,10 +218,7 @@ def _frozen_plan(tmp_path: Path, *, invalid: bool = False) -> tuple[Path, dict]:
     }
 
 
-@pytest.mark.parametrize("boundary", ["preflight", "commit"])
-def test_invalid_frozen_config_blocks_registration_before_target_or_workspace_writes(
-    tmp_path: Path, monkeypatch, boundary: str
-):
+def test_invalid_frozen_config_blocks_registration_before_target_or_workspace_writes(tmp_path: Path, monkeypatch):
     plan_dir, plan = _frozen_plan(tmp_path, invalid=True)
     monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda *_args, **_kwargs: plan)
     monkeypatch.setattr(run_artifacts, "_hparam_registration_state", lambda _plan: (plan_dir.parent, []))
@@ -240,10 +236,7 @@ def test_invalid_frozen_config_blocks_registration_before_target_or_workspace_wr
     before = _workspace_files(plan_dir.parent)
 
     with pytest.raises(ValueError, match="run-000.*model.cls.embedding_type must be set"):
-        if boundary == "preflight":
-            run_artifacts.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
-        else:
-            run_artifacts.commit_hparam_plan(plan_dir)
+        run_artifacts.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
 
     assert _workspace_files(plan_dir.parent) == before
     assert not (plan_dir / "plan.md").exists()
@@ -286,112 +279,6 @@ def test_registration_validates_same_frozen_bytes_as_card_without_commit_reload(
     assert target_calls
     plan = run_artifacts.read_hparam_plan(plan_dir)
     assert checked_lists[0] == [(run, Path(run["config"]).read_bytes()) for run in plan["runs"]]
-
-
-@pytest.mark.parametrize("update_leaf_hash", [False, True])
-def test_preflight_validated_commit_still_rejects_frozen_config_drift(
-    tmp_path: Path, monkeypatch, update_leaf_hash: bool
-):
-    recipe_path, workspace = _recipe(tmp_path)
-    monkeypatch.setattr(
-        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
-    )
-    commit = run_artifacts.commit_hparam_plan
-
-    def tamper(out, **kwargs):
-        assert kwargs["preflight_validated"] is True
-        plan_path = Path(out) / "plan.json"
-        plan = json.loads(plan_path.read_text())
-        run = plan["runs"][0]
-        config = Path(run["config"])
-        config.write_bytes(config.read_bytes() + b"# changed after registration preflight\n")
-        if update_leaf_hash:
-            run["config_sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
-            plan_path.write_text(json.dumps(plan))
-        return commit(out, **kwargs)
-
-    monkeypatch.setattr(run_artifacts, "commit_hparam_plan", tamper)
-    before = _workspace_files(workspace)
-    plan_dir = workspace / "plans" / "tune"
-
-    report = plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    message = report.blocking_issues()[0].message.lower()
-    if update_leaf_hash:
-        assert "canonical expected runs field config_sha256" in message, message
-    else:
-        assert "snapshot hash changed" in message, message
-    assert _workspace_files(workspace) == before
-    assert not plan_dir.exists()
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-@pytest.mark.parametrize("scheduler_type", ["direct", "slurm"])
-def test_invalid_frozen_config_blocks_every_submission_route_without_mutation(
-    tmp_path: Path, monkeypatch, dry_run: bool, scheduler_type: str
-):
-    plan_dir, plan = _frozen_plan(tmp_path, invalid=True)
-    plan["recipe"]["execution"]["scheduler"] = {"type": scheduler_type}
-    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(hparam_runtime, "read_run_manifest", lambda _root: plan["runs"])
-    monkeypatch.setattr(
-        managed_scheduler,
-        "launch_managed_runs",
-        lambda *_args, **_kwargs: pytest.fail("Invalid config reached scheduler"),
-    )
-    before = _workspace_files(plan_dir.parent)
-
-    with pytest.raises(ValueError, match="run-000.*model.cls.embedding_type must be set"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=dry_run)
-
-    assert _workspace_files(plan_dir.parent) == before
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_launch_validates_prospective_frozen_bytes_including_pending_command(
-    tmp_path: Path, monkeypatch, dry_run: bool
-):
-    plan_dir, plan = _frozen_plan(tmp_path)
-    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(hparam_runtime, "read_run_manifest", lambda _root: plan["runs"])
-    validate = plan_hparam.validate_hparam_run_configs
-    checked = []
-    paths_checked = []
-
-    def tracked_validate(recipe, run_configs):
-        checked.append(run_configs)
-        validate(recipe, run_configs)
-
-    def launch(*_args, **_kwargs):
-        assert checked
-
-    monkeypatch.setattr(plan_hparam, "validate_hparam_run_configs", tracked_validate)
-    monkeypatch.setattr(
-        plan_hparam, "validate_hparam_output_paths", lambda *_args, **kwargs: paths_checked.append(kwargs["runs"])
-    )
-    monkeypatch.setattr(managed_scheduler, "launch_managed_runs", launch)
-    before = _workspace_files(plan_dir.parent)
-    for _ in range(2):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=dry_run)
-
-    expected = [(run, Path(run["config"]).read_bytes()) for run in plan["runs"][:2]]
-    assert checked == [expected, expected]
-    assert paths_checked == ([] if dry_run else [plan["runs"][:2], plan["runs"][:2]])
-    assert _workspace_files(plan_dir.parent) == before
-
-
-def test_active_and_terminal_launch_does_not_validate_configs(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _frozen_plan(tmp_path, invalid=True)
-    plan["runs"] = plan["runs"][2:]
-    monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda *_args, **_kwargs: plan)
-    monkeypatch.setattr(hparam_runtime, "read_run_manifest", lambda _root: plan["runs"])
-    monkeypatch.setattr(
-        plan_hparam, "validate_hparam_run_configs", lambda *_args: pytest.fail("Observer path validated configs")
-    )
-    monkeypatch.setattr(managed_scheduler, "launch_managed_runs", lambda *_args, **_kwargs: None)
-    for dry_run in (False, True):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=dry_run)
 
 
 def test_direct_observation_cannot_add_launchable_runs_and_removes_running_pending(tmp_path: Path, monkeypatch):

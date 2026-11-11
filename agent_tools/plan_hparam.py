@@ -1213,19 +1213,14 @@ def render_hparam_preflight_card(
     return "\n".join(lines)
 
 
-def validate_hparam_output_paths(
-    out: str | Path,
-    plan: Mapping[str, Any],
-    *,
-    runs: list[dict[str, Any]] | None = None,
-) -> None:
+def validate_hparam_output_paths(out: str | Path, plan: Mapping[str, Any]) -> None:
     plan_dir = Path(out)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     declared_artifacts_value = recipe.get("artifacts")
     declared_artifacts = declared_artifacts_value if isinstance(declared_artifacts_value, dict) else {}
     paths = [plan_dir / "plan.json"]
-    for run in plan["runs"] if runs is None else runs:
+    for run in plan["runs"]:
         paths.extend([Path(str(run["runtime_dir"])), Path(str(run["checkpoint_dir"]))])
     paths.append(
         plan_output_path(plan_dir, declared_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv")
