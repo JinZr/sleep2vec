@@ -169,6 +169,7 @@ class ExperimentStatusRun(TypedDict):
 class ExperimentMonitorResult(TypedDict):
     run_dir: str
     runs: list[dict[str, str]]
+    queue_runners: list[managed_scheduler.QueueRunnerLiveness]
     report: str
 
 
@@ -311,7 +312,16 @@ def monitor_run_row(
     return observation
 
 
-def monitor_report(rows: Sequence[Mapping[str, Any]]) -> str:
+def format_queue_runner(runner: managed_scheduler.QueueRunnerLiveness) -> str:
+    if runner["active"]:
+        return f"active; pid={runner['pid'] or 'unknown'}; log={runner['log_path']}"
+    return f"not active; log={runner['log_path']}"
+
+
+def monitor_report(
+    rows: Sequence[Mapping[str, Any]],
+    queue_runners: Sequence[managed_scheduler.QueueRunnerLiveness] = (),
+) -> str:
     lines = ["# Experiment Monitor", ""]
     if not rows:
         return "# Experiment Monitor\n\nNo runs found.\n"
@@ -342,6 +352,10 @@ def monitor_report(rows: Sequence[Mapping[str, Any]]) -> str:
             )
         )
     lines.append("")
+    if queue_runners:
+        lines.extend(["## Queue runners", ""])
+        lines.extend(f"- `{runner['plan_dir']}`: {format_queue_runner(runner)}" for runner in queue_runners)
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -492,6 +506,10 @@ def _experiment_lifecycle_decision(
                 )
                 decision["manual_choice_required"] = True
                 decision["other_legal_actions"] = [finalize]
+        elif not candidates and any(blocker["code"] == "queue_runner_active" for blocker in plan_blockers):
+            # Detached queue runners own every remaining launchable run; observe them instead of launching.
+            state = "in_progress"
+            decision["recommended_next"] = _monitor_action(root)
         else:
             state = "ready_to_launch" if candidates else "blocked"
             if len(candidates) == 1:
@@ -1071,6 +1089,19 @@ def _plan_advice(
         for plan in sorted(registered["plans"], key=lambda item: str(item["path"])):
             plan_rows = [rows_by_key[key] for key in plan["run_keys"]]
             if not any(row["status"] in managed_scheduler.LAUNCHABLE_STATUSES for row in plan_rows):
+                continue
+            runner = managed_scheduler.queue_runner_liveness(Path(plan["path"]))
+            if plan["task"] == "hparam_tune" and runner["active"]:
+                # Only a direct hparam queue takes this lock; its live runner launches the remaining runs.
+                blockers.append(
+                    _status_blocker(
+                        "queue_runner_active",
+                        f"A detached hparam-run-queue runner owns this plan's launchable runs: "
+                        f"{format_queue_runner(runner)}.",
+                        step_id=step_id,
+                        blocked_actions=["finalize"],
+                    )
+                )
                 continue
             if plan["task"] == "hparam_tune":
                 argv = [

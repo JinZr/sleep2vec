@@ -693,9 +693,11 @@ def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
 
     Requires an active, valid managed workspace. Reads local process,
     scheduler and artifact evidence, merges observations into run_manifest.tsv
-    and its projections, then writes reports/monitor.md. Returns run_dir, the
-    committed runs and the report path; these are committed observations rather
-    than an experiment_status lifecycle decision.
+    and its projections, then writes reports/monitor.md. Also probes the queue
+    runner of every registered plan that has a queue_runner.lock (only a direct
+    hparam queue creates one) without starting any runner. Returns run_dir, the
+    committed runs, that runner liveness and the report path; these are committed
+    observations rather than an experiment_status lifecycle decision.
 
     Invalid ownership/state and unhandled
     observation or write errors propagate; a report-write failure can occur
@@ -720,9 +722,17 @@ def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
         tracking.monitor_run_row(root, row, previous_rows, monitor_context=monitor_context) for row in run_rows
     ]
     committed = merge_run_manifest(root, observations)
-    report = tracking.monitor_report(committed)
+    # Registered plans own canonical rows, and _managed_rows checked every row's experiment_id.
+    step_manifests = read_registered_steps(root, experiment_id=str(run_rows[0]["experiment_id"])) if run_rows else []
+    queue_runners = [
+        managed_scheduler.queue_runner_liveness(Path(plan_path))
+        for manifest in step_manifests
+        for plan_path in manifest["plans"]
+        if (Path(plan_path) / managed_scheduler.QUEUE_RUNNER_LOCK_NAME).exists()
+    ]
+    report = tracking.monitor_report(committed, queue_runners)
     exp_io.write_text_at(report_path, report)
-    return {"run_dir": str(root), "runs": committed, "report": str(report_path)}
+    return {"run_dir": str(root), "runs": committed, "queue_runners": queue_runners, "report": str(report_path)}
 
 
 def experiment_status(run_dir: str | Path) -> tracking.ExperimentStatusSnapshot:
@@ -730,7 +740,10 @@ def experiment_status(run_dir: str | Path) -> tracking.ExperimentStatusSnapshot:
 
     Validates registered plan bindings and available selection/report/checkpoint
     evidence, including completed workspaces. Does not poll
-    jobs or refresh canonical run statuses: live_observation is False.
+    jobs or refresh canonical run statuses: live_observation is False. The one
+    live read is a shared-lock probe of each hparam plan with launchable runs:
+    an active queue runner replaces that plan's hparam-run-queue advice with a
+    queue_runner_active blocker.
 
     The mapping contains experiment identity, lifecycle_source, summary, steps,
     runs, blockers and advisory next actions, which do not authorize execution.

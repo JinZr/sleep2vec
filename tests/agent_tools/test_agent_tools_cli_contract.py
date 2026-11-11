@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from agent_tools import cli, execution_snapshot, models, plans
+from agent_tools import cli, execution_snapshot, hparam_runtime, managed_scheduler, models, plans
 from agent_tools.adapters.registry import get_adapter
 from agent_tools.decisions import evaluate_consultation_gates
 from agent_tools.manifests import write_rows
@@ -535,9 +535,17 @@ def test_hparam_run_queue_cli_contract():
     args = parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir"])
 
     assert {name for name, action in actions.items() if action.required} == {"plan_dir"}
+    assert set(actions) - {"help"} == {"plan_dir", "dry_run", "execute", "foreground", "poll_seconds"}
     assert args.dry_run is True
     assert args.execute is False
+    assert args.foreground is False
     assert args.poll_seconds == 60
+    assert parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir", "--execute", "--foreground"]).foreground
+    summary = _subcommand_help(parser, "hparam-run-queue")
+    assert summary is not None
+    assert "Dry run unless --execute" in summary
+    assert "--execute starts one detached runner per direct plan" in summary
+    assert "--foreground runs the queue in this process" in summary
 
     with pytest.raises(SystemExit):
         parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
@@ -553,13 +561,54 @@ def test_hparam_run_queue_reports_execute_and_lifecycle_counts(tmp_path: Path, m
         ],
     )
     monkeypatch.setattr(cli, "run_hparam_queue", lambda *_args, **_kwargs: status)
+    monkeypatch.setattr(cli, "start_hparam_queue_runner", lambda *_args, **_kwargs: pytest.fail("no detached runner"))
 
-    assert cli.main(["hparam-run-queue", "--plan-dir", "plan-dir", "--execute"]) == 0
+    assert cli.main(["hparam-run-queue", "--plan-dir", "plan-dir", "--execute", "--foreground"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "Mode: execute (state changes enabled)",
         "Lifecycle states: completed=1, failed=1",
         f"Wrote {status}",
     ]
+
+
+def test_hparam_run_queue_execute_reports_the_detached_runner(tmp_path: Path, monkeypatch, capsys):
+    log_path = tmp_path / "queue_runner.log"
+    calls = []
+
+    def start(plan_dir, *, poll_seconds):
+        calls.append((plan_dir, poll_seconds))
+        return hparam_runtime.QueueRunnerStart(pid=4242, log_path=log_path)
+
+    monkeypatch.setattr(cli, "start_hparam_queue_runner", start)
+    monkeypatch.setattr(cli, "run_hparam_queue", lambda *_args, **_kwargs: pytest.fail("no foreground queue"))
+
+    assert cli.main(["hparam-run-queue", "--plan-dir", "plan-dir", "--execute", "--poll-seconds", "5"]) == 0
+    assert calls == [("plan-dir", 5.0)]
+    assert capsys.readouterr().out.splitlines() == [
+        "Mode: execute (detached queue runner started)",
+        f"Queue runner: started; pid=4242; log={log_path}",
+    ]
+
+
+@pytest.mark.parametrize("execute", [False, True], ids=["dry-run", "slurm-execute"])
+def test_hparam_run_queue_runs_in_process_without_a_detached_runner(tmp_path: Path, monkeypatch, capsys, execute: bool):
+    status = tmp_path / "run_status.tsv"
+    write_rows(status, [{"step_id": "tune", "run_id": "run-001", "status": "planned"}])
+    queue_calls = []
+    start_calls = []
+    monkeypatch.setattr(
+        cli, "run_hparam_queue", lambda plan_dir, *, dry_run, poll_seconds: queue_calls.append(dry_run) or status
+    )
+    # start_hparam_queue_runner returns None for a Slurm plan, whose queue keeps running in this process.
+    monkeypatch.setattr(cli, "start_hparam_queue_runner", lambda *_args, **_kwargs: start_calls.append("start") or None)
+
+    assert cli.main(["hparam-run-queue", "--plan-dir", "plan-dir", *(["--execute"] if execute else [])]) == 0
+
+    assert queue_calls == [not execute]
+    assert start_calls == (["start"] if execute else [])
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "Mode: execute (state changes enabled)" if execute else "Mode: dry-run (no launch attempted)"
+    )
 
 
 def test_hparam_monitor_cli_contract(tmp_path: Path, monkeypatch):
@@ -623,6 +672,7 @@ def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeyp
     assert cli.main(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "Lifecycle states: completed=1, failed=1",
+        "Queue runner: not active; log=run-dir/queue_runner.log",
         "Failure evidence:",
         "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; "
         "scheduler health error=accounting unavailable; log=/logs/run-001.log",
@@ -632,6 +682,7 @@ def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeyp
     assert cli.main(["hparam-monitor", "--run-dir", "run-dir", "--once", "--health", "--include-log-tail"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "Lifecycle states: completed=1, failed=1",
+        "Queue runner: not active; log=run-dir/queue_runner.log",
         "Failure evidence:",
         "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; "
         "scheduler health error=accounting unavailable; log=/logs/run-001.log",
@@ -639,6 +690,39 @@ def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeyp
         "  rank 2: CUDA out of memory",
         f"Wrote {status}",
     ]
+
+
+@pytest.mark.parametrize("runner", ["active", "not-active", "slurm"])
+def test_hparam_monitor_reports_queue_runner_liveness_from_the_lock_probe(
+    tmp_path: Path, monkeypatch, capsys, runner: str
+):
+    status = tmp_path / "run_status.tsv"
+    row = {"step_id": "tune", "run_id": "run-001", "status": "running"}
+    if runner == "slurm":
+        row["scheduler_type"] = "slurm"
+    write_rows(status, [row])
+    monkeypatch.setattr(cli, "monitor_hparam_runs", lambda *_args, **_kwargs: status)
+    monkeypatch.setattr(cli, "start_hparam_queue_runner", lambda *_args, **_kwargs: pytest.fail("no runner start"))
+    log_path = tmp_path / "queue_runner.log"
+
+    if runner == "active":
+        with managed_scheduler.queue_runner_lock(tmp_path, record_pid=True):
+            assert cli.main(["hparam-monitor", "--run-dir", str(tmp_path), "--once"]) == 0
+    else:
+        assert cli.main(["hparam-monitor", "--run-dir", str(tmp_path), "--once"]) == 0
+
+    runner_lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("Queue runner")]
+    assert (
+        runner_lines
+        == {
+            "active": [f"Queue runner: active; pid={os.getpid()}; log={log_path}"],
+            "not-active": [f"Queue runner: not active; log={log_path}"],
+            "slurm": [],
+        }[runner]
+    )
+    # The probe never creates the lock file or a runner log.
+    assert (tmp_path / "queue_runner.lock").exists() is (runner == "active")
+    assert not log_path.exists()
 
 
 @pytest.mark.parametrize("command", ["preset-launch", "preset-stop"])

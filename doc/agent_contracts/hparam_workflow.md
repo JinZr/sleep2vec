@@ -225,7 +225,8 @@ The optional `execution` block configures the managed launcher.
   interpreter and baseline repository HEAD. Separate workdirs and conda-wrapped
   targets must author both values explicitly.
 - With direct scheduling, `hparam-launch` starts one capacity-limited wave and
-  `hparam-run-queue --execute` keeps filling that capacity. With Slurm, the
+  `hparam-run-queue --execute` starts one detached queue runner that keeps
+  filling that capacity (see [queue runner](#direct-queue-runner)). With Slurm, the
   launch owner submits every launchable leaf job without applying host-global
   GPU capacity to scheduler allocations.
 - Generated leaf scripts use only `execution.workdir` on `PYTHONPATH`;
@@ -251,6 +252,25 @@ the current plan every 60 seconds until terminal; `--poll-seconds` changes the
 interval and `--once` performs one round. `--health` adds progress evidence.
 See [workspace command side effects](experiment_workspace.md#lifecycle-entrypoints)
 for observation writes and explicit raw-log display.
+
+#### Direct queue runner
+
+For a direct plan, `hparam-run-queue --execute` validates the plan, fails at
+once if another runner holds the plan's `queue_runner.lock`, and otherwise
+starts `hparam-run-queue --execute --foreground` in a new session with stdin
+from `/dev/null` and stdout/stderr appended to the plan's `queue_runner.log`.
+It prints the runner PID and log path and returns, so the queue survives the
+caller's terminal or SSH session. The runner holds a non-blocking exclusive
+`flock` on `queue_runner.lock` for its whole loop, records its PID there for
+display only, and releases the lock when it exits. That lock is taken outside,
+and is distinct from, the workspace run lock. Queue errors end the runner and
+land in the log; rerun `--execute` after inspecting it. `--foreground` runs the
+same loop in the calling process under the same lock. A Slurm plan's
+`--execute` still runs the queue in the calling process and takes no runner
+lock. `hparam-monitor` and `experiment-monitor` report runner liveness from a
+non-blocking shared-lock probe of `queue_runner.lock`, with the recorded PID
+and log path, and never start a runner; `experiment-status` advises
+`hparam-run-queue` only for a plan with launchable runs and no live runner.
 
 `hparam-stop` with a non-empty reason can cancel a canonical `planned` or
 `pending` run before any execution identity is bound. It rereads the canonical
