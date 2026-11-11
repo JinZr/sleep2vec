@@ -687,7 +687,10 @@ def hparam_plan_workspace(plan_dir: Path) -> Path:
 
     Reads only plan.json and validates nothing else: every value a caller acts on comes from
     read_hparam_plan under that lock."""
-    recipe = read_json(plan_dir / "plan.json").get("recipe")
+    plan_path = plan_dir / "plan.json"
+    if not plan_path.exists():
+        raise FileNotFoundError(f"Missing hparam plan: {plan_path}")
+    recipe = read_json(plan_path).get("recipe")
     workspace = experiment_root(recipe) if isinstance(recipe, dict) else None
     if workspace is None:
         raise ValueError("Invalid hparam workspace binding: experiment.root is required.")
