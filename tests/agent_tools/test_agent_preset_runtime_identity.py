@@ -565,7 +565,11 @@ def test_preset_registered_reader_never_rebinds_default_or_historical_identity(
     if historical:
         assert "preset-launch" not in (plan_dir / "run.sh").read_text()
         for operation in (experiments.launch_preset_run, experiments.stop_preset_run):
-            kwargs = {"dry_run": False} if operation is experiments.launch_preset_run else {"reason": "old plan"}
+            kwargs = (
+                {"dry_run": False}
+                if operation is experiments.launch_preset_run
+                else {"run_id": "run-000", "reason": "old plan"}
+            )
             with pytest.raises(ValueError, match="new local managed direct preset"):
                 operation(plan_dir, **kwargs)
     assert _workspace_files(preset_runtime["workspace"]) == before

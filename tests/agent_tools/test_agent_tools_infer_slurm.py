@@ -515,7 +515,7 @@ def test_infer_launch_marks_run_lost_when_job_output_exists_without_a_job(
     assert snapshot["summary"]["state"] == "blocked"
     assert any(blocker["code"] == "lost" for blocker in snapshot["blockers"])
 
-    experiments.stop_infer_run(plan_dir, reason="job output exists but its id aged out")
+    experiments.stop_infer_run(plan_dir, "run-000", reason="job output exists but its id aged out")
 
     row = _row(plan_dir)
     assert row["status"] == "stopped"
@@ -613,7 +613,7 @@ def test_infer_lifecycle_reads_workspace_state_only_under_run_lock(
     call = (
         functools.partial(experiments.launch_infer_run, plan_dir, dry_run=False)
         if operation == "launch"
-        else functools.partial(experiments.stop_infer_run, plan_dir, reason="cancel during monitor commit")
+        else functools.partial(experiments.stop_infer_run, plan_dir, "run-000", reason="cancel during monitor commit")
     )
 
     call_while_run_lock_holder_commits(monkeypatch, plan_dir.parent, call)
@@ -634,18 +634,24 @@ def test_infer_launch_untrusted_plan_does_not_invent_failure_state(tmp_path: Pat
     assert manifest.read_bytes() == before
 
 
-def test_infer_stop_cli_stops_unsubmitted_plan_without_cancelling(
-    tmp_path: Path, monkeypatch, _runtime_commit, _runtime_probe
+def test_run_stop_cli_stops_unsubmitted_infer_plan_without_cancelling(
+    tmp_path: Path, monkeypatch, capsys, _runtime_commit, _runtime_probe
 ):
     plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
     fake = _FakeSlurm(monkeypatch, plan_dir, plan)
     manifest = plan_dir.parent / "run_manifest.tsv"
     before = manifest.read_bytes()
     with pytest.raises(ValueError, match="non-empty reason"):
-        experiments.stop_infer_run(plan_dir, reason=" ")
+        experiments.stop_infer_run(plan_dir, "run-000", reason=" ")
+    # A single-run plan still needs --run-id, and it must name that run.
+    with pytest.raises(SystemExit):
+        cli.main(["run-stop", "--plan-dir", str(plan_dir), "--reason", "cancel unsubmitted unit run"])
+    assert cli.main(["run-stop", "--plan-dir", str(plan_dir), "--run-id", "run-001", "--reason", "wrong run"]) == 1
+    assert "Unknown run_id: run-001" in capsys.readouterr().err
     assert manifest.read_bytes() == before
 
-    assert cli.main(["infer-stop", "--plan-dir", str(plan_dir), "--reason", "cancel unsubmitted unit run"]) == 0
+    argv = ["run-stop", "--plan-dir", str(plan_dir), "--run-id", "run-000", "--reason", "cancel unsubmitted unit run"]
+    assert cli.main(argv) == 0
 
     row = _row(plan_dir)
     assert row["status"] == "stopped"
@@ -665,7 +671,7 @@ def test_infer_stop_cancels_a_job_named_for_a_launchable_run(
     fake = _FakeSlurm(monkeypatch, plan_dir, plan)
     fake.jobs = [f"3880|{fake.name}|PENDING|Priority|"]
 
-    experiments.stop_infer_run(plan_dir, reason="cancel a job whose receipt was lost")
+    experiments.stop_infer_run(plan_dir, "run-000", reason="cancel a job whose receipt was lost")
 
     row = _row(plan_dir)
     assert row["status"] == "stopping"
@@ -702,13 +708,13 @@ def test_infer_queued_stop_reuses_intent_and_converges_when_job_leaves(
         return real_call(argv, timeout=timeout)
 
     monkeypatch.setattr(slurm, "run_command", cancel_after_durable_intent)
-    assert experiments.stop_infer_run(plan_dir, reason=reason) == plan_dir.parent / "run_manifest.tsv"
+    assert experiments.stop_infer_run(plan_dir, "run-000", reason=reason) == plan_dir.parent / "run_manifest.tsv"
     intent = _row(plan_dir)["stop_requested_at"]
-    experiments.stop_infer_run(plan_dir, reason=reason)
+    experiments.stop_infer_run(plan_dir, "run-000", reason=reason)
     assert _row(plan_dir)["stop_requested_at"] == intent
     assert fake.count("scancel") == 2
     with pytest.raises(ValueError, match="different reason"):
-        experiments.stop_infer_run(plan_dir, reason="changed reason")
+        experiments.stop_infer_run(plan_dir, "run-000", reason="changed reason")
     assert fake.count("scancel") == 2
 
     fake.jobs = [f"3880|{fake.name}|CANCELLED|None|gpu-01"]
@@ -762,7 +768,7 @@ def test_infer_stop_failure_preserves_cancel_order_and_committed_intent(
     monkeypatch.setattr(experiments, owner_field, fail)
 
     with pytest.raises(OSError, match=f"{boundary} write failed"):
-        experiments.stop_infer_run(plan_dir, reason="cancel unit run")
+        experiments.stop_infer_run(plan_dir, "run-000", reason="cancel unit run")
 
     assert fake.count("scancel") == (1 if boundary == "report" else 0)
     row = _row(plan_dir)

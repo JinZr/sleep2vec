@@ -58,7 +58,7 @@ def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path, variant: str
     plan_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    preview = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
+    preview = run_cli("hparam-run-queue", "--plan-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     assert "execution.scheduler.priority" not in result.stdout

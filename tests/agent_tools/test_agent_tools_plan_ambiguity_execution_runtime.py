@@ -104,7 +104,7 @@ def test_hparam_plan_and_launch_use_merged_effective_recipe(tmp_path: Path):
     output_dir = tmp_path / "plan"
 
     planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
-    launched = run_cli("hparam-launch", "--plan-dir", str(output_dir))
+    launched = run_cli("hparam-run-queue", "--plan-dir", str(output_dir))
 
     assert planned.returncode == 0, planned.stderr or planned.stdout
     assert launched.returncode == 0, launched.stderr or launched.stdout

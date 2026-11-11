@@ -219,18 +219,17 @@ The optional `execution` block configures the managed launcher.
   omit Python and commit identity. Planning then freezes the current manager
   interpreter and baseline repository HEAD. Separate workdirs and conda-wrapped
   targets must author both values explicitly.
-- With direct scheduling, `hparam-launch` starts one capacity-limited wave and
-  `hparam-run-queue --execute` starts one detached queue runner that keeps
-  filling that capacity (see [queue runner](#direct-queue-runner)). With Slurm,
-  `hparam-launch --execute` and `hparam-run-queue --execute` both make one
-  [submission pass](run_manifest.md#submission-and-adoption) over every
-  launchable leaf job and return without polling; host-global GPU capacity does
+- With direct scheduling, `hparam-run-queue --execute` starts one detached
+  queue runner that keeps filling the plan's capacity (see
+  [queue runner](#direct-queue-runner)). With Slurm, `hparam-run-queue --execute`
+  makes one [submission pass](run_manifest.md#submission-and-adoption) over every
+  launchable leaf job and returns without polling; host-global GPU capacity does
   not apply to scheduler allocations.
 - Generated leaf scripts use only `execution.workdir` on `PYTHONPATH`;
   `execution.env.PYTHONPATH` is rejected rather than merged.
 
-Preview with `hparam-launch` before execute and inspect frozen identity,
-scheduler/resources, GPU assignment, W&B project/group, log and lifecycle
+Preview with the `hparam-run-queue` dry run before execute and inspect frozen
+identity, scheduler/resources, GPU assignment, W&B project/group, log and lifecycle
 identity paths, and test policy. Dry-run is the default; `--execute` is the
 launch action. It does not grant scientific or test-access decisions.
 Python callers may pass `managed_scheduler.SchedulerHooks` to
@@ -269,7 +268,7 @@ non-blocking shared-lock probe of `queue_runner.lock`, with the recorded PID
 and log path, and never start a runner; `experiment-status` advises
 `hparam-run-queue` only for a plan with launchable runs and no live runner.
 
-`hparam-stop` with a non-empty reason can cancel a canonical `planned` or
+`run-stop --run-id <id>` with a non-empty reason can cancel a canonical `planned` or
 `pending` run before any execution identity is bound. It rereads the canonical
 row under the same lock as launch, records `stopped`, the reason, and stop time,
 then updates the existing projections and `run_stopped` event. This applies to
@@ -281,7 +280,7 @@ not prove submission. Any partial or complete launch
 identity, launch time, or existing stop request keeps the authenticated runtime
 stop path mandatory. Already terminal runs still reject another stop request.
 Post-commit publication failures propagate without rolling back the canonical
-stop; `hparam-stop` does not resume publication for terminal runs.
+stop; `run-stop` does not resume publication for terminal runs.
 Canceled runs retain their frozen artifacts and cannot be launched later.
 
 ### Execution snapshot and launch revalidation

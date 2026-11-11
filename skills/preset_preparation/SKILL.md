@@ -31,7 +31,8 @@ and defaults to dry-run; add `--execute` only when execution is authorized. New
 direct plans detach the worker with closed input, persistent stdout/stderr logs,
 and recorded process identity. Do not wrap the worker in an ad hoc background
 SSH shell or retry a launch after a lost receipt. Observe with
-`experiment-monitor` and stop with `preset-stop --reason` under the
+`experiment-monitor` and stop with `run-stop --plan-dir <plan> --run-id <run-id>
+--reason <reason>` under the
 [managed preset contract](../../doc/agent_contracts/task_recipe.md#managed-preset-preparation).
 The workload and lifecycle commits share the planned interpreter.
 New local plans at the manager checkout freeze its current

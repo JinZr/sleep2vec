@@ -22,7 +22,8 @@ map. When the two disagree, the docstring wins; fix this page.
 
 Entry and shared vocabulary:
 
-- `cli`: the `python -m agent_tools` subcommand surface.
+- `cli`: the `python -m agent_tools` subcommand surface; `run-stop` routes by plan task to the
+  hparam, inference, and preset stop owners.
 - `models`: repository paths, variant and task constants, YAML loading, and config-summary types.
 - `recipes`: recipe, layer, user-decision, and consultation-policy YAML loaders.
 - `skills`: validation of `skills/` playbooks against `skills/manifest.yaml`.

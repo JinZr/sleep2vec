@@ -250,10 +250,12 @@ carry those choices into launch and recovery.
    lock; a Slurm job records HEAD in `run_dir/runtime_commit` and checks its frozen run-file hashes.
    Other ordinary routes use the
    [non-hparam runtime contract](../agent_contracts/task_recipe.md#non-hparam-runtime-identity);
-   `preset-launch` / `preset-stop` use
+   `preset-launch` uses
    [managed preset preparation](../agent_contracts/task_recipe.md#managed-preset-preparation);
-   `infer-launch` / `infer-stop` use the shared
+   `infer-launch` uses the shared
    [managed ordinary Slurm inference](../agent_contracts/task_recipe.md#managed-ordinary-inference) owner.
+   `run-stop` routes a reasoned stop of one named run to the hparam, inference, or preset owner by the
+   registered plan's task.
 5. Inspect recorded state with
    [read-only status](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions),
    or explicitly refresh evidence with non-launching monitors; the

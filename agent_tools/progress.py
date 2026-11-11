@@ -91,32 +91,6 @@ def read_progress(run_dir: str | Path) -> dict[str, Any]:
     return _invalid_progress(path, "progress file must contain a JSON object")
 
 
-def format_progress(data: dict[str, Any]) -> str:
-    status = data.get("status") or "unknown"
-    task = data.get("task") or "unknown"
-    processed = data.get("processed")
-    total = data.get("total")
-    failed = data.get("failed")
-    rate = data.get("rate_per_min")
-    eta = data.get("eta_minutes")
-    updated = data.get("updated_at")
-    parts = [f"{task} {status}"]
-    if processed is not None and total is not None:
-        parts.append(f"{processed} / {total} done")
-    if failed not in (None, ""):
-        parts.append(f"{failed} failed")
-    if rate:
-        parts.append(f"{float(rate):.1f}/min")
-    if eta is not None:
-        parts.append(f"ETA {float(eta):.1f} min")
-    if updated:
-        parts.append(f"last update: {updated}")
-    message = data.get("message")
-    if message:
-        parts.append(str(message))
-    return "\n".join(parts) + "\n"
-
-
 def _invalid_progress(path: Path, message: str) -> dict[str, Any]:
     return {"status": "unknown", "task": None, "path": str(path), "message": message}
 

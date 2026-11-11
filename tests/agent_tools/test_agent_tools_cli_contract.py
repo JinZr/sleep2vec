@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -17,20 +18,16 @@ from agent_tools.recipes import load_consultation_policy
 SUBCOMMANDS = {
     "repo-summary",
     "runtime-sync",
-    "hparam-launch",
     "infer-launch",
-    "infer-stop",
     "preset-launch",
-    "preset-stop",
+    "run-stop",
     "hparam-run-queue",
     "hparam-monitor",
-    "progress",
     "experiment-init",
     "experiment-note",
     "experiment-finalize",
     "experiment-monitor",
     "experiment-status",
-    "hparam-stop",
     "hparam-select",
     "config-summary",
     "index-summary",
@@ -76,11 +73,24 @@ def _subcommand_help(parser: argparse.ArgumentParser, name: str) -> str | None:
     return next((choice.help for choice in subparsers._choices_actions if choice.dest == name), None)
 
 
-def test_cli_has_exactly_23_subcommands():
+def test_cli_has_exactly_19_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == SUBCOMMANDS
-    assert len(subcommands) == 23
+    assert len(subcommands) == 19
+
+
+@pytest.mark.parametrize("removed", ["hparam-launch", "progress", "hparam-stop", "infer-stop", "preset-stop"])
+def test_removed_subcommands_are_unknown(removed: str, capsys):
+    # hparam-run-queue owns hparam launch, the monitors own progress, and run-stop owns every stop: no aliases.
+    parser, subcommands = _parser_contract()
+
+    assert removed not in subcommands
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args([removed, "--plan-dir", "plan-dir"])
+
+    assert excinfo.value.code == 2
+    assert f"invalid choice: '{removed}'" in capsys.readouterr().err
 
 
 def test_every_subcommand_documents_itself():
@@ -430,38 +440,6 @@ def test_doctor_runtime_card_does_not_echo_failed_probe_output(monkeypatch):
     assert "/secret/path" not in card
 
 
-def test_hparam_launch_cli_contract():
-    parser, subcommands = _parser_contract()
-    actions = _actions(subcommands["hparam-launch"])
-    args = parser.parse_args(["hparam-launch", "--plan-dir", "plan-dir"])
-
-    assert {name for name, action in actions.items() if action.required} == {"plan_dir"}
-    assert args.dry_run is True
-    assert args.execute is False
-
-    with pytest.raises(SystemExit):
-        parser.parse_args(["hparam-launch", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
-
-
-def test_hparam_launch_reports_dry_run_and_lifecycle_counts(tmp_path: Path, monkeypatch, capsys):
-    manifest = tmp_path / "launch_manifest.tsv"
-    write_rows(
-        manifest,
-        [
-            {"step_id": "tune", "run_id": "run-001", "status": "planned"},
-            {"step_id": "tune", "run_id": "run-002", "status": "planned"},
-        ],
-    )
-    monkeypatch.setattr(cli, "launch_hparam_runs", lambda *_args, **_kwargs: manifest)
-
-    assert cli.main(["hparam-launch", "--plan-dir", "plan-dir"]) == 0
-    assert capsys.readouterr().out.splitlines() == [
-        "Mode: dry-run (no launch attempted)",
-        "Lifecycle states: planned=2",
-        f"Wrote {manifest}",
-    ]
-
-
 def test_hparam_run_queue_cli_contract():
     parser, subcommands = _parser_contract()
     actions = _actions(subcommands["hparam-run-queue"])
@@ -656,18 +634,64 @@ def test_hparam_monitor_reports_queue_runner_liveness_from_the_lock_probe(
     assert not log_path.exists()
 
 
-@pytest.mark.parametrize("command", ["preset-launch", "preset-stop"])
-def test_preset_cli_required_arguments_and_launch_default(command):
+def test_preset_launch_cli_required_arguments_and_launch_default():
     parser, _subcommands = _parser_contract()
-    args = [command, "--plan-dir", "/tmp/plan"]
-    if command == "preset-stop":
-        with pytest.raises(SystemExit):
-            parser.parse_args(args)
-        args += ["--reason", "authorized stop"]
-    parsed = parser.parse_args(args)
+    parsed = parser.parse_args(["preset-launch", "--plan-dir", "/tmp/plan"])
     assert parsed.plan_dir == "/tmp/plan"
-    if command == "preset-launch":
-        assert parsed.execute is False
+    assert parsed.execute is False
+
+
+def test_run_stop_cli_contract():
+    parser, subcommands = _parser_contract()
+    actions = _actions(subcommands["run-stop"])
+
+    # --run-id is required for every task, single-run infer and preset plans included.
+    assert {name for name, action in actions.items() if action.required} == {"plan_dir", "run_id", "reason"}
+    assert set(actions) - {"help"} == {"plan_dir", "run_id", "reason"}
+    summary = _subcommand_help(parser, "run-stop")
+    assert summary is not None
+    assert "record the reason" in summary
+    assert "never launches work" in summary
+    for missing in ("--run-id", "--reason"):
+        argv = ["run-stop", "--plan-dir", "plan-dir", "--run-id", "run-000", "--reason", "stop"]
+        index = argv.index(missing)
+        with pytest.raises(SystemExit):
+            parser.parse_args(argv[:index] + argv[index + 2 :])
+
+
+@pytest.mark.parametrize(
+    ("task", "owner"),
+    [("hparam_tune", "stop_hparam_run"), ("infer", "stop_infer_run"), ("preset_prepare", "stop_preset_run")],
+)
+def test_run_stop_routes_by_the_plan_task(tmp_path: Path, monkeypatch, capsys, task: str, owner: str):
+    (tmp_path / "plan.json").write_text(json.dumps({"recipe": {"task": task}}))
+    calls = []
+    for name in ("stop_hparam_run", "stop_infer_run", "stop_preset_run"):
+        monkeypatch.setattr(
+            cli,
+            name,
+            lambda plan_dir, run_id, *, reason, name=name: calls.append((name, plan_dir, run_id, reason))
+            or tmp_path / "run_manifest.tsv",
+        )
+
+    argv = ["run-stop", "--plan-dir", str(tmp_path), "--run-id", "run-001", "--reason", "diverged"]
+    assert cli.main(argv) == 0
+
+    assert calls == [(owner, str(tmp_path), "run-001", "diverged")]
+    assert capsys.readouterr().out == f"Wrote {tmp_path / 'run_manifest.tsv'}\n"
+
+
+def test_run_stop_rejects_a_plan_without_a_stoppable_task(tmp_path: Path, monkeypatch, capsys):
+    (tmp_path / "plan.json").write_text(json.dumps({"recipe": {"task": "finetune"}}))
+    for name in ("stop_hparam_run", "stop_infer_run", "stop_preset_run"):
+        monkeypatch.setattr(cli, name, lambda *_args, **_kwargs: pytest.fail("no stop"))
+
+    argv = ["run-stop", "--plan-dir", str(tmp_path), "--run-id", "run-000", "--reason", "diverged"]
+    assert cli.main(argv) == 1
+
+    assert (
+        "run-stop requires a hparam_tune, infer or preset_prepare plan; got task 'finetune'." in capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize(("task", "variant", "target"), RUNNABLE_TASK_VARIANT_MATRIX)

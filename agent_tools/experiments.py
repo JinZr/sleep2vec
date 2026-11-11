@@ -80,7 +80,7 @@ def _preset_direct_workspace(plan_dir: Path) -> Path:
     initial = read_json(plan_dir / "plan.json")
     recipe = initial.get("recipe")
     if not isinstance(recipe, dict) or recipe.get("task") != "preset_prepare":
-        raise ValueError("preset-launch and preset-stop require a preset preparation plan.")
+        raise ValueError("preset-launch and run-stop require a preset preparation plan.")
     issues = experiment_metadata_issues(recipe)
     if issues:
         raise ValueError("Invalid preset workspace binding: " + "; ".join(issue["message"] for issue in issues))
@@ -107,7 +107,7 @@ def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.Registered
                 or any(not execution.get(field) for field in ("python", "runtime_commit", "workdir"))
                 or plan["runs"][0].get("terminal_status_owner") != "script"
             ):
-                raise ValueError("preset-launch and preset-stop require one new local managed direct preset run.")
+                raise ValueError("preset-launch and run-stop require one new local managed direct preset run.")
             return workspace, plan, rows
     raise ValueError(f"Preset plan is not registered in its experiment workspace: {plan_dir}")
 
@@ -214,7 +214,7 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
             raise
 
 
-def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
+def stop_preset_run(plan_dir: str | Path, run_id: str, *, reason: str) -> Path:
     if not reason.strip():
         raise ValueError("Stopping a run requires a non-empty reason.")
     owner_dir = Path(plan_dir).absolute()
@@ -225,6 +225,8 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
             raise ValueError("Preset plan workspace changed before stop.")
         run = plan["runs"][0]
         key = validated_run_key(run)
+        if key[1] != run_id:
+            raise ValueError(f"Unknown run_id: {run_id}")
         previous = {managed_run_key(row): row for row in rows}[key]
         if previous["status"] in TERMINAL_STATUSES:
             raise ValueError(f"Run is already terminal and cannot be stopped: {key[1]} ({previous['status']})")
@@ -300,7 +302,7 @@ def _infer_slurm_workspace(plan_dir: Path) -> Path:
     initial = read_json(plan_dir / "plan.json")
     recipe = initial.get("recipe")
     if not isinstance(recipe, dict) or recipe.get("task") != "infer":
-        raise ValueError("infer-launch and infer-stop require an ordinary infer plan.")
+        raise ValueError("infer-launch and run-stop require an ordinary infer plan.")
     issues = experiment_metadata_issues(recipe)
     if issues:
         raise ValueError("Invalid inference workspace binding: " + "; ".join(issue["message"] for issue in issues))
@@ -324,7 +326,7 @@ def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPl
                 or len(plan["runs"]) != 1
                 or scheduler_type(plan["runs"][0]) != "slurm"
             ):
-                raise ValueError("infer-launch and infer-stop require one ordinary managed Slurm inference run.")
+                raise ValueError("infer-launch and run-stop require one ordinary managed Slurm inference run.")
             return workspace, plan, rows
     raise ValueError(f"Inference plan is not registered in its experiment workspace: {plan_dir}")
 
@@ -358,7 +360,7 @@ def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_s
             raise
 
 
-def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
+def stop_infer_run(plan_dir: str | Path, run_id: str, *, reason: str) -> Path:
     if not reason.strip():
         raise ValueError("Stopping a run requires a non-empty reason.")
     owner_dir = Path(plan_dir).absolute()
@@ -368,6 +370,8 @@ def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
         if locked_workspace != workspace:
             raise ValueError("Inference plan workspace changed before stop.")
         key = validated_run_key(plan["runs"][0])
+        if key[1] != run_id:
+            raise ValueError(f"Unknown run_id: {run_id}")
         _committed, metadata_stop = managed_scheduler.stop_slurm_run_locked(
             workspace,
             rows,
