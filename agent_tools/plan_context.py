@@ -1,9 +1,8 @@
 """Plan-time index summary checks and the plan/blocked-plan Markdown renderings.
 
-Layer 2 kernel, mixed bridge -- it imports ``domain.index_csv`` directly. The
-index summary runs for every task with one implementation, so it stays a direct
-import rather than a per-task adapter hook; adapters only vary its inputs
-(``index_summary_inputs_override``).
+It imports ``domain.index_csv`` directly. The index summary runs for every task
+with one implementation, so it stays a direct import rather than a per-task
+adapter hook; adapters only vary its inputs (``index_summary_inputs_override``).
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from .adapters.registry import all_adapters
 from .configs import runtime_path_base
 from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .domain.index_csv import IndexSummary, index_summary
-from .models import CONFIG_FINETUNE_SECTION, ConfigSummaryInput, coerce_list
+from .models import ConfigSummaryInput, coerce_list
 
 
 class SummaryFailure(TypedDict):
@@ -29,7 +28,7 @@ def context_index_summary(
     validated_sidecar_keys: dict[str, set[str]] | None = None,
 ) -> IndexSummary | SummaryFailure | None:
     paths, config, split_values = _index_summary_inputs(recipe, cfg)
-    finetune: Any = (cfg or {}).get(CONFIG_FINETUNE_SECTION) or {}
+    finetune: Any = (cfg or {}).get("finetune") or {}
     task_type = (finetune.get("task") or {}).get("type")
     label_sidecars_valid = False
     if task_type == "survival":

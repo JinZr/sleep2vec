@@ -1,9 +1,9 @@
 """Deterministic run identities, paths, config bytes, and executable scripts.
 
-Layer 0 leaf. Together with the adapters' ``compile_plan_contract()`` hooks it
-owns what plan publication and registered-plan validation must agree on: run
-identities, control and artifact paths, derived config bytes, complete
-executable scripts, and final-evaluation requirements.
+Together with the adapters' ``compile_plan_contract()`` hooks it owns what plan
+publication and registered-plan validation must agree on: run identities,
+control and artifact paths, derived config bytes, complete executable scripts,
+and final-evaluation requirements.
 
 A task adapter may derive that contract only from the frozen recipe -- its
 strict creator-host plan context and input snapshots, plus plan-owned config

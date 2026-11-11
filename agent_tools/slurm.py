@@ -1,9 +1,9 @@
 """Slurm resource and batch-script contracts and the sbatch / squeue / scancel transport.
 
-Layer 0 leaf. Owns the frozen ``job.sbatch`` shape, resource normalization,
-submission, the per-user ``squeue`` snapshot parser, state categories and
-cancellation. Slurm owns queueing and job state; the batch script records its
-own exit code and runtime commit in the run directory.
+Owns the frozen ``job.sbatch`` shape, resource normalization, submission, the
+per-user ``squeue`` snapshot parser, state categories and cancellation. Slurm
+owns queueing and job state; the batch script records its own exit code and
+runtime commit in the run directory.
 
 Every probe requests a machine-readable format (``--parsable``, an explicit
 ``--format``), so a change to the cluster's human-facing output cannot silently

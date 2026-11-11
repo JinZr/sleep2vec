@@ -1,9 +1,9 @@
 """Validation of the checked-in ``skills/`` playbooks against their manifest.
 
-Layer 0 leaf behind the ``skills`` command. ``REQUIRED_HEADINGS`` defines the
-structural headings every playbook must carry. The validator checks heading
-presence and manifest agreement, but does not validate section body content or
-execute anything a playbook describes.
+Behind the ``skills`` command. ``REQUIRED_HEADINGS`` defines the structural
+headings every playbook must carry. The validator checks heading presence and
+manifest agreement, but does not validate section body content or execute
+anything a playbook describes.
 """
 
 from __future__ import annotations
@@ -33,8 +33,6 @@ class SkillSummary(TypedDict):
     name: Any
     path: Any
     task_types: Any
-    owners: Any
-    relevant_index: Any
 
 
 class SkillValidationStatus(TypedDict):
@@ -62,8 +60,6 @@ def list_skills() -> list[SkillSummary]:
             "name": name,
             "path": item.get("path"),
             "task_types": item.get("task_types", []),
-            "owners": item.get("owners", []),
-            "relevant_index": item.get("relevant_index", []),
         }
         for name, item in sorted(skills.items())
     ]
@@ -75,7 +71,6 @@ def validate_skills() -> SkillValidationResult:
     if not manifest_path.exists():
         return {"ok": False, "issues": ["skills/manifest.yaml is missing."]}
     manifest = load_manifest(manifest_path)
-    agents_text = (REPO_ROOT / "AGENTS.md").read_text() if (REPO_ROOT / "AGENTS.md").exists() else ""
     skills = manifest.get("skills") or {}
     for name, item in skills.items():
         skill_path = REPO_ROOT / str(item.get("path", ""))
@@ -86,12 +81,6 @@ def validate_skills() -> SkillValidationResult:
         for heading in REQUIRED_HEADINGS:
             if heading not in text:
                 issues.append(f"{name}: missing heading {heading}")
-        for owner in item.get("owners", []):
-            if owner not in agents_text:
-                issues.append(f"{name}: owner not present in AGENTS.md: {owner}")
-        for index_path in item.get("relevant_index", []):
-            if not (REPO_ROOT / index_path).exists():
-                issues.append(f"{name}: relevant index path missing: {index_path}")
     for example in (REPO_ROOT / "skills").glob("*/examples/*.yaml"):
         data = yaml.load(example.read_text(), Loader=YAML_SAFE_LOADER)
         if not isinstance(data, dict):

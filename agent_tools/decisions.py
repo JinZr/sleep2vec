@@ -1,9 +1,9 @@
 """The consultation gate: where a recipe is judged ready, blocked, or in question.
 
-Layer 2 kernel. Folds variant rules, path and sidecar validation, adapter
-task hooks, and resolved user decisions into one ``DecisionReport``. Recipe
-and decision-entry structure and experiment ownership are checked once before
-this gate by ``plans.evaluate_recipe``; the helpers for those checks live here.
+Folds variant rules, path and sidecar validation, adapter task hooks, and
+resolved user decisions into one ``DecisionReport``. Recipe and decision-entry
+structure and experiment ownership are checked once before this gate by
+``plans.evaluate_recipe``; the helpers for those checks live here.
 
 Holds the task-specific dispatch hoisted out of ``decision_paths`` and reaches
 tasks through the adapter registry.

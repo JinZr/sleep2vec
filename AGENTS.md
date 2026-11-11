@@ -31,7 +31,7 @@ experiments and legible scientific contracts, not engineering generality.
   before writing it unless that scope is already explicitly authorized.
 - Optimize for the reader, not the CPU. Indexes hold thousands of records and an
   experiment holds dozens of runs; clarity beats micro-optimization here.
-- `agent_tools/` carries deliberate layering because it is the shared control
+- `agent_tools/` carries deliberate structure because it is the shared control
   surface that agents drive. That ceremony is a constraint on that package, not
   a template for the rest of the repo, and not a licence to keep growing it.
 - New code is a liability maintained by one person. Justify it by a concrete

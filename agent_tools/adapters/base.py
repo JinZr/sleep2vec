@@ -1,25 +1,15 @@
-"""Structured per-task boundary for the agent_tools kernel.
+"""Structured per-task boundary for agent_tools.
 
-Layering contract (import directions are one-way):
+Adapters import the modules they build on (models, decision_models, transport,
+plan_rendering, decision_paths, gpu_rules, decision_hparam, plan_hparam,
+experiment_workspace, manifests, repo, slurm) and never the modules that
+dispatch through the registry (decision_rules, decisions, plan_context, plans):
+that import would close a cycle, which the import-graph test rejects.
+decision_paths must never import the registry -- task-specific dispatch that
+used to live there is hoisted into decisions.py instead. configs reads the
+sleep2stat adapter's config summary directly but never the registry.
 
-- Layer 0 (leaf modules adapters MAY import): models, decision_models,
-  transport, plan_rendering, decision_paths, gpu_rules, decision_hparam,
-  plan_hparam, experiment_workspace, manifests, repo, slurm.
-- Layer 1 (this package): adapters/base.py, adapters/<task>.py,
-  adapters/config_providers.py, adapters/registry.py.
-- Layer 2 (kernel orchestration, imports the registry): decision_rules,
-  decisions, plan_context, plans.
-
-Adapters must never import layer-2 modules. decision_paths is layer 0 and
-must never import the registry -- task-specific dispatch that used to live
-there is hoisted into decisions.py instead. configs, and through it
-plan_hparam and decision_hparam, reads adapters/config_providers (which pairs
-the sleep2stat adapter's config summary) but never the registry; the layering
-test rejects any import cycle and any function-local intra-package import.
-
-For the full module ownership map (kernel vs domain vs mixed bridges), the CLI
-command triage, and the tolerated reverse edges, see ../ARCHITECTURE.md and the
-machine-readable partition in ../layering.py.
+For the module ownership overview, see ../ARCHITECTURE.md.
 """
 
 from __future__ import annotations
@@ -77,8 +67,8 @@ class TaskAdapter:
     """One agent task's structured boundary.
 
     Declarative members are class attributes; behavioural hooks are methods
-    with safe defaults ([] / None / False means "fall back to the kernel's
-    generic path"). Kernel dispatch points resolve the adapter through
+    with safe defaults ([] / None / False means "fall back to the shared
+    generic path"). Shared dispatch points resolve the adapter through
     adapters.registry and never hard-code task names.
     """
 
@@ -88,38 +78,38 @@ class TaskAdapter:
     #: registry import time).
     requires_variant: bool = True
 
-    #: Top-level recipe fields allowed beyond the kernel's common set.
+    #: Top-level recipe fields allowed beyond the common set.
     recipe_extra_fields: frozenset[str] = frozenset()
     #: Allowed ``artifacts.*`` fields.
     artifact_fields: frozenset[str] = frozenset()
-    #: Section name -> allowed fields. A missing section key means the kernel
+    #: Section name -> allowed fields. A missing section key means the caller
     #: does not validate that section for this task.
     contract_sections: Mapping[str, frozenset[str]] = {}
     #: Decision fields allowed beyond the consultation policy's
     #: required_for_tasks entries.
     extra_decision_fields: frozenset[str] = frozenset()
     #: Decision field -> (recipe section, field) materialization target.
-    #: Only declared fields are (re)targeted; kernel defaults (e.g.
+    #: Only declared fields are (re)targeted; shared defaults (e.g.
     #: overwrite_policy -> (artifacts, overwrite)) apply otherwise.
     decision_recipe_targets: Mapping[str, tuple[str, str]] = {}
     #: Variants rejected with FAIL "{variant} does not support {task}.".
     unsupported_variants: frozenset[str] = frozenset()
     #: True/False forces the survival-sidecar requirement for this task;
-    #: None keeps the kernel's own inference (decision_paths).
+    #: None keeps the inference in decision_paths.
     requires_survival_sidecars: bool | None = None
     #: True/False forces the multilabel-sidecar requirement for this task;
-    #: None keeps the kernel's own inference (decision_paths).
+    #: None keeps the inference in decision_paths.
     requires_multilabel_sidecars: bool | None = None
     #: Recipe inputs field holding this task's preset path override
     #: (e.g. inference_preset_path); None means the task has no
-    #: recipe-level preset override and the kernel's config fallback applies.
+    #: recipe-level preset override and the shared config fallback applies.
     preset_path_recipe_field: str | None = None
     #: True enables path_issues' dataset-source existence checks (npz
     #: effective preset/index; kaldi data root/manifest).
     validates_dataset_paths: bool = False
     #: Composite task's base-layer task name; non-None means recipes may
     #: carry two layers (_base_recipe/_local_recipe), the base layer closes
-    #: under this task's contract and the kernel runs a recursive base gate.
+    #: under this task's contract and the caller runs a recursive base gate.
     base_task: str | None = None
     #: Task consumes datasets through the finetune-family config: the
     #: finetune_preset_path fallback, survival/multilabel sidecar inference,
@@ -128,7 +118,7 @@ class TaskAdapter:
     #: required_channels decision vs config preset_build consistency check.
     enforces_required_channels: bool = False
     #: Task writes its own complete plan bundle (multi-run) via write_plan;
-    #: the kernel skips the generic single-run materialization and the flat
+    #: the caller skips the generic single-run materialization and the flat
     #: command-emptiness preflight check, and registers the bundle through
     #: the hparam registration phase in run_artifacts (preflight_hparam_plan,
     #: then commit_hparam_plan).
@@ -147,7 +137,7 @@ class TaskAdapter:
     supports_doctor_runtime_diagnostics: bool = False
 
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
-        """Full replacement for the kernel's per-section recipe contract walk
+        """Full replacement for the shared per-section recipe contract walk
         (task_recipe_contract_issues + execution_contract_issues); None means
         use the generic path."""
         return None
@@ -159,8 +149,8 @@ class TaskAdapter:
     def config_override_issues(
         self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> list[DecisionIssue] | None:
-        """None: the kernel runs its generic flat config-contract block.
-        Non-None: the kernel skips that block and appends these issues at the
+        """None: the caller runs its generic flat config-contract block.
+        Non-None: the caller skips that block and appends these issues at the
         original override position (after index issues)."""
         return None
 
@@ -229,14 +219,14 @@ class TaskAdapter:
         allow_unresolved: bool,
         unlock_final_test: bool,
     ) -> list[Path] | None:
-        """Full replacement for the kernel's expected-output path list
+        """Full replacement for the shared expected-output path list
         (both the blocked and success branches); None means use the generic
         single-run path list."""
         return None
 
     def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
         """Externally-managed runtime directory for a planned managed run;
-        None means the kernel records empty runtime/checkpoint dirs."""
+        None means the caller records empty runtime/checkpoint dirs."""
         return None
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
@@ -276,7 +266,7 @@ class TaskAdapter:
 
     def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         """Runnable commands for this task; [] means the recipe cannot be
-        rendered (the kernel reports it as unsupported)."""
+        rendered (the caller reports it as unsupported)."""
         return []
 
     def frozen_commands(self, recipe: dict[str, JsonValue], config_bytes: bytes) -> list[str]:

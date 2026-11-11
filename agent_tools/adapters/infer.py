@@ -1,9 +1,8 @@
 """The ``infer`` task adapter.
 
-Layer 1, domain. Validates a downstream checkpoint evaluation recipe, enforces
-the final unlock for test evaluation, and renders the variant's inference argv.
-It names its evaluation split in the recipe rather than loading the finetune
-split set.
+Validates a downstream checkpoint evaluation recipe, enforces the final unlock
+for test evaluation, and renders the variant's inference argv. It names its
+evaluation split in the recipe rather than loading the finetune split set.
 """
 
 from __future__ import annotations

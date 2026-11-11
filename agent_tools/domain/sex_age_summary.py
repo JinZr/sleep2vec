@@ -1,7 +1,7 @@
 """The ``sex_age_baseline`` config summary, claimed by config shape.
 
-Layer 0 domain leaf, reached through ``adapters.config_providers`` rather than
-by task name: this variant is recognized from the loaded mapping, so a config
+``configs`` reaches it by config shape (or the forced variant) rather than by
+task name: this variant is recognized from the loaded mapping, so a config
 cannot be summarized under the wrong family just by being pointed at the wrong
 task.
 """
@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from ..models import (
-    CONFIG_FINETUNE_SECTION,
     SexAgeConfigSummary,
     SexAgeDataSummary,
     TaskConfigSummary,
@@ -23,7 +22,7 @@ from ..models import (
 from .sidecar_summaries import looks_like_placeholder_path, multilabel_summary, survival_summary
 
 
-def _looks_like_sex_age_baseline_config_data(data: dict[str, Any]) -> bool:
+def looks_like_sex_age_baseline_config_data(data: dict[str, Any]) -> bool:
     model = data.get("model")
     if not isinstance(model, dict):
         model = {}
@@ -54,14 +53,14 @@ def sex_age_baseline_config_summary(
             "data_backend": None,
             "model": {"name": "sex_age_mlp"},
             "data": {},
-            CONFIG_FINETUNE_SECTION: {},
+            "finetune": {},
             "preset_build": {},
             "plausible_labels": [],
             "warnings": [],
             "blocking_issues": [str(exc)],
         }
 
-    raw_finetune = data.get(CONFIG_FINETUNE_SECTION)
+    raw_finetune = data.get("finetune")
     if not isinstance(raw_finetune, dict):
         raw_finetune = {}
     raw_task = raw_finetune.get("task")
@@ -142,7 +141,7 @@ def sex_age_baseline_config_summary(
             },
         },
         "data": data_summary,
-        CONFIG_FINETUNE_SECTION: finetune_summary,
+        "finetune": finetune_summary,
         "preset_build": {},
         "plausible_labels": [],
         "warnings": [],

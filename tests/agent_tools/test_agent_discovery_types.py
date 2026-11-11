@@ -11,18 +11,17 @@ from agent_tools import skills
 def test_manifest_and_list_preserve_raw_values(tmp_path, monkeypatch):
     manifest_path = tmp_path / "manifest.yaml"
     manifest_path.write_text("skills: {}\n")
-    raw = {"skills": {2: {"path": {"raw": True}, "owners": None, "task_types": ("task",)}, 1: {}}}
+    raw = {"skills": {2: {"path": {"raw": True}, "task_types": ("task",)}, 1: {}}}
     monkeypatch.setattr(skills.yaml, "load", lambda text, Loader: raw)
     assert skills.load_manifest(manifest_path) is raw
     monkeypatch.setattr(skills, "load_manifest", lambda: raw)
 
     result = skills.list_skills()
 
-    assert result[0] == {"name": 1, "path": None, "owners": [], "task_types": [], "relevant_index": []}
+    assert result[0] == {"name": 1, "path": None, "task_types": []}
     assert result[1]["name"] == 2
-    for field in ("path", "owners", "task_types"):
+    for field in ("path", "task_types"):
         assert result[1][field] is raw["skills"][2][field]
-    assert result[1]["relevant_index"] == []
 
 
 def test_missing_manifest_omits_skills(tmp_path, monkeypatch):
@@ -33,7 +32,7 @@ def test_missing_manifest_omits_skills(tmp_path, monkeypatch):
 def test_validation_preserves_discovery_mapping_identity(tmp_path, monkeypatch):
     (tmp_path / "skills").mkdir()
     (tmp_path / "skills/manifest.yaml").write_text("skills: {}\n")
-    summaries = [{"name": "raw", "path": None, "owners": {"owner": 1}}]
+    summaries = [{"name": "raw", "path": None, "task_types": {"task": 1}}]
     monkeypatch.setattr(skills, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(skills, "list_skills", lambda: summaries)
 
@@ -67,9 +66,7 @@ def test_discovery_mypy_consumer_contract(tmp_path):
             assert_type(entries, list[SkillSummary])
             assert_type(entries[0]["name"], Any)
             assert_type(entries[0]["path"], Any)
-            assert_type(entries[0]["owners"], Any)
             assert_type(entries[0]["task_types"], Any)
-            assert_type(entries[0]["relevant_index"], Any)
             validation = validate_skills()
             assert_type(validation["ok"], bool)
             assert_type(validation["issues"], list[str])

@@ -1,8 +1,8 @@
 """Backend selection and reusable managed launch and observation primitives.
 
-Layer 0 leaf. Owns the reusable direct GPU-capacity and process lifecycle and
-the Slurm submit/adopt pass, state table and stop. Each launch checks its target against the
-frozen execution snapshot owned by ``execution_snapshot``, and writes that
+Owns the reusable direct GPU-capacity and process lifecycle and the Slurm
+submit/adopt pass, state table and stop. Each launch checks its target against
+the frozen execution snapshot owned by ``execution_snapshot``, and writes that
 snapshot when the plan has none yet.
 
 ``_launch_managed_runs`` selects the direct or Slurm backend for one frozen
@@ -306,12 +306,11 @@ def observe_run(
     previous: Mapping[str, JsonValue] | None = None,
     *,
     health: bool = False,
-    default_script_commits_terminal_status: bool = False,
 ) -> dict[str, JsonValue]:
     """Return a direct-run observation merged with previous (or row) evidence.
 
     Passes the row's observation fields to status_row and derives terminal-status
-    ownership from prior metadata, using the supplied default only as fallback.
+    ownership from prior metadata, which defaults to monitor-owned.
     health enables additional probes. Reads local evidence but does not
     commit manifests, launch or stop runs; the caller persists the returned row.
     This entrypoint does not dispatch Slurm rows to observe_slurm_run. Unhandled
@@ -330,10 +329,7 @@ def observe_run(
         Path(run_dir),
         observation,
         prior,
-        script_commits_terminal_status=script_commits_terminal_status(
-            prior,
-            default=default_script_commits_terminal_status,
-        ),
+        script_commits_terminal_status=script_commits_terminal_status(prior),
         health=health,
     )
 

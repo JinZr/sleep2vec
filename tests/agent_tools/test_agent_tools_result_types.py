@@ -115,12 +115,11 @@ def test_result_types_reach_callers(tmp_path: Path):
                 from agent_tools.domain.sex_age_summary import sex_age_baseline_config_summary
                 from agent_tools.domain.sidecar_summaries import survival_summary, multilabel_summary
                 from agent_tools.adapters.sleep2stat import sleep2stat_config_summary
-                from agent_tools.adapters.config_providers import CONFIG_SUMMARY_PROVIDERS
 
                 for diagnostic in (
                     configs.config_summary(Path("config.yaml")),
                     sleep2stat_config_summary(Path("config.yaml")),
-                    CONFIG_SUMMARY_PROVIDERS[0].summarize(Path("config.yaml")),
+                    sex_age_baseline_config_summary(Path("config.yaml")),
                 ):
                     warnings: list[str] = diagnostic["warnings"]
                     config_path: str = diagnostic["config_path"]

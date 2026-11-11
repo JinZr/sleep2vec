@@ -1,12 +1,12 @@
 """Materialization of hyper-parameter plans: layouts, combos, and final evaluation.
 
-Mixed bridge -- hparam plan materialization over the domain-aware primitives.
-Owns search-override application (JSON-pointer writes into config bytes), the
-per-run directory layout, and the frozen final-evaluation config snapshot,
-including the test-unlock gate that decides whether a final script may be
-emitted at all. Registering a materialized plan (target preflight, then the
-run-manifest commit) belongs to ``run_artifacts``, which calls back into the
-candidate-config and output-path checks and the preflight-card renderer here.
+Hparam plan materialization over the domain-aware primitives. Owns
+search-override application (JSON-pointer writes into config bytes), the per-run
+directory layout, and the frozen final-evaluation config snapshot, including the
+test-unlock gate that decides whether a final script may be emitted at all.
+Registering a materialized plan (target preflight, then the run-manifest commit)
+belongs to ``run_artifacts``, which calls back into the candidate-config and
+output-path checks and the preflight-card renderer here.
 """
 
 from __future__ import annotations
@@ -53,7 +53,6 @@ from .experiment_workspace import (
 )
 from .manifests import write_json, write_text
 from .models import (
-    CONFIG_FINETUNE_SECTION,
     REPO_ROOT,
     YAML_SAFE_LOADER,
     BoundFinalEvalConfigSnapshot,
@@ -1070,7 +1069,7 @@ def render_hparam_preflight_card(
                 config_bytes=config_bytes,
             )
         model = summaries[config_bytes].get("model") or {}
-        finetune = summaries[config_bytes].get(CONFIG_FINETUNE_SECTION) or {}
+        finetune = summaries[config_bytes].get("finetune") or {}
         label_task = finetune.get("survival") or finetune.get("multilabel") or {}
         architecture = model.get("backbone") or model.get("name")
         if architecture in (None, ""):

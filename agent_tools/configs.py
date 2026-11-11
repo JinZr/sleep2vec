@@ -1,10 +1,10 @@
 """Thin shell that resolves a config path to its structured summary.
 
-Mixed bridge: dispatches through the ``adapters.config_providers`` tables for
-config families claimed by shape, and otherwise delegates the summary body to
-``domain.finetune_summary``. Also owns the recipe-level loader that summarizes
-a recipe's ``inputs.config`` relative to the recipe's runtime workdir. Never
-imports the adapter registry.
+Config families claimed by shape come first: a sleep2stat config, then a
+``sex_age_baseline`` config (also forced by that variant). Everything else gets
+the generic body from ``domain.finetune_summary``. Also owns the recipe-level
+loader that summarizes a recipe's ``inputs.config`` relative to the recipe's
+runtime workdir. Never imports the adapter registry.
 """
 
 from __future__ import annotations
@@ -14,8 +14,9 @@ from tempfile import NamedTemporaryFile
 
 import yaml
 
-from .adapters.config_providers import CONFIG_SHAPE_SUMMARIES, CONFIG_SUMMARY_PROVIDERS
+from .adapters.sleep2stat import looks_like_sleep2stat_config_data, sleep2stat_config_summary
 from .domain.finetune_summary import finetune_summary_body, guess_variant
+from .domain.sex_age_summary import looks_like_sex_age_baseline_config_data, sex_age_baseline_config_summary
 from .models import REPO_ROOT, YAML_SAFE_LOADER, ConfigSummary, load_yaml, repo_relative, resolve_repo_path
 
 
@@ -47,25 +48,24 @@ def config_summary(
         summary_path = Path(snapshot.name)
     summary: ConfigSummary
     try:
-        for matches, summarize in CONFIG_SHAPE_SUMMARIES:
-            if matches(data):
-                summary = summarize(summary_path)
-                summary["config_path"] = repo_relative(resolved)
-                return summary
-        for provider in CONFIG_SUMMARY_PROVIDERS:
-            structural_match = provider.matches(data)
-            if (provider.force_variant is not None and variant == provider.force_variant) or structural_match:
-                summary = provider.summarize(
-                    summary_path,
-                    validate_survival_local_paths=validate_survival_local_paths,
-                    local_path_base=local_path_base,
-                    validated_sidecar_keys=validated_sidecar_keys,
-                )
-                summary["config_path"] = repo_relative(resolved)
-                # Structural ownership is authoritative; variant_guess may only reflect the config's directory name.
-                if structural_match and provider.force_variant is not None:
-                    summary["authoritative_variant"] = provider.force_variant
-                return summary
+        # A shape claim wins over any variant the caller names.
+        if looks_like_sleep2stat_config_data(data):
+            summary = sleep2stat_config_summary(summary_path)
+            summary["config_path"] = repo_relative(resolved)
+            return summary
+        structural_match = looks_like_sex_age_baseline_config_data(data)
+        if variant == "sex_age_baseline" or structural_match:
+            summary = sex_age_baseline_config_summary(
+                summary_path,
+                validate_survival_local_paths=validate_survival_local_paths,
+                local_path_base=local_path_base,
+                validated_sidecar_keys=validated_sidecar_keys,
+            )
+            summary["config_path"] = repo_relative(resolved)
+            # Structural ownership is authoritative; variant_guess may only reflect the config's directory name.
+            if structural_match:
+                summary["authoritative_variant"] = "sex_age_baseline"
+            return summary
         summary = finetune_summary_body(
             summary_path,
             validate_survival_local_paths=validate_survival_local_paths,

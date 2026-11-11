@@ -1,9 +1,9 @@
 """Single source of truth for decision-field <-> recipe/config path mappings.
 
-Layer 0 leaf: imports only stdlib and ``models``; kernel modules (decisions,
-plans) consume these tables so the read side (``_recipe_field_value``) and the
-write side (``canonical_fields``) share one mapping instead of mirroring each
-other. Per-task write-target overrides still live on the adapters as
+Imports only the standard library. decisions and plans consume these tables so
+the read side (``_recipe_field_value``) and the write side
+(``canonical_fields``) share one mapping instead of mirroring each other.
+Per-task write-target overrides still live on the adapters as
 ``decision_recipe_targets``; this module holds the cross-task base tables and
 the merge helper.
 
@@ -16,8 +16,6 @@ the read tables never do.
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from .models import CONFIG_FINETUNE_SECTION
 
 
 @dataclass(frozen=True)
@@ -112,8 +110,8 @@ class ConfigField:
 # and plans' config_contracts (decision-vs-config consistency check).
 CONFIG_FIELDS: dict[str, ConfigField] = {
     "data_backend": ConfigField(("data_backend",), "data.backend"),
-    "selection_metric": ConfigField((CONFIG_FINETUNE_SECTION, "task", "monitor"), "finetune.task.monitor"),
-    "selection_mode": ConfigField((CONFIG_FINETUNE_SECTION, "task", "monitor_mod"), "finetune.task.monitor_mod"),
+    "selection_metric": ConfigField(("finetune", "task", "monitor"), "finetune.task.monitor"),
+    "selection_mode": ConfigField(("finetune", "task", "monitor_mod"), "finetune.task.monitor_mod"),
     "required_channels": ConfigField(("preset_build", "required_channels"), "preset_build.required_channels"),
     "min_channels": ConfigField(("preset_build", "min_channels"), "preset_build.min_channels"),
 }

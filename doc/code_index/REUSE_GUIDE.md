@@ -58,7 +58,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Decision-field to recipe/config path mapping | `RecipeField`, `ConfigField`, and `merged_write_targets` in [`agent_tools/schema_map.py`](../../agent_tools/schema_map.py); adapters contribute only `decision_recipe_targets` overrides | mirrored read/write tables in decisions, plans, or adapters |
 | Consultation questions and report text | `questions_payload`, `questions_markdown`, and `report_text` in [`agent_tools/markdown.py`](../../agent_tools/markdown.py) | command-local renderers |
 | Agent plan publication and doctor | `build_plan` and `preflight_plan` through [`agent_tools/plans.py`](../../agent_tools/plans.py); `doctor` is `preflight_plan` with `output_dir=None`, with the recipe-level config summary from `load_config_summary_for_recipe` in [`agent_tools/configs.py`](../../agent_tools/configs.py) and the plan-time index summary and plan Markdown in [`agent_tools/plan_context.py`](../../agent_tools/plan_context.py); `plan_tree_sha256` in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) compares staged plans deterministically | skills or adapters, a separate doctor evaluation path, or re-validation passes inside one plan |
-| Agent task extension | adapter protocol in [`agent_tools/adapters/base.py`](../../agent_tools/adapters/base.py) and registry in [`agent_tools/adapters/registry.py`](../../agent_tools/adapters/registry.py); the package re-exports neither | kernel task-name branches |
+| Agent task extension | adapter protocol in [`agent_tools/adapters/base.py`](../../agent_tools/adapters/base.py) and registry in [`agent_tools/adapters/registry.py`](../../agent_tools/adapters/registry.py); the package re-exports neither | task-name branches in shared modules |
 | Recipe loading and layer merge | `load_recipe_with_base` and `merge_recipe_layers` in [`agent_tools/recipes.py`](../../agent_tools/recipes.py) | individual commands or alternate base/local merge logic |
 | Managed workspace identity and plan registration | canonical read/merge/CAS owners, the shared plan-registration lock, `managed_run_lock` (the run-manifest lock that launches and run scripts hold; registration/publication locks order first), and frozen-row recovery validation in [`agent_tools/experiment_workspace.py`](../../agent_tools/experiment_workspace.py), with semantic research-log validation and append publication in [`agent_tools/research_log.py`](../../agent_tools/research_log.py) | hparam, planning, or monitoring-local locks, lifecycle reducers, tables, manifest writers, or Markdown appenders |
 | Managed I/O | [`agent_tools/experiment_io.py`](../../agent_tools/experiment_io.py), including strict control-bundle reads, descriptor-validated output reads, and conditional atomic replacement that distinguishes conflicts from failures | each experiment command |
@@ -158,9 +158,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 ### Agent tooling
 
 - Treat `decisions.py`, `plans.py`, and `experiments.py` as public facades.
-- Extend tasks through adapters and declarations, not sleep-specific kernel branches or a new runtime;
-  use existing validators and package-local entrypoints. Follow
-  [`ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and its layering test.
+- Extend tasks through adapters and declarations, not sleep-specific branches in shared modules or a new
+  runtime; use existing validators and package-local entrypoints. Follow
+  [`ARCHITECTURE.md`](../../agent_tools/ARCHITECTURE.md) and its import-graph test.
 - Keep task input checks in adapters and shared consultation in `decisions.py` / `plans.py`;
   [consultation and diagnostics](../agent_contracts/task_recipe.md#consultation-and-diagnostics)
   owns decision gates and per-call validation reuse.
@@ -182,7 +182,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   that `read_run_manifest` and `merge_run_manifest` return; observations, in-flight launch rows and frozen
   plan runs are `dict[str, JsonValue]` or read-only `Mapping[str, JsonValue]`. `preflight_plan` returns the
   recipe broadly typed, because contract-blocked early returns precede the freeze check; `_build_plan`
-  narrows it to `dict[str, JsonValue]` on its pass path, and kernel functions that write into the frozen
+  narrows it to `dict[str, JsonValue]` on its pass path, and the plan functions that write into the frozen
   recipe take that type, as do the `TaskAdapter` recipe hooks it calls (`bind_effective_recipe`,
   `frozen_commands`, `planned_plan_paths`, `frozen_input_paths`, `configured_input_issues`, `task_issues`).
   Builder rows whose `rank`, `score` or `epoch` is consumed numerically stay `dict[str, Any]`, and

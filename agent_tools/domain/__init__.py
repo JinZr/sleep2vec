@@ -1,4 +1,4 @@
-"""Domain-specific summary helpers (Layer 0 leaves; no reverse deps on adapters/kernel).
+"""sleep2vec-specific config, sidecar, preset, and index summaries.
 
 Import submodules explicitly (``from .domain.finetune_summary import ...``); never
 aggregate through this package (``from .domain import ...``). Re-exporting the

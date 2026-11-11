@@ -1,9 +1,7 @@
 """Dataset index CSV summaries: coverage, labels, task covariates, and sampled path checks.
 
-Domain module, but a config-summary *consumer* rather than a leaf: it imports
-``configs`` and ``configs`` never imports it back, so the edge stays one-way and
-the guard tolerates it. Removing it would mean taking the config summary as an
-argument instead.
+A config-summary *consumer*: it imports ``configs`` and ``configs`` never
+imports it back.
 
 That import is also why this module must not be aggregated in
 ``domain/__init__``; see the package docstring.

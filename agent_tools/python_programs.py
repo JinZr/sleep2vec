@@ -1,6 +1,6 @@
-"""Canonical loader for the embedded kernel programs run through ``python -c``.
+"""Canonical loader for the embedded programs run through ``python -c``.
 
-Layer 0 leaf, used by ``transport`` and the launch, probe and plan-rendering modules.
+Used by ``transport`` and the launch, probe and plan-rendering modules.
 ``python_program_sources/*.py.src`` are fragments whose names resolve only once
 concatenated, so they do not lint standalone and flake8's directory walk never
 sees them. ``utils/complexity_check.py`` assembles every registered program

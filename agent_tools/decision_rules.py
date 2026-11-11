@@ -1,7 +1,7 @@
 """The pure, dictionary-only recipe structure contract.
 
-Layer 2 kernel: registered task and variant, top-level closure, runtime, task
-sections, execution, and artifacts, all decided from the recipe mapping alone.
+Registered task and variant, top-level closure, runtime, task sections,
+execution, and artifacts, all decided from the recipe mapping alone.
 
 ``plans`` adds authored/base/local layer orchestration and policy-dependent
 decision validation on top. ``run_artifacts`` reuses this structural owner for
