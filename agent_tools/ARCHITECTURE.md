@@ -58,7 +58,9 @@ Launch and observation:
 - `hparam_selection`: candidate ranking on the frozen selection split.
 - `run_artifacts`: registered-plan and run-artifact reads, and hparam plan registration.
 - `runtime_lock`, `runtime_sync`: the per-checkout runtime lock, and the clean `origin/main` fast-forward taken under it.
-- `transport`, `python_programs`: local shell execution and the embedded programs it runs.
+- `transport`: local shell quoting and the bounded `bash -lc` runner.
+- `python_programs`: the embedded `python -c` programs, assembled from `python_program_sources/` fragments.
+- `process_identity`: the process start token and group-liveness probe, imported by `run_evidence` and embedded verbatim in the launch wrapper so both sides compute the token from one source.
 - `progress`: the run-side `status/progress.json` and `status/events.jsonl`.
 
 Experiment workspace:

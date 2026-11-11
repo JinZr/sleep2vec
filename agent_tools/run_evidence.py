@@ -34,6 +34,7 @@ from .experiment_workspace import (
 )
 from .manifests import read_json, utc_now
 from .models import JsonValue, is_full_git_object_id
+from .process_identity import process_group_running, start_token
 from .progress import read_progress
 
 RUN_EVIDENCE_FIELDS = {
@@ -459,33 +460,34 @@ def _parse_process_identity(text: str, path: Any) -> ProcessIdentity:
 def process_identity_running(row: Mapping[str, JsonValue], identity: ProcessIdentity) -> bool | None:
     """Probe a managed process group after checking populated canonical identity.
 
-    True/False reports the probe's group_running value; None means the command
-    failed, not that the group exited. Canonical mismatches, malformed successful
-    responses and an observed leader with a different identity raise
+    True/False reports whether the group still has a non-zombie member; None
+    means the probe could not tell (unreadable start token, uncertain process
+    table, or an OSError while inspecting), not that the group exited.
+    Canonical mismatches and an observed leader with a different identity raise
     ProcessIdentityError. A missing leader can still leave a running group.
-    Executes a local read-only probe without changing lifecycle state.
+    Reads local process state without changing lifecycle state.
     """
     _require_matching_process_identity(row, identity)
-    result = run_row_command(
-        transport.python_program_command("run_evidence.process_probe", identity["pid"], identity["process_group_id"])
-    )
-    if result.returncode != 0:
-        return None
+    pid = identity["pid"]
     try:
-        payload = json.loads(result.stdout)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ProcessIdentityError(
-            f"Process identity probe returned malformed output for PID {identity['pid']}."
-        ) from exc
-    if not isinstance(payload, dict) or not isinstance(payload.get("group_running"), bool):
-        raise ProcessIdentityError(f"Process identity probe returned malformed output for PID {identity['pid']}.")
-    leader = payload.get("leader")
-    if leader is not None:
-        if not isinstance(leader, dict) or any(
-            str(leader.get(field)) != str(identity[field]) for field in PROCESS_IDENTITY_FIELDS
-        ):
-            raise ProcessIdentityError(f"PID {identity['pid']} was reused by a different process.")
-    return payload["group_running"]
+        try:
+            leader_pgid = os.getpgid(pid)
+        except ProcessLookupError:
+            leader = None
+        else:
+            token = start_token(pid)
+            if token is None:
+                return None
+            leader = {"pid": pid, "process_group_id": leader_pgid, "process_start_token": token}
+        group_running = process_group_running(identity["process_group_id"])
+    except OSError:
+        # An inspection failure leaves the group state unknown; callers keep that apart from an exited group.
+        return None
+    if group_running is None:
+        return None
+    if leader is not None and any(str(leader[field]) != str(identity[field]) for field in PROCESS_IDENTITY_FIELDS):
+        raise ProcessIdentityError(f"PID {pid} was reused by a different process.")
+    return group_running
 
 
 def _require_matching_process_identity(row: Mapping[str, JsonValue], identity: ProcessIdentity) -> None:

@@ -13,7 +13,6 @@ from types import SimpleNamespace
 from agent_tool_test_helpers import FakeLauncher, call_while_run_lock_holder_commits, run_cli
 import pytest
 from test_agent_tools_hparam_runtime import (
-    _embedded_process_group_running,
     _hparam_recipe,
     _process_identity,
     _read_table,
@@ -33,6 +32,7 @@ from agent_tools import (
     managed_scheduler,
     manifests,
     plan_hparam,
+    process_identity,
     run_artifacts,
     run_evidence,
     slurm,
@@ -703,6 +703,13 @@ def test_hparam_stop_rejects_a_reused_process_before_canonical_commit(tmp_path: 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
 
 
+def _fake_process_probe(monkeypatch, leader: dict[str, int | str], group_running: bool | None) -> None:
+    """Make the in-process probe observe ``leader`` as the live PID and report ``group_running``."""
+    monkeypatch.setattr(run_evidence.os, "getpgid", lambda _pid: leader["process_group_id"])
+    monkeypatch.setattr(run_evidence, "start_token", lambda _pid: leader["process_start_token"])
+    monkeypatch.setattr(run_evidence, "process_group_running", lambda _pgid: group_running)
+
+
 @pytest.mark.parametrize(
     ("leader_state", "live_child", "expected"),
     [
@@ -711,7 +718,7 @@ def test_hparam_stop_rejects_a_reused_process_before_canonical_commit(tmp_path: 
         pytest.param("Z", True, True, id="live-child"),
     ],
 )
-def test_embedded_process_group_probe_requires_a_non_zombie_member(
+def test_process_group_probe_requires_a_non_zombie_member(
     tmp_path: Path, leader_state: str, live_child: bool, expected: bool
 ):
     proc_root = tmp_path / "proc"
@@ -721,44 +728,35 @@ def test_embedded_process_group_probe_requires_a_non_zombie_member(
         _write_proc_stat(proc_root, 124, 123, "S")
     _write_proc_stat(proc_root, 200, 200, "S")
 
-    assert _embedded_process_group_running(proc_root, 123) is expected
+    assert process_identity.process_group_running(123, str(proc_root)) is expected
 
 
-def test_embedded_process_group_probe_uses_the_live_leader_fast_path(tmp_path: Path, monkeypatch):
+def test_process_group_probe_uses_the_live_leader_fast_path(tmp_path: Path, monkeypatch):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     _write_proc_stat(proc_root, 123, 123, "S")
     monkeypatch.setattr(
-        run_evidence.os,
+        process_identity.os,
         "listdir",
         lambda *_args: (_ for _ in ()).throw(AssertionError("live leader should not scan /proc")),
     )
 
-    assert _embedded_process_group_running(proc_root, 123) is True
+    assert process_identity.process_group_running(123, str(proc_root)) is True
 
 
-def test_embedded_process_group_probe_preserves_uncertainty_from_unreadable_proc_entries(tmp_path: Path):
+def test_process_group_probe_preserves_uncertainty_from_unreadable_proc_entries(tmp_path: Path):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
     _write_proc_stat(proc_root, 123, 123, "Z")
     (proc_root / "124" / "stat").mkdir(parents=True)
 
-    assert _embedded_process_group_running(proc_root, 123) is None
+    assert process_identity.process_group_running(123, str(proc_root)) is None
 
 
 @pytest.mark.parametrize("group_running", [False, True], ids=["zombie-only", "live-child"])
 def test_process_monitor_uses_group_liveness_for_a_matching_leader(monkeypatch, group_running: bool):
     identity = _process_identity()
-    monkeypatch.setattr(
-        run_evidence,
-        "run_row_command",
-        lambda *_args: subprocess.CompletedProcess(
-            [],
-            0,
-            json.dumps({"leader": identity, "group_running": group_running}) + "\n",
-            "",
-        ),
-    )
+    _fake_process_probe(monkeypatch, identity, group_running)
 
     assert run_evidence.process_identity_running({}, identity) is group_running
 
@@ -766,19 +764,36 @@ def test_process_monitor_uses_group_liveness_for_a_matching_leader(monkeypatch, 
 def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
     identity = _process_identity()
     reused = {**identity, "process_start_token": "proc:other-start"}
-    monkeypatch.setattr(
-        run_evidence,
-        "run_row_command",
-        lambda *_args: subprocess.CompletedProcess(
-            [],
-            0,
-            json.dumps({"leader": reused, "group_running": True}) + "\n",
-            "",
-        ),
-    )
+    _fake_process_probe(monkeypatch, reused, True)
 
     with pytest.raises(RuntimeError, match="was reused"):
         run_evidence.process_identity_running({}, identity)
+
+
+@pytest.mark.parametrize(
+    ("leader_error", "token", "group_running", "expected"),
+    [
+        pytest.param(None, None, True, None, id="unreadable-start-token"),
+        # An uncertain group reads as unknown before the observed leader is compared with the identity.
+        pytest.param(None, "proc:other-start", None, None, id="uncertain-group"),
+        pytest.param(PermissionError(), "proc:unit-start", True, None, id="leader-inspection-error"),
+        pytest.param(ProcessLookupError(), None, False, False, id="leader-gone"),
+        pytest.param(ProcessLookupError(), None, True, True, id="leader-gone-group-alive"),
+    ],
+)
+def test_process_monitor_reports_an_uncertain_probe_as_unknown(
+    monkeypatch, leader_error: OSError | None, token: str | None, group_running: bool | None, expected: bool | None
+):
+    identity = _process_identity()
+    monkeypatch.setattr(
+        run_evidence.os,
+        "getpgid",
+        lambda _pid: (_ for _ in ()).throw(leader_error) if leader_error is not None else 123,
+    )
+    monkeypatch.setattr(run_evidence, "start_token", lambda _pid: token)
+    monkeypatch.setattr(run_evidence, "process_group_running", lambda _pgid: group_running)
+
+    assert run_evidence.process_identity_running({}, identity) is expected
 
 
 @pytest.mark.parametrize(
@@ -884,16 +899,7 @@ def test_status_marks_a_zombie_only_managed_process_finished(tmp_path: Path, mon
         "status": "running",
         **identity,
     }
-    monkeypatch.setattr(
-        run_evidence,
-        "run_row_command",
-        lambda *_args: subprocess.CompletedProcess(
-            [],
-            0,
-            json.dumps({"leader": identity, "group_running": False}) + "\n",
-            "",
-        ),
-    )
+    _fake_process_probe(monkeypatch, identity, False)
 
     observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
 
@@ -936,16 +942,7 @@ def test_status_keeps_a_reused_managed_process_identity_capacity_blocking(
         "status": "running",
         **identity,
     }
-    monkeypatch.setattr(
-        run_evidence,
-        "run_row_command",
-        lambda *_args: subprocess.CompletedProcess(
-            [],
-            0,
-            json.dumps({"leader": reused, "group_running": True}) + "\n",
-            "",
-        ),
-    )
+    _fake_process_probe(monkeypatch, reused, True)
 
     observed = run_evidence.status_row(
         tmp_path,
