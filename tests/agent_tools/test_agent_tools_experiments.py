@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -11,7 +10,7 @@ import threading
 from agent_tool_test_helpers import call_while_run_lock_holder_commits
 import pytest
 
-from agent_tools import experiment_io, experiment_workspace, experiments
+from agent_tools import experiment_io, experiments
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -385,29 +384,13 @@ def test_experiment_note_rejects_embedded_entry_marker_before_writing(tmp_path: 
     before = (root / "RESEARCH_LOG.md").read_bytes()
     injected_marker = '<!-- agent-tools-research-entry id="injected" ' f'sha256="{"0" * 64}" -->'
 
-    with pytest.raises(ValueError, match="digest differs"):
+    with pytest.raises(ValueError, match="must not contain a research log entry marker"):
         experiments.append_experiment_note(
             root,
             _research_entry(tmp_path, "obs-marker", body=injected_marker),
         )
 
     assert (root / "RESEARCH_LOG.md").read_bytes() == before
-
-
-@pytest.mark.parametrize("target_name", ["RESEARCH_LOG.md", ".RESEARCH_LOG.md.cas.lock"])
-def test_experiment_note_rejects_aliased_log_or_lock_before_writing(tmp_path: Path, target_name: str):
-    root = tmp_path / "workspace"
-    experiments.init_experiment(root, _experiment_spec(tmp_path))
-    target = root / target_name
-    if target.exists():
-        target.unlink()
-    os.link(root / "run_manifest.tsv", target)
-    before = _workspace_files(root)
-
-    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
-        experiments.append_experiment_note(root, _research_entry(tmp_path, "obs-alias"))
-
-    assert _workspace_files(root) == before
 
 
 def test_concurrent_experiment_notes_preserve_both_entries(tmp_path: Path):
@@ -481,144 +464,6 @@ def test_experiment_note_rejects_invalid_closed_schema_without_writing(
         experiments.append_experiment_note(root, entry_path)
 
     assert (root / "RESEARCH_LOG.md").read_bytes() == before
-
-
-def test_experiment_note_rejects_aliased_scoped_step_before_reading_it(tmp_path: Path):
-    root = tmp_path / "workspace"
-    experiments.init_experiment(root, _experiment_spec(tmp_path))
-    _write_step(root)
-    step_manifest = root / "steps" / "train-model" / "step.yaml"
-    step_manifest.unlink()
-    os.link(root / "run_manifest.tsv", step_manifest)
-    before = (root / "RESEARCH_LOG.md").read_bytes()
-
-    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
-        experiments.append_experiment_note(
-            root,
-            _research_entry(tmp_path, "obs-step-alias", scope={"step_id": "train-model"}),
-        )
-
-    assert (root / "RESEARCH_LOG.md").read_bytes() == before
-
-
-def test_research_log_retries_conflict_and_preserves_competing_entry(tmp_path: Path, monkeypatch):
-    root = tmp_path / "workspace"
-    entry = json.loads(_research_entry(tmp_path, "obs-new").read_text())
-    competing = dict(entry)
-    competing.update({"id": "obs-competing", "title": "Competing observation"})
-    competing_root = tmp_path / "competing"
-    competing_root.mkdir()
-    competing_path, _competing_id, _competing_appended = experiment_workspace.append_research_log(
-        competing_root, competing, experiment_id="unit", managed_rows=[]
-    )
-    competing_text = competing_path.read_text()
-    state = {
-        "text": experiment_workspace.RESEARCH_LOG_PREAMBLE,
-        "attempts": 0,
-        "paths": [],
-    }
-
-    def validate(_root, paths):
-        state["paths"] = [Path(path) for path in paths]
-
-    def commit(_path, replacement, _expected_sha256, **_kwargs):
-        state["attempts"] += 1
-        if state["attempts"] == 1:
-            state["text"] = competing_text
-            return False
-        state["text"] = replacement
-        return True
-
-    monkeypatch.setattr(experiment_workspace.exp_io, "validate_managed_output_paths", validate)
-    monkeypatch.setattr(experiment_workspace.exp_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        experiment_workspace.exp_io,
-        "read_text_at",
-        lambda *_args, **_kwargs: state["text"],
-    )
-    monkeypatch.setattr(experiment_workspace.exp_io, "conditional_atomic_replace_text_at", commit)
-
-    _path, _entry_id, appended = experiment_workspace.append_research_log(
-        root,
-        entry,
-        experiment_id="unit",
-        managed_rows=[],
-    )
-
-    assert appended is True
-    assert state["attempts"] == 2
-    assert state["paths"] == [root / "RESEARCH_LOG.md", root / ".RESEARCH_LOG.md.cas.lock"]
-    assert state["text"].count('id="obs-competing"') == 1
-    assert state["text"].count('id="obs-new"') == 1
-
-
-def test_uncertain_research_log_commit_is_idempotent_on_retry(tmp_path: Path, monkeypatch):
-    root = tmp_path / "workspace"
-    entry = json.loads(_research_entry(tmp_path, "obs-timeout").read_text())
-    state = {"text": experiment_workspace.RESEARCH_LOG_PREAMBLE, "raise_timeout": True}
-
-    def commit(_path, replacement, _expected_sha256, **_kwargs):
-        state["text"] = replacement
-        if state["raise_timeout"]:
-            state["raise_timeout"] = False
-            raise RuntimeError("Commit outcome unknown: response timed out")
-        return True
-
-    monkeypatch.setattr(experiment_workspace.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_workspace.exp_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        experiment_workspace.exp_io,
-        "read_text_at",
-        lambda *_args, **_kwargs: state["text"],
-    )
-    monkeypatch.setattr(experiment_workspace.exp_io, "conditional_atomic_replace_text_at", commit)
-
-    with pytest.raises(RuntimeError, match="timed out"):
-        experiment_workspace.append_research_log(
-            root,
-            entry,
-            experiment_id="unit",
-            managed_rows=[],
-        )
-
-    _path, _entry_id, appended = experiment_workspace.append_research_log(
-        root,
-        entry,
-        experiment_id="unit",
-        managed_rows=[],
-    )
-
-    assert appended is False
-    assert state["text"].count('id="obs-timeout"') == 1
-
-
-def test_research_log_fails_after_three_conflicts(tmp_path: Path, monkeypatch):
-    root = tmp_path / "workspace"
-    entry = json.loads(_research_entry(tmp_path, "obs-conflict").read_text())
-    attempts = []
-
-    monkeypatch.setattr(experiment_workspace.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_workspace.exp_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(
-        experiment_workspace.exp_io,
-        "read_text_at",
-        lambda *_args, **_kwargs: experiment_workspace.RESEARCH_LOG_PREAMBLE,
-    )
-    monkeypatch.setattr(
-        experiment_workspace.exp_io,
-        "conditional_atomic_replace_text_at",
-        lambda *_args, **_kwargs: attempts.append("conflict") is None and False,
-    )
-
-    with pytest.raises(RuntimeError, match="three append attempts"):
-        experiment_workspace.append_research_log(
-            root,
-            entry,
-            experiment_id="unit",
-            managed_rows=[],
-        )
-
-    assert attempts == ["conflict", "conflict", "conflict"]
 
 
 def test_experiment_init_rejects_non_string_id_before_writing(tmp_path: Path):
@@ -772,39 +617,6 @@ def test_experiment_monitor_delegates_manifest_validation_before_mutation(tmp_pa
     assert _workspace_files(tmp_path) == before
 
 
-def test_experiment_reinit_rejects_readme_alias_before_writing(tmp_path: Path):
-    spec = _experiment_spec(tmp_path.parent)
-    experiments.init_experiment(tmp_path, spec)
-    run_manifest = tmp_path / "run_manifest.tsv"
-    run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\trunning\n")
-    readme = tmp_path / "README.md"
-    readme.unlink()
-    os.link(run_manifest, readme)
-    before = _workspace_files(tmp_path)
-
-    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
-        experiments.init_experiment(tmp_path, spec)
-
-    assert _workspace_files(tmp_path) == before
-
-
-def test_experiment_finalize_rejects_report_alias_before_writing(tmp_path: Path):
-    spec = _experiment_spec(tmp_path.parent)
-    experiments.init_experiment(tmp_path, spec)
-    run_manifest = tmp_path / "run_manifest.tsv"
-    run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n")
-    final = tmp_path / "reports" / "final.md"
-    os.link(run_manifest, final)
-    report = tmp_path.parent / "final.md"
-    report.write_text("# Final\n\nValidation-selected result.\n")
-    before = _workspace_files(tmp_path)
-
-    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
-        experiments.finalize_experiment(tmp_path, report)
-
-    assert _workspace_files(tmp_path) == before
-
-
 def test_experiment_finalizes_completed_workspace(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
@@ -836,10 +648,6 @@ def test_experiment_commands_read_canonical_rows_only_under_run_lock(tmp_path: P
         )
     report = tmp_path.parent / "final.md"
     report.write_text("# Final\n\nValidation-selected result.\n")
-    if reader == "finalize_snapshot":
-        # The harness races only the first manifest read, so skip the rows read that precedes the snapshot.
-        rows = experiment_workspace.read_run_manifest(tmp_path)
-        monkeypatch.setattr(experiments, "_finalizable_rows", lambda _root: rows)
     readers = {
         "status": lambda: experiments.experiment_status(tmp_path)["runs"],
         "finalize_snapshot": lambda: experiments.finalize_experiment(tmp_path, report),
@@ -852,37 +660,6 @@ def test_experiment_commands_read_canonical_rows_only_under_run_lock(tmp_path: P
         assert "status: completed" in (tmp_path / "experiment.yaml").read_text()
     else:
         assert result == []
-
-
-def test_experiment_finalize_records_preparation_before_manifest_conflict(tmp_path: Path, monkeypatch):
-    spec = _experiment_spec(tmp_path.parent)
-    experiments.init_experiment(tmp_path, spec)
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n"
-    )
-    report = tmp_path.parent / "final.md"
-    report.write_text("# Final\n\nValidation-selected result.\n")
-    manifest = tmp_path / "experiment.yaml"
-    before = manifest.read_bytes()
-    real_commit = experiment_io.conditional_atomic_replace_text_at
-
-    def conflict_manifest(path, text, expected_sha256, **kwargs):
-        if Path(path) == manifest:
-            events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-            assert events[-1]["event_type"] == "experiment_finalization_prepared"
-            return False
-        return real_commit(path, text, expected_sha256, **kwargs)
-
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", conflict_manifest)
-
-    with pytest.raises(RuntimeError, match="manifest changed during finalization"):
-        experiments.finalize_experiment(tmp_path, report)
-
-    assert manifest.read_bytes() == before
-    assert (tmp_path / "reports" / "final.md").read_text() == report.read_text()
-    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert [event["event_type"] for event in events].count("experiment_finalization_prepared") == 1
-    assert "experiment_finalized" not in {event["event_type"] for event in events}
 
 
 def test_interrupted_finalization_preserves_complete_experiment_manifest(tmp_path: Path, monkeypatch):
@@ -898,7 +675,9 @@ def test_interrupted_finalization_preserves_complete_experiment_manifest(tmp_pat
     real_replace = experiment_io.os.replace
 
     def interrupt_manifest_replace(source, target, **kwargs):
-        if target == manifest.name:
+        if Path(target) == manifest:
+            events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+            assert events[-1]["event_type"] == "experiment_finalization_prepared"
             raise OSError("interrupted")
         return real_replace(source, target, **kwargs)
 
@@ -1010,52 +789,4 @@ def test_experiment_mutation_rejects_manifest_root_drift_without_writing(tmp_pat
     with pytest.raises(ValueError, match="root differs"):
         experiments.monitor_experiment(tmp_path)
 
-    assert _workspace_files(tmp_path) == before
-
-
-@pytest.mark.parametrize("alias", ["symlink", "hardlink"])
-def test_experiment_mutation_rejects_experiment_manifest_alias_before_writing(tmp_path: Path, monkeypatch, alias: str):
-    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
-    manifest = tmp_path / "experiment.yaml"
-    outside = tmp_path.parent / f"{alias}_experiment.yaml"
-    outside.write_text(manifest.read_text())
-    manifest.unlink()
-    if alias == "symlink":
-        manifest.symlink_to(outside)
-    else:
-        os.link(outside, manifest)
-    observation_calls = []
-    monkeypatch.setattr(
-        experiments.tracking,
-        "monitor_run_row",
-        lambda *_args, **_kwargs: observation_calls.append(True) or [],
-    )
-    before = _workspace_files(tmp_path)
-
-    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
-        experiments.monitor_experiment(tmp_path)
-
-    assert observation_calls == []
-    assert _workspace_files(tmp_path) == before
-
-
-def test_experiment_monitor_preflights_canonical_outputs_before_observation(tmp_path: Path, monkeypatch):
-    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
-    experiment_io.write_rows_at(
-        tmp_path / "run_manifest.tsv",
-        [{"experiment_id": "unit", "step_id": "train-model", "run_id": "run-000", "status": "running"}],
-    )
-    (tmp_path / "run_matrix.csv").mkdir()
-    before = _workspace_files(tmp_path)
-    observation_calls = []
-    monkeypatch.setattr(
-        experiments.tracking,
-        "monitor_run_row",
-        lambda *_args, **_kwargs: observation_calls.append(True),
-    )
-
-    with pytest.raises(ValueError, match="independent regular files"):
-        experiments.monitor_experiment(tmp_path)
-
-    assert observation_calls == []
     assert _workspace_files(tmp_path) == before

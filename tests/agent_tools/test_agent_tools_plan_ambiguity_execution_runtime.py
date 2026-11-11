@@ -160,32 +160,7 @@ def test_plan_refuses_existing_artifact_when_overwrite_false(tmp_path: Path):
     assert run_script.read_text() == "keep me"
 
 
-def test_plan_overwrite_rejects_output_alias_to_canonical_without_writing(tmp_path: Path):
-    recipe = write_finetune_recipe(tmp_path / "source")
-    workspace = tmp_path / "workspace"
-    payload = yaml.safe_load(recipe.read_text())
-    payload["experiment"]["root"] = str(workspace)
-    payload["decisions"]["overwrite_policy"]["value"] = True
-    payload["artifacts"]["overwrite"] = True
-    recipe.write_text(yaml.safe_dump(payload))
-    initial = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plan-1"))
-    assert initial.returncode == 0, initial.stderr or initial.stdout
-    output_dir = workspace / "plan-2"
-    output_dir.mkdir()
-    canonical_before = (workspace / "run_manifest.tsv").read_bytes()
-    step_manifest = workspace / "steps" / payload["step"]["id"] / "step.yaml"
-    step_before = step_manifest.read_bytes()
-    (output_dir / "plan.json").hardlink_to(workspace / "run_manifest.tsv")
-
-    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
-
-    assert result.returncode == 1
-    assert (workspace / "run_manifest.tsv").read_bytes() == canonical_before
-    assert step_manifest.read_bytes() == step_before
-    assert not (output_dir / "runs").exists()
-
-
-def test_plan_allows_existing_workspace_matrix_and_events_for_new_plan(tmp_path: Path):
+def test_plan_allows_existing_workspace_events_for_new_plan(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path / "source")
     workspace = tmp_path / "workspace"
     payload = yaml.safe_load(recipe.read_text())

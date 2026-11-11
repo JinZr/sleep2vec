@@ -415,22 +415,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             default_sha: str = default_files["/workspace/file"]["sha256"]
             default_files["/workspace/file"]["sha265"]  # type: ignore[typeddict-item]
             default_files["/workspace/file"]["text"] = None  # type: ignore[typeddict-item]
-            strict_files = experiment_io.read_managed_files_at("/workspace", [], allow_invalid_utf8=False)
-            strict_text: str = strict_files["file"]["text"]
-            strict_sha: str = strict_files["file"]["sha256"]
-            strict_files["file"]["sha256"] = None  # type: ignore[typeddict-item]
-            permissive_files = experiment_io.read_managed_files_at("/workspace", [], allow_invalid_utf8=True)
-            optional_text: str | None = permissive_files["file"]["text"]
-            permissive_sha: str = permissive_files["file"]["sha256"]
-            required_text: str = permissive_files["file"]["text"]  # type: ignore[assignment]
-            permissive_files["file"]["sha256"] = None  # type: ignore[arg-type]
-
-            def check_dynamic_file_read(allow_invalid: bool) -> None:
-                files = experiment_io.read_managed_files_at("/workspace", [], allow_invalid_utf8=allow_invalid)
-                dynamic_text: str | None = files["file"]["text"]
-                dynamic_sha: str = files["file"]["sha256"]
-                dynamic_required: str = files["file"]["text"]  # type: ignore[assignment]
-                files["file"]["sha256"] = 1  # type: ignore[arg-type]
+            default_files["/workspace/file"]["sha256"] = None  # type: ignore[typeddict-item]
 
             plan = run_artifacts.read_registered_plan(
                 "/plan", workspace="/workspace", workspace_experiment={},
@@ -501,7 +486,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             status_run["scheduler"]["jobid"]  # type: ignore[typeddict-item]
             status_run["process"]["pid"] = 123  # type: ignore[typeddict-item]
             status_run["evidence"]["checkpoint_count"] = 2  # type: ignore[typeddict-item]
-            status_run["evidence"]["log_age_seconds"] = 1.0  # type: ignore[typeddict-item]
+            status_run["evidence"]["log_age_seconds"]  # type: ignore[typeddict-item]
             status_run["blockers"] = [1]  # type: ignore[list-item]
             optional_pid: str | None = status_run["process"]["pid"]
             required_pid: str = status_run["process"]["pid"]  # type: ignore[assignment]

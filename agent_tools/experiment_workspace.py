@@ -1,10 +1,10 @@
 """Managed manifests and the one-way ``plan_controller`` binding.
 
-Layer 0 leaf, and the workspace facade. Owns ``run_manifest.tsv`` -- the
-lifecycle owner for run status -- its managed run lock, the frozen run,
-scheduler, process, and runtime-provenance identity field sets, the phase and
-status vocabularies, and the one-way step ``plan_controller`` binding that
-makes a step ordinary when its first plan registers.
+The workspace facade. Owns ``run_manifest.tsv`` -- the lifecycle owner for run
+status -- its managed run lock, the frozen run, scheduler, process, and
+runtime-provenance identity field sets, the phase and status vocabularies, and
+the one-way step ``plan_controller`` binding that makes a step ordinary when its
+first plan registers.
 
 ``research_log`` publishes behind this facade rather than writing to the
 workspace directly.
@@ -13,7 +13,7 @@ workspace directly.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager, nullcontext
 import csv
 import hashlib
 import io
@@ -123,6 +123,21 @@ RESEARCH_LOG_MARKER_RE = research_log.RESEARCH_LOG_MARKER_RE
 STEP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 RESEARCH_LOG_ENTRY_ID_RE = research_log.RESEARCH_LOG_ENTRY_ID_RE
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# Per-poll observer output: monitor reports and --json carry these, run_manifest.tsv never persists them.
+MONITOR_OBSERVATION_FIELDS = frozenset(
+    {
+        "gpu_summary",
+        "io_read_delta_bytes",
+        "io_write_delta_bytes",
+        "log_age_seconds",
+        "log_tail",
+        "monitored_at",
+        "progress_age_seconds",
+        "progress_status",
+        "progress_total",
+        "progress_updated_at",
+    }
+)
 
 
 def experiment_metadata_issues(
@@ -290,10 +305,7 @@ _PLAN_REGISTRATION_LOCKS_GUARD = threading.Lock()
 def plan_registration_lock(root: str | Path) -> Iterator[None]:
     root = Path(root)
     lock_path = root.parent / f".{root.name}.plan-registration.lock"
-    if not root.parent.exists():
-        exp_io.validate_managed_output_paths(Path(root.anchor), [lock_path])
-        root.parent.mkdir(parents=True, exist_ok=True)
-    exp_io.validate_managed_output_paths(root.parent, [lock_path])
+    root.parent.mkdir(parents=True, exist_ok=True)
     with _PLAN_REGISTRATION_LOCKS_GUARD:
         local_lock = _PLAN_REGISTRATION_LOCKS.setdefault(lock_path, threading.Lock())
     with local_lock, exp_io.blocking_file_lock(lock_path):
@@ -303,10 +315,7 @@ def plan_registration_lock(root: str | Path) -> Iterator[None]:
 @contextmanager
 def managed_run_lock(workspace: str | Path) -> Iterator[None]:
     """Guard run_manifest.tsv replacement by launches and run scripts; registration/publication locks order first."""
-    root = Path(workspace)
-    lock_path = root / "run_manifest.tsv.lock"
-    exp_io.validate_managed_output_paths(root, [lock_path])
-    with exp_io.blocking_file_lock(lock_path):
+    with exp_io.blocking_file_lock(Path(workspace) / "run_manifest.tsv.lock"):
         yield
 
 
@@ -523,8 +532,9 @@ def commit_step_manifest(
     if not step_id:
         raise ValueError("Incoming step manifest is missing step.id.")
     path = root / "steps" / step_id / "step.yaml"
-    exp_io.validate_managed_output_paths(root, [path])
-    for _attempt in range(3):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Planners registering plans for one step merge under the step file's lock, so neither drops the other's plan.
+    with exp_io.blocking_file_lock(exp_io.lock_path_for(path)):
         exists = exp_io.path_exists_at(path)
         current_text = exp_io.read_text_at(path) if exists else ""
         existing = _validated_step_manifest(current_text, path, step_id) if exists else {}
@@ -533,16 +543,8 @@ def commit_step_manifest(
             return merged, False
         replacement = yaml.safe_dump(merged, sort_keys=False)
         _validated_step_manifest(replacement, path, step_id)
-        expected_sha256 = hashlib.sha256(current_text.encode()).hexdigest() if exists else None
-        if exp_io.conditional_atomic_replace_text_at(
-            path,
-            replacement,
-            expected_sha256,
-            managed_root=root,
-        ):
-            return merged, not exists
-        # A competing planner won the compare-and-swap; merge its plan on the next attempt.
-    raise RuntimeError(f"Managed step manifest changed during three commit attempts: {path}")
+        exp_io.atomic_replace(path, replacement)
+    return merged, not exists
 
 
 def initialize_run_manifest(root: str | Path) -> Path:
@@ -635,7 +637,6 @@ def _normalized_research_log_entry(
     )
 
 
-_research_log_blocks = research_log._research_log_blocks
 _research_log_block = research_log._research_log_block
 
 
@@ -653,7 +654,6 @@ def append_research_log(
         managed_rows=managed_rows,
         read_step_manifest=read_step_manifest,
         managed_run_key=managed_run_key,
-        io=exp_io,
     )
 
 
@@ -707,17 +707,6 @@ def ensure_experiment_workspace(
         "plans": [str(plan_path)],
     }
     step_manifest = root / "steps" / str(step["id"]) / "step.yaml"
-    exp_io.validate_managed_output_paths(
-        root,
-        [
-            manifest_path,
-            root / "run_manifest.tsv",
-            root / RESEARCH_LOG_NAME,
-            root / "events.jsonl",
-            root / "README.md",
-            step_manifest,
-        ],
-    )
     existing_step = read_step_manifest(root, step["id"], allow_missing=True)
     if existing_step is not None:
         merge_step_manifest(existing_step, step_payload)
@@ -751,26 +740,15 @@ def ensure_experiment_workspace(
 
 
 def append_event(root: str | Path, event_type: str, payload: dict[str, Any]) -> None:
-    root = Path(root)
-    path = root / "events.jsonl"
     row = {"time": _now(), "event_type": event_type, **json_ready(payload)}
-    exp_io.append_managed_text_at(path, json.dumps(row, sort_keys=True) + "\n", managed_root=root)
+    exp_io.locked_append(Path(root) / "events.jsonl", json.dumps(row, sort_keys=True) + "\n")
 
 
 def read_experiment_events(root: str | Path) -> list[dict[str, JsonValue]]:
-    root = Path(root)
-    path = root / "events.jsonl"
-    lock_path = path.with_name(f".{path.name}.cas.lock")
-    exp_io.validate_managed_output_paths(root, [path, lock_path])
-    if not os.path.lexists(path):
-        return []
-    # append_event replaces events.jsonl under its append lock, often without the run lock; share that lock so the
-    # managed read cannot observe a replacement between its stat and open.
-    with exp_io.blocking_file_lock(lock_path):
-        snapshot = exp_io.read_managed_files_at(root, [path])[str(path)]
+    path = Path(root) / "events.jsonl"
+    # append_event publishes events.jsonl by atomic replacement, so an unlocked read sees a complete file.
+    text = exp_io.read_text_at(path)
     events: list[dict[str, JsonValue]] = []
-    # This managed read uses strict UTF-8 mode, so text cannot be None.
-    text = snapshot["text"]
     for line_number, line in enumerate(text.splitlines(), start=1):
         try:
             event = json.loads(line)
@@ -1153,45 +1131,29 @@ def validate_checkpoint_ownership(
 def merge_run_manifest(
     root: str | Path, rows: Sequence[Mapping[str, Any]], *, lock_held: bool = False
 ) -> list[dict[str, str]]:
-    """Merge incoming rows into canonical state and refresh run-matrix projections.
+    """Merge incoming rows into run_manifest.tsv, the canonical lifecycle state.
 
     Requires an existing run_manifest.tsv and experiment.yaml with an experiment
     ID and a status other than completed. Rereads canonical rows, validates frozen
     fields and scheduler identity, and applies merge_run_row lifecycle rules.
     Existing order is retained and new identities are appended; new runs must
-    name this experiment. Returns all committed rows, not just the input updates,
-    parsed back from the committed run_manifest.tsv text like read_run_manifest.
+    name this experiment. MONITOR_OBSERVATION_FIELDS are per-poll observations
+    and are dropped from incoming rows rather than persisted. Returns all committed
+    rows, not just the input updates, as strings like read_run_manifest.
 
     Acquires run_manifest.tsv.lock unless lock_held=True, which means the caller
-    already owns that lock; lock_held does not bypass the conditional-replace
-    conflict check.
-
-    Writes canonical state plus run_matrix.csv and reports/run_matrix.md; does
-    not observe jobs, launch work or append lifecycle events. Validation, a
-    conditional-replace conflict and unhandled I/O errors raise. Projection failure can
-    occur after the canonical commit, so this is not an all-or-nothing bundle
-    update and an exception does not prove the input changes were uncommitted.
+    already owns that lock. Publishes the manifest by atomic replacement; does not
+    observe jobs, launch work or append lifecycle events. Validation and I/O
+    errors raise before the replacement and leave the manifest unchanged.
     """
     root = Path(root)
     path = root / "run_manifest.tsv"
-    lock_path = path.with_name(path.name + ".lock")
     experiment_path = root / "experiment.yaml"
-    output_paths = [
-        path,
-        lock_path,
-        experiment_path,
-        root / "run_matrix.csv",
-        root / "reports" / "run_matrix.md",
-        root / "events.jsonl",
-    ]
-    exp_io.validate_managed_output_paths(root, [lock_path])
     validate_managed_run_rows(rows, source="incoming run manifest", cardinality="one_per_run")
-    lock_stack = ExitStack()
-    if not lock_held:
-        lock_stack.enter_context(exp_io.blocking_file_lock(lock_path))
-    try:
-        # Serialize this inode snapshot with canonical replacement and projection-file creation.
-        exp_io.validate_managed_output_paths(root, output_paths)
+    incoming_rows = [
+        {field: value for field, value in row.items() if field not in MONITOR_OBSERVATION_FIELDS} for row in rows
+    ]
+    with nullcontext() if lock_held else managed_run_lock(root):
         experiment_text = exp_io.read_text_at(experiment_path)
         if not experiment_text:
             raise ValueError(f"Managed experiment manifest is missing: {experiment_path}")
@@ -1206,23 +1168,21 @@ def merge_run_manifest(
             raise ValueError(f"Experiment is completed and cannot update canonical runs: {root}")
         if not exp_io.path_exists_at(path):
             raise FileNotFoundError(f"Managed run manifest is missing: {path}")
-        current_text = exp_io.read_text_at(path)
-        existing = _parse_run_manifest(current_text, path)
+        existing = _parse_run_manifest(exp_io.read_text_at(path), path)
         by_id: dict[tuple[str, str] | None, dict[str, JsonValue]] = {
             managed_run_key(row): dict(row) for row in existing
         }
         order = [managed_run_key(row) for row in existing]
-        # Incoming rows were validated before the lock, so their managed keys cannot be None.
-        new_rows = [row for row in rows if managed_run_key(row) not in by_id]
-        if new_rows:
-            for row in new_rows:
-                experiment_id = str(row.get("experiment_id") or "")
-                if not experiment_id.strip() or experiment_id != experiment_id.strip():
-                    key = cast(tuple[str, str], managed_run_key(row))
-                    raise ValueError(f"New canonical run must define experiment_id: {key[0]} / {key[1]}")
-            if any(str(row["experiment_id"]) != workspace_experiment_id for row in new_rows):
-                raise ValueError("New canonical run belongs to a different experiment.")
-        for row in rows:
+        # Incoming rows were validated above, so their managed keys cannot be None.
+        new_rows = [row for row in incoming_rows if managed_run_key(row) not in by_id]
+        for row in new_rows:
+            experiment_id = str(row.get("experiment_id") or "")
+            if not experiment_id.strip() or experiment_id != experiment_id.strip():
+                key = cast(tuple[str, str], managed_run_key(row))
+                raise ValueError(f"New canonical run must define experiment_id: {key[0]} / {key[1]}")
+        if any(str(row["experiment_id"]) != workspace_experiment_id for row in new_rows):
+            raise ValueError("New canonical run belongs to a different experiment.")
+        for row in incoming_rows:
             key = cast(tuple[str, str], managed_run_key(row))
             if key not in by_id:
                 order.append(key)
@@ -1241,20 +1201,8 @@ def merge_run_manifest(
             replacement = buffer.getvalue()
         else:
             replacement = "step_id\trun_id\n"
-        expected_sha256 = hashlib.sha256(current_text.encode()).hexdigest()
-        if not exp_io.conditional_atomic_replace_text_at(
-            path,
-            replacement,
-            expected_sha256,
-            managed_root=root,
-            guard_path=experiment_path,
-            expected_guard_sha256=hashlib.sha256(experiment_text.encode()).hexdigest(),
-        ):
-            raise RuntimeError(f"Canonical run manifest changed during its commit: {path}")
-        write_run_matrix(root, committed)
-    finally:
-        lock_stack.close()
-    return _parse_run_manifest(replacement, path)
+        exp_io.atomic_replace(path, replacement)
+    return list(csv.DictReader(io.StringIO(replacement), delimiter="\t"))
 
 
 def commit_run_start(
@@ -1266,9 +1214,7 @@ def commit_run_start(
     runtime_commit: str,
 ) -> list[dict[str, str]]:
     root = Path(root)
-    lock_path = root / "run_manifest.tsv.lock"
-    exp_io.validate_managed_output_paths(root, [lock_path])
-    with exp_io.blocking_file_lock(lock_path):
+    with managed_run_lock(root):
         rows = read_run_manifest(root)
         current = next((row for row in rows if managed_run_key(row) == (step_id, run_id)), None)
         if current is None:
@@ -1299,81 +1245,6 @@ def commit_run_start(
         )
 
 
-def _run_matrix_text(rows: Sequence[Mapping[str, Any]]) -> tuple[str, str]:
-    if rows:
-        buffer = io.StringIO()
-        fieldnames = sorted({key for row in rows for key in row})
-        writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-        matrix_text = buffer.getvalue()
-    else:
-        matrix_text = "step_id,run_id\n"
-    lines = ["# Run Matrix", ""]
-    if not rows:
-        lines.append("No runs registered.")
-    else:
-        lines.extend(
-            [
-                "| run | setting | status | planned commit | actual commit | commit note | "
-                "metric | score | checkpoint | W&B |",
-                "|---|---|---|---|---|---|---|---:|---|---|",
-            ]
-        )
-        for row in rows:
-            label = f"{row.get('step_id', '')} / {row.get('run_id', '')} — {row.get('run_name', '')}"
-            planned_commit = str(row.get("planned_runtime_commit") or "")
-            runtime_commit = str(row.get("runtime_commit") or "")
-            if not planned_commit or not runtime_commit:
-                commit_note = "pending"
-            elif planned_commit == runtime_commit:
-                commit_note = "same"
-            else:
-                commit_note = "different (rolling update)"
-            lines.append(
-                "| {label} | {setting} | {status} | `{planned_commit}` | `{runtime_commit}` | {commit_note} | "
-                "{metric} | {score} | `{checkpoint}` | {wandb} |".format(
-                    label=label.replace("|", "/"),
-                    setting=str(row.get("parameter_summary", "")).replace("|", "/"),
-                    status=row.get("status", ""),
-                    planned_commit=planned_commit,
-                    runtime_commit=runtime_commit,
-                    commit_note=commit_note,
-                    metric=row.get("metric", ""),
-                    score=row.get("score", ""),
-                    checkpoint=row.get("checkpoint_path", ""),
-                    wandb=row.get("wandb_url", ""),
-                )
-            )
-    return matrix_text, "\n".join(lines) + "\n"
-
-
-def write_run_matrix(root: str | Path, rows: Sequence[Mapping[str, Any]]) -> Path:
-    root = Path(root)
-    validate_managed_run_rows(rows, source="run_manifest.tsv", cardinality="one_per_run")
-    matrix_path = root / "run_matrix.csv"
-    matrix_text, report_text = _run_matrix_text(rows)
-    exp_io.write_text_at(matrix_path, matrix_text)
-    path = root / "reports" / "run_matrix.md"
-    exp_io.write_text_at(path, report_text)
-    return matrix_path
-
-
-def write_status_report(root: str | Path) -> Path:
-    root = Path(root)
-    rows = read_run_manifest(root)
-    counts: dict[str, int] = {}
-    for row in rows:
-        status = row.get("status", "unknown") or "unknown"
-        counts[status] = counts.get(status, 0) + 1
-    path = root / "reports" / "status.md"
-    lines = ["# Experiment Status", "", f"Runs: {len(rows)}", ""]
-    lines.extend(f"- {status}: {count}" for status, count in sorted(counts.items()))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n")
-    return path
-
-
 def experiment_readme_text(experiment: dict[str, Any]) -> str:
     baseline = experiment.get("baseline")
     baseline_text = json.dumps(json_ready(baseline), ensure_ascii=False, sort_keys=True)
@@ -1396,7 +1267,7 @@ def experiment_readme_text(experiment: dict[str, Any]) -> str:
         "- `run_manifest.tsv`: current run state and settings",
         "- `RESEARCH_LOG.md`: append-only research actions, evidence, decisions, and conclusions",
         "- `events.jsonl`: append-only experiment history",
-        "- `reports/`: human-readable status, run matrix, ranking, and final report",
+        "- `reports/`: human-readable monitor, ranking, and final report",
     ]
     return "\n".join(lines) + "\n"
 

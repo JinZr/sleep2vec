@@ -205,10 +205,6 @@ def _preflight_hparam_selection(
         workspace,
         [
             out,
-            workspace / "run_manifest.tsv",
-            workspace / "run_matrix.csv",
-            workspace / "reports" / "run_matrix.md",
-            workspace / "events.jsonl",
             selection_report_out,
         ],
     )

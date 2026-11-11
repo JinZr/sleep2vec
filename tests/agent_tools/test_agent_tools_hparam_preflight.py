@@ -202,23 +202,11 @@ def test_hparam_plan_preflights_before_registration(tmp_path: Path, monkeypatch)
     assert len(read_run_manifest(workspace)) == 1
 
 
-@pytest.mark.parametrize("output_type", ["symlink", "hardlink", "directory", "fifo"])
-def test_hparam_plan_rejects_unsafe_results_before_registration(tmp_path: Path, monkeypatch, output_type: str):
+def test_hparam_plan_rejects_a_directory_results_path_before_registration(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     results_path = tmp_path / "unsafe-results" / "results.csv"
-    results_path.parent.mkdir()
-    if output_type == "directory":
-        results_path.mkdir()
-    elif output_type == "fifo":
-        os.mkfifo(results_path)
-    else:
-        source = tmp_path / "results-source.csv"
-        source.write_text("metric\n1\n")
-        if output_type == "symlink":
-            results_path.symlink_to(source)
-        else:
-            os.link(source, results_path)
+    results_path.mkdir(parents=True)
     payload = yaml.safe_load(recipe.read_text())
     payload["artifacts"] = {**payload.get("artifacts", {}), "results_csv_path": str(results_path)}
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -233,33 +221,6 @@ def test_hparam_plan_rejects_unsafe_results_before_registration(tmp_path: Path, 
 
     assert report.exit_code == 1
     assert "Managed output paths must be independent regular files" in report.blocking_issues()[0].message
-    assert _workspace_files(workspace) == before
-    assert read_run_manifest(workspace) == []
-    assert not plan_dir.exists()
-    assert _staging_dirs(workspace, plan_dir) == []
-
-
-def test_hparam_plan_rejects_workdir_ancestor_symlink_before_registration(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
-    plan_dir = workspace / "plans" / "tune"
-    real_parent = tmp_path / "real-runtime-parent"
-    real_parent.mkdir()
-    alias_parent = tmp_path / "runtime-alias"
-    alias_parent.symlink_to(real_parent, target_is_directory=True)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["execution"]["workdir"] = str(alias_parent / "runtime")
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    before = _workspace_files(workspace)
-    monkeypatch.setattr(
-        execution_snapshot,
-        "inspect_execution_target",
-        lambda *_args, **_kwargs: pytest.fail("unsafe output topology must fail before target inspection"),
-    )
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    assert str(alias_parent) in report.blocking_issues()[0].message
     assert _workspace_files(workspace) == before
     assert read_run_manifest(workspace) == []
     assert not plan_dir.exists()

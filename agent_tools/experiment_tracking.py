@@ -1,8 +1,8 @@
 """Projections, status advice, and hparam ranking validation over recorded evidence.
 
-Layer 0 leaf. Consumes the run manifest plus ``experiment_sources`` checkpoint
-evidence checks and produces the experiment status snapshot, monitor results,
-and the hparam-selection lifecycle view.
+Consumes the run manifest plus ``experiment_sources`` checkpoint evidence checks
+and produces the experiment status snapshot, monitor results, and the
+hparam-selection lifecycle view.
 
 Recipe fields are consistency guards here; ``run_manifest.tsv`` remains the
 lifecycle owner, so nothing in this module advances a run's status.
@@ -138,13 +138,10 @@ class ExperimentStatusProcess(TypedDict):
     pid: str | None
     process_group_id: str | None
     identity_error: str | None
-    monitored_at: str | None
 
 
 class ExperimentStatusEvidence(TypedDict):
     health_status: str | None
-    gpu_summary: str | None
-    log_age_seconds: str | None
     checkpoint_dir: str | None
     checkpoint_count: str | None
     run_manifest: str | None
@@ -983,7 +980,6 @@ def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
                     ("pid", process["pid"]),
                     ("pgid", process["process_group_id"]),
                     ("error", process["identity_error"]),
-                    ("observed", process["monitored_at"]),
                 )
                 if value is not None
             )
@@ -1130,12 +1126,9 @@ def _status_run_payload(row: Mapping[str, str]) -> ExperimentStatusRun:
             "pid": _optional_text(row.get("pid")),
             "process_group_id": _optional_text(row.get("process_group_id")),
             "identity_error": _optional_text(row.get("process_identity_error")),
-            "monitored_at": _optional_text(row.get("monitored_at")),
         },
         "evidence": {
             "health_status": _optional_text(row.get("health_status")),
-            "gpu_summary": _optional_text(row.get("gpu_summary")),
-            "log_age_seconds": _optional_text(row.get("log_age_seconds")),
             "checkpoint_dir": _optional_text(row.get("checkpoint_dir")),
             "checkpoint_count": _optional_text(row.get("checkpoint_count")),
             "run_manifest": _optional_text(row.get("run_manifest")),

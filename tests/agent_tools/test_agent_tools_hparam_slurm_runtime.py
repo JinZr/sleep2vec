@@ -8,7 +8,7 @@ import re
 import shlex
 import subprocess
 
-from agent_tool_test_helpers import FakeLauncher, run_cli
+from agent_tool_test_helpers import run_cli
 import pytest
 from test_agent_tools_hparam_runtime import _hparam_recipe, _read_table, _write_slurm_plan, write_yaml
 from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
@@ -120,7 +120,7 @@ def test_slurm_plan_rejects_existing_single_use_artifacts_before_writing(tmp_pat
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-def test_slurm_plan_rejects_scheduler_artifact_symlink_before_writing(tmp_path: Path):
+def test_slurm_plan_rejects_existing_scheduler_artifact_before_writing(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"].update(
@@ -150,7 +150,9 @@ def test_slurm_plan_rejects_scheduler_artifact_symlink_before_writing(tmp_path: 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 1
-    assert "Output artifacts are unsafe" in result.stdout
+    # A pre-existing artifact, even a symlink out of the plan, needs an overwrite decision before anything is written.
+    assert "user_decision_field: overwrite_policy" in result.stdout
+    assert "job.sbatch" in result.stdout
     assert artifact.is_symlink()
     assert target.read_text() == "outside\n"
     assert not (plan_dir / "plan.json").exists()
@@ -357,80 +359,6 @@ def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tm
     assert submitted == []
     assert canonical["status"] in {"planned", "pending"}
     assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
-
-
-@pytest.mark.parametrize("scheduler_kind", ["direct", "slurm"])
-@pytest.mark.parametrize("topology_drift", ["results_symlink", "execution_ancestor_symlink"])
-def test_hparam_launch_rejects_topology_drift_before_launch(
-    tmp_path: Path, monkeypatch, scheduler_kind: str, topology_drift: str
-):
-    if topology_drift == "execution_ancestor_symlink":
-        execution_parent = tmp_path / "execution-parent"
-        workdir = execution_parent / "repo"
-        workdir.mkdir(parents=True)
-        execution = {"workdir": str(workdir)}
-        if scheduler_kind == "slurm":
-            execution.update(
-                {
-                    "gpus_per_run": 1,
-                    "scheduler": {
-                        "type": "slurm",
-                        "partition": "gpu",
-                        "cpus_per_task": 8,
-                        "memory": "64G",
-                        "walltime": "01:00:00",
-                    },
-                }
-            )
-        recipe = _hparam_recipe(tmp_path, execution=execution)
-        plan_dir = tmp_path / "plan"
-        result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-        assert result.returncode == 0, result.stderr
-        plan = json.loads((plan_dir / "plan.json").read_text())
-        real_execution_parent = tmp_path / "execution-real"
-        execution_parent.rename(real_execution_parent)
-        execution_parent.symlink_to(real_execution_parent, target_is_directory=True)
-    elif scheduler_kind == "slurm":
-        plan_dir, plan = _write_slurm_plan(tmp_path)
-    else:
-        recipe = _hparam_recipe(tmp_path)
-        plan_dir = tmp_path / "plan"
-        result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-        assert result.returncode == 0, result.stderr
-        plan = json.loads((plan_dir / "plan.json").read_text())
-
-    if topology_drift == "results_symlink":
-        artifacts = plan["recipe"].get("artifacts") or {}
-        results_path = plan_hparam.plan_output_path(
-            plan_dir,
-            artifacts.get("results_csv_path"),
-            "results/agent_hparam_results.csv",
-        )
-        results_path.parent.mkdir(parents=True, exist_ok=True)
-        results_path.symlink_to(tmp_path / "run_manifest.tsv")
-
-    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
-    events_before = (tmp_path / "events.jsonl").read_bytes()
-    launch_attempts = []
-    launcher = FakeLauncher(lambda *_args: launch_attempts.append("start"))
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "submit",
-        lambda *_args, **_kwargs: launch_attempts.append("sbatch"),
-    )
-
-    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    canonical = next(
-        row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == plan["runs"][0]["run_id"]
-    )
-    assert launch_attempts == []
-    assert canonical["status"] == "planned"
-    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
-    assert (tmp_path / "events.jsonl").read_bytes() == events_before
-    assert not (plan_dir / "launch_manifest.tsv").exists()
-    assert not (plan_dir / "run_status.tsv").exists()
 
 
 def test_hparam_launch_ignores_existing_runtime_dir_for_nonlaunchable_run(tmp_path: Path, monkeypatch):

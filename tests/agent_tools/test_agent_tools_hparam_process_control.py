@@ -131,7 +131,7 @@ def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, mon
 
 
 @pytest.mark.parametrize("backend", ["direct", "slurm"])
-@pytest.mark.parametrize("publication", ["write_rows", "append_event", "write_status_report"])
+@pytest.mark.parametrize("publication", ["write_rows", "append_event"])
 def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
     tmp_path: Path, monkeypatch, backend, publication
 ):
@@ -164,7 +164,7 @@ def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
     assert canonical["stop_reason"] == reason
     assert canonical["stopped_at"] == stopped_at
     before_retry = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    for name in ("merge_run_manifest", "write_rows", "append_event", "write_status_report"):
+    for name in ("merge_run_manifest", "write_rows", "append_event"):
         monkeypatch.setattr(hparam_runtime, name, lambda *_a, **_k: pytest.fail("terminal retry must not write"))
 
     with pytest.raises(ValueError, match="already terminal"):
@@ -537,23 +537,9 @@ def test_hparam_stop_rejects_unreadable_local_pid_before_kill(tmp_path: Path, mo
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-@pytest.mark.parametrize("failure", ["directory", "symlink", "dangling_symlink", "hardlink", "fifo"])
-def test_hparam_stop_rejects_unsafe_local_pid_topology_before_read_or_kill(tmp_path: Path, monkeypatch, failure: str):
+def test_hparam_stop_rejects_a_directory_pid_path_before_read_or_kill(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    pid_path = Path(rows[0]["pid_path"])
-    target = tmp_path / "outside.pid"
-    if failure == "directory":
-        pid_path.mkdir()
-    elif failure == "symlink":
-        target.write_text("123")
-        pid_path.symlink_to(target)
-    elif failure == "dangling_symlink":
-        pid_path.symlink_to(target)
-    elif failure == "hardlink":
-        target.write_text("123")
-        pid_path.hardlink_to(target)
-    else:
-        os.mkfifo(pid_path)
+    Path(rows[0]["pid_path"]).mkdir()
     calls = []
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: calls.append("read"))
     monkeypatch.setattr(run_evidence.os, "kill", lambda *_args: calls.append("kill"))
@@ -1105,46 +1091,11 @@ def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Pa
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("merge"))
     monkeypatch.setattr(hparam_runtime, "write_rows", lambda *_args: calls.append("write"))
     monkeypatch.setattr(hparam_runtime, "append_event", lambda *_args: calls.append("event"))
-    monkeypatch.setattr(hparam_runtime, "write_status_report", lambda *_args: calls.append("report"))
 
     with pytest.raises(ValueError, match="already terminal"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="terminal run")
 
     assert calls == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_hparam_monitor_rejects_dangling_launch_manifest_before_canonical_write(tmp_path: Path):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    launch_path = tmp_path / "launch_manifest.tsv"
-    missing_target = tmp_path / "missing-launch-manifest.tsv"
-    launch_path.unlink()
-    launch_path.symlink_to(missing_target)
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-
-    with pytest.raises(ValueError, match="Managed output"):
-        hparam_runtime.monitor_hparam_runs(tmp_path)
-
-    assert not missing_target.exists()
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_hparam_stop_rejects_dangling_status_manifest_before_kill_or_write(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    status_path = tmp_path / "run_status.tsv"
-    missing_target = tmp_path / "missing-run-status.tsv"
-    status_path.unlink()
-    status_path.symlink_to(missing_target)
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    killed = []
-    monkeypatch.setattr(run_evidence, "read_pid", lambda *_args: 123)
-    monkeypatch.setattr(run_evidence.os, "kill", lambda *_args: killed.append(True))
-
-    with pytest.raises(ValueError, match="Managed output"):
-        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="dangling status")
-
-    assert killed == []
-    assert not missing_target.exists()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
@@ -1175,24 +1126,6 @@ def test_hparam_stop_commits_one_final_row_to_all_manifests(tmp_path: Path, monk
     assert stopped == [_process_identity()]
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stopped") == 1
-
-
-def test_hparam_stop_rejects_invalid_canonical_output_before_kill(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    target = tmp_path / "run_matrix.csv"
-    target.hardlink_to(tmp_path / "run_manifest.tsv")
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    killed = []
-    monkeypatch.setattr(run_evidence, "read_pid", lambda _path, _row, **_kwargs: 123)
-    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    # Workspace state is read only under the run lock, so the pre-lock output check rejects the hard link first.
-    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
-        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
-
-    assert killed == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-    assert not (tmp_path / "events.jsonl").exists()
 
 
 def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor(tmp_path: Path, monkeypatch):

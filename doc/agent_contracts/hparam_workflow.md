@@ -236,7 +236,7 @@ launch action. It does not grant scientific or test-access decisions.
 Python callers may pass `managed_scheduler.SchedulerHooks` to
 `hparam_runtime.launch_hparam_runs` to replace only the execution-snapshot
 check, launch-command, and process-start effects; the CLI has no such option,
-and manifest merges, events, status reports, and frozen-run validation are
+and manifest merges, events, and frozen-run validation are
 unchanged.
 
 Before calculating direct capacity, execute-mode launch refreshes observable

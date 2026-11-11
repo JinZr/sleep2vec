@@ -373,27 +373,6 @@ def test_experiment_status_rejects_partial_registered_blocked_plan(tmp_path, mut
     assert _workspace_files(root) == before
 
 
-@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
-@pytest.mark.parametrize("artifact_name", ["plan.blocked.md", "decisions.yaml"])
-def test_experiment_status_rejects_aliased_registered_blocked_plan(tmp_path, alias_kind, artifact_name):
-    root = tmp_path / "experiment"
-    recipe = write_finetune_recipe(root, include_label=False)
-    blocked_dir = root / "plans" / "blocked"
-    assert plans.build_plan(recipe_path=recipe, output_dir=blocked_dir).exit_code == 2
-    blocked_path = blocked_dir / artifact_name
-    contents = blocked_path.read_bytes()
-    blocked_path.unlink()
-    outside = root / f"outside-{artifact_name}"
-    outside.write_bytes(contents)
-    if alias_kind == "symlink":
-        blocked_path.symlink_to(outside)
-    else:
-        blocked_path.hardlink_to(outside)
-
-    with pytest.raises(ValueError, match="missing or aliased"):
-        experiments.experiment_status(root)
-
-
 def test_experiment_status_rejects_step_metadata_drift_from_registered_plan(tmp_path):
     root = tmp_path / "experiment"
     recipe = write_finetune_recipe(root)
@@ -1052,7 +1031,7 @@ def test_experiment_status_rejects_incomplete_registered_plan_identity(tmp_path,
 
 @pytest.mark.parametrize(
     "drift",
-    ["config", "run_script", "resolved_recipe", "plan_alias", "plan_escape", "canonical_run"],
+    ["config", "run_script", "resolved_recipe", "plan_escape", "canonical_run"],
 )
 def test_experiment_status_rejects_registered_plan_drift(tmp_path, drift):
     root = tmp_path / "experiment"
@@ -1065,11 +1044,6 @@ def test_experiment_status_rejects_registered_plan_drift(tmp_path, drift):
         (plan_dir / "run.sh").write_text("#!/bin/sh\nexit 1\n")
     elif drift == "resolved_recipe":
         (plan_dir / "recipe.resolved.yaml").write_text("task: changed\n")
-    elif drift == "plan_alias":
-        plan_path = plan_dir / "plan.json"
-        target = plan_dir / "plan.real.json"
-        plan_path.rename(target)
-        plan_path.symlink_to(target.name)
     elif drift == "plan_escape":
         step_path = root / "steps" / "train" / "step.yaml"
         step_manifest = yaml.safe_load(step_path.read_text())
@@ -1123,31 +1097,6 @@ def test_experiment_status_rejects_plan_escape_before_external_probe(tmp_path, m
     monkeypatch.setattr(experiment_io, "path_exists_at", reject_external_probe)
 
     with pytest.raises(ValueError, match="outside its managed workspace"):
-        experiments.experiment_status(root)
-
-
-def test_experiment_status_rejects_aliased_plan_directory_before_file_probe(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train")
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    alias = root / "plans" / "alias"
-    alias.symlink_to(outside, target_is_directory=True)
-    step_path = root / "steps" / "train" / "step.yaml"
-    step_manifest = yaml.safe_load(step_path.read_text())
-    step_manifest["plans"] = [str(alias)]
-    step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
-    path_exists_at = experiment_io.path_exists_at
-
-    def reject_aliased_file_probe(path):
-        if Path(path).is_relative_to(alias):
-            raise AssertionError(f"status probed through an aliased plan directory: {path}")
-        return path_exists_at(path)
-
-    monkeypatch.setattr(experiment_io, "path_exists_at", reject_aliased_file_probe)
-
-    with pytest.raises(ValueError, match="missing or aliased"):
         experiments.experiment_status(root)
 
 

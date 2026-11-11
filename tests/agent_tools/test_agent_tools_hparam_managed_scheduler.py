@@ -271,7 +271,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
             and event["to"] == "finished"
             for event in events
         )
-        assert "- finished: 1" in (tmp_path / "reports" / "status.md").read_text()
+        assert not (tmp_path / "reports" / "status.md").exists()
         started.append(command)
         return "launch_failed"
 

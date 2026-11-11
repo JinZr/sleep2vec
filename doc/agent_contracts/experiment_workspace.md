@@ -21,9 +21,8 @@ Read by question:
 ├── RESEARCH_LOG.md
 ├── events.jsonl
 ├── run_manifest.tsv
-├── run_matrix.csv
 ├── reports/
-│   ├── status.md
+│   ├── monitor.md
 │   ├── ranking.csv
 │   ├── hparam_selection.md
 │   └── final.md
@@ -58,11 +57,9 @@ designated first producer; blank, malformed, incomplete, or conflicting
 metadata is never repaired by overwriting it.
 
 `events.jsonl` is modified only through the canonical managed append owner.
-`agent_tools` runs on the workspace-owning host; every writer shares the
-descriptor-anchored `.events.jsonl.cas.lock`; under that lock, the final
-public root, parent, and prior-content check binds the namespace for the
-immediately following atomic rename. Raw shell appends and concurrent lockless
-workspace renames or alias changes are unsupported.
+`agent_tools` runs on the workspace-owning host; every writer takes the
+sidecar `.events.jsonl.lock` and publishes the whole log by atomic replacement,
+so a reader never sees a partial line. Raw shell appends are unsupported.
 
 `experiment_manifest.tsv` is optional for plan-created workspaces. When present, it contains exactly one row whose experiment id and root match `experiment.yaml`.
 
@@ -284,15 +281,18 @@ canonical selection report cannot substitute for a combined or failure report.
 
 Status validates the frozen selection report and ranking bytes and the
 step-wide run ranks without reopening runtime manifests or checkpoint contents.
-Finalization additionally rehashes every ranked checkpoint on its canonical
-execution host, then holds the canonical run-manifest lock
-while it verifies the same manifest snapshot and commits terminal metadata.
+Finalization holds the canonical run-manifest lock for one pass: it checks the
+prerequisites above against the rows it reads, rehashes every ranked checkpoint
+on its canonical execution host, writes `reports/final.md`, appends the
+preparation event and then commits terminal metadata. Each write is an atomic
+replacement; `experiment.yaml` is the terminal commit.
 
 New finalization commits `status: completed` only with the canonical
 `reports/final.md` path and SHA-256. When ordinary hparam selection exists, the
 terminal metadata also freezes the verified selection-report SHA-256. Status
-validates these bound bytes so report deletion, tampering, or a concurrent
-selection commit becomes visible as corrupt terminal evidence. Historical
+compares the SHA-256 of these bound files on every read, so report deletion,
+tampering, or a later selection commit fails closed as corrupt terminal
+evidence. Historical
 completed manifests without report bindings remain readable and are not
 retroactively migrated. A selection report path alias or byte-identical copy
 cannot substitute for the required mixed-experiment combined report or
@@ -352,10 +352,11 @@ The caller supplies the entry id as its idempotency key. The owner normalizes
 the entry and stores an entry id plus content digest in a hidden Markdown
 marker. Repeating the same id and normalized content is a successful no-op;
 reusing the id for different content fails. Corrections append a new entry and
-list the old ids in `supersedes`; existing entries are never rewritten.
-Malformed preambles, markers, digests, aliases, or lock targets fail before
-append. Writers use compare-and-swap and retry conflicts without
-dropping a competing entry.
+list the old ids in `supersedes`; existing entries are never rewritten. Entry
+text may not contain a marker line. Writers take the sidecar
+`.RESEARCH_LOG.md.lock`, check id uniqueness against the existing markers and
+publish the extended log by atomic replacement; earlier entries are not
+re-verified.
 
 Fresh CLI- and plan-created workspaces receive the preamble. A valid historical
 workspace without the file is not migrated by init, planning, or monitoring;
@@ -375,26 +376,30 @@ fact should not create an entry.
 | `hparam-launch`, `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](hparam_workflow.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. For a direct plan, `hparam-run-queue --execute` starts one detached [queue runner](hparam_workflow.md#direct-queue-runner) and returns; `--foreground` runs the queue in the calling process. For a Slurm plan, `--execute` makes one [submission pass](run_manifest.md#submission-and-adoption) and returns. |
 | `infer-launch`, `infer-stop` | Managed ordinary Slurm inference launch/stop; [ordinary inference](task_recipe.md#managed-ordinary-inference). |
 | `preset-launch`, `preset-stop` | Execution-host local detached preset launch/stop; launch defaults to dry-run, stop requires a reason; [managed preset preparation](task_recipe.md#managed-preset-preparation). |
-| `hparam-monitor`, `experiment-monitor` | Observe and write canonical evidence/projections and report direct queue-runner liveness; never launch pending work or start a runner. |
+| `hparam-monitor`, `experiment-monitor` | Observe runs, commit canonical status, write `run_status.tsv` or `reports/monitor.md` and report direct queue-runner liveness; never launch pending work or start a runner. |
 | `hparam-stop` | Reasoned stop under authenticated identity rules; [prelaunch stop](hparam_workflow.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-lost-runs). |
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
-| `experiment-status` | Validate and display the [read-only snapshot](#read-only-status-and-advisory-actions). |
+| `experiment-status` | Validate and print the [read-only snapshot](#read-only-status-and-advisory-actions), computed on demand; writes nothing. |
 | `experiment-finalize` | Commit completion only under [finalization](#finalization). |
 
 By default `hparam-monitor` rereads canonical state and observes the frozen
 current plan every `--poll-seconds` (60 seconds) until terminal; `--once` makes
 one observation round. Its terminal CLI summary projects structured failure
 evidence from `run_status.tsv`, not a second lifecycle interpretation or a new
-log read. Raw recorded `log_tail` is printed only with `--include-log-tail`
-because it may contain sensitive data. Neither continuous nor single-round
-monitoring launches pending work.
+log read. `run_status.tsv` carries the committed rows plus that round's
+per-poll observation fields (such as `log_tail`), which `run_manifest.tsv`
+never persists; `experiment-monitor` likewise puts them only in
+`reports/monitor.md` and its `--json` runs. The raw `log_tail` is printed only
+with `--include-log-tail` because it may contain sensitive data. Neither
+continuous nor single-round monitoring launches pending work.
 
 ## Read-only status and advisory actions
 
 `experiment-status` strictly validates the experiment owner, every registered
 step and frozen plan control bundle, and canonical `run_manifest.tsv`, then
-prints a deterministic snapshot. It may display already-recorded scheduler,
+prints a deterministic snapshot computed from those records on demand; it
+writes no report or manifest. It may display already-recorded scheduler,
 process, health, checkpoint and runtime-manifest fields but never refreshes
 them. `run_status.tsv`, `launch_manifest.tsv`, events, logs, runtime manifests,
 and W&B state are not alternate lifecycle inputs.
@@ -425,7 +430,7 @@ launch or mutation.
 A registered directory containing `questions.json`, `questions.md` and
 `plan.blocked.md`, plus optional `decisions.yaml` and `plan.draft.json`, is a
 non-runnable planning outcome and is skipped. Nested plan directories have an
-exact envelope: missing required, extra or aliased entries fail closed. In a
+exact envelope: missing required or extra entries fail closed. In a
 workspace-root plan, plan-owned artifacts remain strict while canonical
 workspace siblings are outside that envelope. Physical publication/validation
 precedes step ownership. Historical blocked plans without `decisions.yaml`
@@ -443,18 +448,17 @@ non-zero.
 ## Mutation and runtime identity
 
 Every mutation other than fresh initialization requires a parseable,
-root-matching workspace owner. Managed output targets are preflighted before
-mutation: existing targets must be independent regular files under valid
-directory ancestry. Uncertainty fails closed.
+root-matching workspace owner. Output paths derived from rows or plans are
+checked once before mutation: the root is not a symlink, and each path lies
+inside it, appears once and does not name an existing directory.
 
-Ordinary output-path validation uses metadata without opening files. When
-observed inode identities collide, validation holds descriptors for all paths
-seen so far and checks their current identities together; this is not a
-cross-file transaction snapshot. Linux uses `O_PATH` for the leaves and directory
-walk, so unreadable files and search-only directories remain valid. Platforms
-without `O_PATH`, including macOS, require read access for this collision check
-and explicitly fail closed if it is denied. Validation never reads file contents,
-changes permissions, or falls back to unpinned path observations.
+Workspace files are written by atomic replacement (same-directory temporary
+file, `fsync`, `os.replace`), so a crash never leaves a half-written file.
+Writers of one file serialize on its owning `flock`: the run lock for
+`run_manifest.tsv` and a sidecar `.<name>.lock` otherwise; a caller that read a
+file earlier may require its SHA-256 to be unchanged at replacement. This is
+not defence against an adversary rewriting the workspace: symlink, hard-link
+and rename races are out of scope.
 
 Runtime identity and defaults belong to the
 [non-hparam identity](task_recipe.md#non-hparam-runtime-identity) and

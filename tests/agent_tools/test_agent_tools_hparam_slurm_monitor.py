@@ -190,8 +190,7 @@ def test_hparam_monitor_uses_one_squeue_query_per_round_and_records_runtime_drif
     assert (running["status"], running["scheduler_node"]) == ("running", "gpu-02")
     assert finished["runtime_commit"] == "f" * 40
     assert finished["planned_runtime_commit"] == plan["recipe"]["execution"]["runtime_commit"]
-    matrix = (tmp_path / "reports" / "run_matrix.md").read_text()
-    assert "different (rolling update)" in matrix and "same" in matrix
+    assert not (tmp_path / "reports" / "run_matrix.md").exists()
     assert [row["status"] for row in _read_table(plan_dir / "run_status.tsv")] == ["completed", "running"]
     slurm_columns = {
         "scheduler_type",

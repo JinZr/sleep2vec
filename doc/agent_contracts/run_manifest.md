@@ -70,11 +70,18 @@ Managed tables declare either one row per run or many rows per run. Both forms r
 
 ## Canonical state and projections
 
-`launch_manifest.tsv` and `run_status.tsv` retain their plan-local paths and fields but are written only from rows returned by a successful canonical commit. They are projections and are never read to restore lifecycle status or execution identity. Matrices, status reports, rankings, and events are also derived artifacts. `RESEARCH_LOG.md` is an append-only narrative record rather than a projection, but it likewise never owns or restores lifecycle state.
+`launch_manifest.tsv` and `run_status.tsv` retain their plan-local paths and fields but are written only from rows returned by a successful canonical commit. They are projections and are never read to restore lifecycle status or execution identity. `reports/monitor.md`, rankings, and events are also derived artifacts. `RESEARCH_LOG.md` is an append-only narrative record rather than a projection, but it likewise never owns or restores lifecycle state. `experiment-status` computes its snapshot from `run_manifest.tsv` on demand and writes nothing.
 
-`run_matrix.csv` and `reports/run_matrix.md` project both commit fields. The
-Markdown projection labels a mismatch as `different (rolling update)`; that is
-the provenance warning and has no lifecycle effect.
+Per-poll observation fields are never persisted in `run_manifest.tsv`: the
+canonical merge drops `log_tail`, `log_age_seconds`, `monitored_at`,
+`gpu_summary`, `io_read_delta_bytes`, `io_write_delta_bytes`,
+`progress_status`, `progress_total`, `progress_updated_at` and
+`progress_age_seconds` from incoming rows. A monitor round shows them in
+`reports/monitor.md`, its `--json` runs, or `run_status.tsv`. Fields a later
+round or the lifecycle reads back stay canonical: `health_status`,
+`io_read_bytes`, `io_write_bytes`, `progress_processed`, `checkpoint_count`,
+`checkpoints`, `run_manifest`, `process_identity_error` and the `scheduler_*`
+evidence.
 
 Health labels are observational and never own lifecycle state. Managed GPU
 activity is attributed to the frozen process group so DDP child processes count
@@ -171,7 +178,7 @@ Mutation-facing evidence must first resolve to a canonical managed row. Any supp
 
 - Workspace rankings and candidate tables prove scope through the validated workspace plus managed key.
 - Candidate and ranking tables are completely validated before other-step or earlier-plan rows are filtered.
-- Checkpoint evidence must exist as an independent regular direct child of the matched frozen checkpoint directory, revalidated before selection or finalization.
+- Checkpoint evidence must exist as a direct child file of the matched frozen checkpoint directory, revalidated before selection or finalization.
 - Launch/status projections never contribute evidence.
 
 Foreign, unmatched, incomplete, or drifting evidence fails or remains in raw inventory; it does not update canonical rows.
@@ -184,10 +191,10 @@ The workspace owner reads, reduces, and commits the complete canonical table.
 concurrent registration is retained by the commit but first observed next round;
 the snapshot never replaces the commit owner's fresh read or concurrency checks.
 
-- Commits hold a stable lock from canonical read through same-directory temporary write, `fsync`, `os.replace`, and run-matrix projection; a digest conflict under that lock fails without overwriting newer state.
+- Commits hold the run lock (`run_manifest.tsv.lock`) from canonical read through same-directory temporary write, `fsync` and `os.replace`, so a reader sees the old or the new table, never a partial one.
 - New keys must carry the owning experiment id.
 
-The owner returns the rows actually committed. Callers use those rows for projections, reports, and transition events. A later projection/report failure makes the command nonzero but does not roll back canonical state; the next command may regenerate derived artifacts.
+The owner returns the rows actually committed. Callers use those rows for plan-local projections, the monitor report, and transition events. A later projection/report failure makes the command nonzero but does not roll back canonical state; the next command may regenerate derived artifacts.
 
 No caller reads or writes `run_manifest.tsv` directly.
 

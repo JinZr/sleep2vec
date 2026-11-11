@@ -1,7 +1,7 @@
 """Facade for the experiment lifecycle commands the CLI drives.
 
-Domain-free kernel facade: init, note, finalize, monitor, status, and the
-preset/infer launch and stop paths.
+Domain-free facade: init, note, finalize, monitor, status, and the preset/infer
+launch and stop paths.
 
 A facade, not a second implementation: lifecycle rules live in
 ``experiment_workspace`` and evidence in ``experiment_tracking``. What stays
@@ -34,8 +34,8 @@ from . import (
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     FROZEN_RUN_FIELDS,
+    MONITOR_OBSERVATION_FIELDS,
     PROCESS_IDENTITY_FIELDS,
-    RESEARCH_LOG_NAME,
     SHA256_RE,
     TERMINAL_STATUSES,
     append_event,
@@ -57,7 +57,6 @@ from .experiment_workspace import (
     validate_frozen_run_update,
     validated_run_key,
     write_initial_experiment_manifest,
-    write_status_report,
 )
 from .manifests import read_json, utc_now
 
@@ -134,7 +133,6 @@ def _record_definitely_unlaunched_failure(workspace: Path, key: tuple[str, str],
             "run_status_changed",
             {"step_id": key[0], "run_id": key[1], "from": previous["status"], "to": "launch_failed"},
         )
-        write_status_report(workspace)
 
 
 def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
@@ -225,16 +223,6 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
         locked_workspace, plan, rows = _read_preset_direct_plan(owner_dir)
         if locked_workspace != workspace:
             raise ValueError("Preset plan workspace changed before stop.")
-        exp_io.validate_managed_output_paths(
-            workspace,
-            [
-                workspace / "run_manifest.tsv",
-                workspace / "run_matrix.csv",
-                workspace / "reports" / "run_matrix.md",
-                workspace / "events.jsonl",
-                workspace / "reports" / "status.md",
-            ],
-        )
         run = plan["runs"][0]
         key = validated_run_key(run)
         previous = {managed_run_key(row): row for row in rows}[key]
@@ -255,7 +243,6 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
                 lock_held=True,
             )
             append_event(workspace, "run_stopped", {"step_id": key[0], "run_id": key[1], "reason": reason})
-            write_status_report(workspace)
             return workspace / "run_manifest.tsv"
         if previous.get("target") != "local" or previous.get("pid_path") != str(Path(run["run_dir"]) / "pid"):
             raise ValueError("Preset run lacks its frozen local launch identity.")
@@ -304,7 +291,6 @@ def stop_preset_run(plan_dir: str | Path, *, reason: str) -> Path:
             lock_held=True,
         )
         append_event(workspace, "run_stopped", {"step_id": key[0], "run_id": key[1], "reason": stopping["stop_reason"]})
-        write_status_report(workspace)
     return workspace / "run_manifest.tsv"
 
 
@@ -381,16 +367,6 @@ def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
         locked_workspace, plan, rows = _read_infer_slurm_plan(owner_dir)
         if locked_workspace != workspace:
             raise ValueError("Inference plan workspace changed before stop.")
-        exp_io.validate_managed_output_paths(
-            workspace,
-            [
-                workspace / "run_manifest.tsv",
-                workspace / "run_matrix.csv",
-                workspace / "reports" / "run_matrix.md",
-                workspace / "events.jsonl",
-                workspace / "reports" / "status.md",
-            ],
-        )
         key = validated_run_key(plan["runs"][0])
         _committed, metadata_stop = managed_scheduler.stop_slurm_run_locked(
             workspace,
@@ -402,7 +378,6 @@ def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
         )
         if metadata_stop:
             append_event(workspace, "run_stopped", {"step_id": key[0], "run_id": key[1], "reason": reason})
-        write_status_report(workspace)
     return workspace / "run_manifest.tsv"
 
 
@@ -431,21 +406,10 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path) -> Path:
         validate_existing_experiment_manifest(existing_text, experiment, root)
         _managed_rows(root)
         rows = exp_io.read_rows_at(manifest, strict=True)
-    exp_io.validate_managed_output_paths(
-        root,
-        [
-            root / "experiment.yaml",
-            root / "run_manifest.tsv",
-            root / RESEARCH_LOG_NAME,
-            root / "events.jsonl",
-            root / "README.md",
-            manifest,
-        ],
-    )
     exp_io.mkdir_experiment_dirs(root)
     if not existing_text:
         write_initial_experiment_manifest(root, experiment)
-        exp_io.append_event_at(root, "experiment_initialized", {"experiment_id": experiment["id"]})
+        append_event(root, "experiment_initialized", {"experiment_id": experiment["id"]})
     exp_io.write_text_at(root / "README.md", experiment_readme_text(experiment))
     if rows:
         row = rows[0]
@@ -511,183 +475,97 @@ def _validate_hparam_checkpoints(
             raise ValueError(f"Frozen checkpoint SHA-256 differs: {row['checkpoint_path']}")
 
 
-def _validate_hparam_selection_files_unchanged(
-    root: Path,
-    selection_report: tracking.HparamSelectionReportSnapshot,
-) -> None:
-    expected = {
-        str(selection_report["path"]): selection_report["sha256"],
-        str(selection_report["ranking_path"]): selection_report["ranking_sha256"],
-    }
-    current = exp_io.read_managed_files_at(root, [Path(path) for path in expected])
-    for path, sha256 in expected.items():
-        if current[path]["sha256"] != sha256:
-            if path == str(selection_report["path"]):
-                raise ValueError("The hparam selection report changed during finalization.")
-            raise ValueError("The hparam ranking changed during finalization.")
-
-
-def _finalizable_rows(root: Path) -> list[dict[str, str]]:
-    """The managed rows, refusing an experiment that is not ready to finalize.
-    Read twice -- once before the run-manifest snapshot and once after -- so a
-    run that changes during finalization cannot slip past the check."""
-    rows = _managed_rows(root)
-    if not rows:
-        raise ValueError("Experiment has no managed runs to finalize.")
-    unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
-    if unresolved:
-        raise ValueError(f"Experiment still has unresolved runs: {unresolved}")
-    missing_stop_reasons = stopped_runs_without_reason(rows)
-    if missing_stop_reasons:
-        run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
-        raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
-    return rows
+def _final_report_text(
+    report_path: str | Path,
+    hparam: tracking.HparamSelectionLifecycle,
+    selection_report: tracking.HparamSelectionReportSnapshot | None,
+) -> str:
+    """The final report text, enforcing which report an hparam experiment must finalize from."""
+    report_path_is_selection = str(Path(report_path)) == hparam["report_path"]
+    if hparam["selected_steps"] and hparam["automatic_report_final"]:
+        if not report_path_is_selection:
+            raise ValueError(f"Successful hparam experiments must finalize from {hparam['report_path']}")
+        # finalize_experiment requires the selection snapshot whenever a step is selected.
+        assert selection_report is not None
+        return str(selection_report["text"])
+    report_text = exp_io.read_text_at(report_path)
+    report_is_selection = report_path_is_selection or bool(
+        selection_report is not None and hashlib.sha256(report_text.encode()).hexdigest() == selection_report["sha256"]
+    )
+    if hparam["selected_steps"] and report_is_selection:
+        raise ValueError("The hparam selection report cannot replace the required combined experiment report.")
+    if hparam["hparam_steps"] and not hparam["selected_steps"] and report_is_selection:
+        raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
+    return report_text
 
 
 def finalize_experiment(run_dir: str | Path, report_path: str | Path) -> Path:
     """Publish a final report and commit the managed experiment as completed.
 
-    Requires nonempty terminal run state, reasons for stopped runs, materialized
-    canonical steps and the applicable hparam selection/report/checkpoint
-    evidence. Failed runs are allowed when the required failure or combined
-    report is supplied; completion does not mean every run succeeded.
+    One check under the workspace run lock: every run is terminal, every
+    stopped run has a stop_reason, every canonical step is materialized, every
+    successful hparam step is selected with a selection report that matches its
+    canonical evidence, selected checkpoints still hash to their frozen SHA-256,
+    and the final report is non-empty. Failed runs are allowed when the required
+    failure or combined report is supplied; completion does not mean every run
+    succeeded.
 
-    Reads report_path, writes
-    reports/final.md and a preparation event, then commits experiment.yaml with
-    report hash bindings. Returns the canonical final report path. The manifest
-    is the terminal commit: a later failure can leave a published report without
-    completed status. Invalid prerequisites and changed hparam evidence raise
-    ValueError; run-manifest changes detected during finalization raise RuntimeError,
-    and other I/O errors propagate. Does not launch runs or refresh their observed
-    statuses."""
+    Still under the lock, writes reports/final.md, appends a preparation event,
+    then commits experiment.yaml with the final report path and SHA-256, plus the
+    selection report SHA-256 when selection exists. Both writes are atomic
+    replacements and experiment.yaml is the terminal commit, so a failure between
+    them leaves a published report without completed status. Returns the
+    canonical final report path. Invalid prerequisites raise ValueError; I/O
+    errors propagate. Does not launch runs or refresh their observed statuses."""
     root = _target_root(run_dir)
-    run_manifest_path = root / "run_manifest.tsv"
-    rows = _finalizable_rows(root)
-    with experiment_workspace.managed_run_lock(root):
-        run_manifest_snapshot = exp_io.read_managed_files_at(root, [run_manifest_path])[str(run_manifest_path)]
-    rows = _finalizable_rows(root)
-    with experiment_workspace.managed_run_lock(root):
-        current_run_manifest = exp_io.read_managed_files_at(root, [run_manifest_path])[str(run_manifest_path)]
-    if current_run_manifest["sha256"] != run_manifest_snapshot["sha256"]:
-        raise RuntimeError("Run manifest changed during finalization.")
-    manifest_text = exp_io.read_text_at(root / "experiment.yaml")
-    manifest = read_managed_yaml_mapping(
-        manifest_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}"
-    )
-    if not isinstance(manifest.get("experiment"), dict):
-        raise ValueError("experiment.yaml is missing.")
-    registered_steps = _registered_plan_steps(
-        root,
-        manifest["experiment"],
-        rows,
-        require_registered_rows=False,
-    )
-    selection_report = (
-        _hparam_selection_report(root)
-        if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
-        else None
-    )
-    snapshot = tracking.experiment_status_snapshot(
-        manifest["experiment"],
-        registered_steps,
-        rows,
-        root=root,
-        hparam_selection_report=selection_report,
-    )
-    blocking_codes = sorted(
-        {blocker["code"] for blocker in snapshot["blockers"] if blocker["code"] == "unmaterialized_step"}
-    )
-    if blocking_codes:
-        raise ValueError("Experiment cannot be finalized with incomplete canonical steps: " + ", ".join(blocking_codes))
-    hparam = tracking.hparam_selection_lifecycle(
-        registered_steps,
-        rows,
-        root=root,
-        report=selection_report,
-    )
-    if hparam["pending_steps"]:
-        raise ValueError("Successful hparam runs must be selected before experiment finalization.")
-    selected_report = selection_report if hparam["selected_steps"] else None
-    if hparam["selected_steps"] and (selected_report is None or not hparam["report_valid"]):
-        raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
-    if selected_report is not None:
-        _validate_hparam_selection_files_unchanged(root, selected_report)
-    report_path_is_selection = str(Path(report_path)) == hparam["report_path"]
-    if selected_report is not None:
-        if hparam["automatic_report_final"]:
-            if not report_path_is_selection:
-                raise ValueError(f"Successful hparam experiments must finalize from {hparam['report_path']}")
-            report_text = str(selected_report["text"])
-        elif report_path_is_selection:
-            raise ValueError("The hparam selection report cannot replace the required combined experiment report.")
-    elif hparam["hparam_steps"] and report_path_is_selection:
-        raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
-    if not (hparam["selected_steps"] and hparam["automatic_report_final"]):
-        report_text = exp_io.read_text_at(report_path)
-        report_content_is_selection = bool(
-            selection_report is not None
-            and hashlib.sha256(report_text.encode()).hexdigest() == selection_report["sha256"]
-        )
-        if hparam["selected_steps"] and report_content_is_selection:
-            raise ValueError("The hparam selection report cannot replace the required combined experiment report.")
-        if not hparam["selected_steps"] and hparam["hparam_steps"] and report_content_is_selection:
-            raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
-    if not report_text.strip():
-        raise ValueError("Final report is missing or empty.")
-    if hparam["selected_steps"]:
-        _validate_hparam_checkpoints(rows, hparam["selected_steps"])
     target = root / "reports" / "final.md"
-    exp_io.validate_managed_output_paths(
-        root,
-        [
-            target,
-            root / "experiment.yaml",
-            root / "events.jsonl",
-            run_manifest_path.with_name(run_manifest_path.name + ".lock"),
-        ],
-    )
-    target_exists = exp_io.path_exists_at(target)
-    target_text = exp_io.read_text_at(target) if target_exists else ""
-    target_sha256 = hashlib.sha256(target_text.encode()).hexdigest() if target_exists else None
-    manifest_sha256 = hashlib.sha256(manifest_text.encode()).hexdigest()
-    report_sha256 = hashlib.sha256(report_text.encode()).hexdigest()
-    if not exp_io.conditional_atomic_replace_text_at(
-        target,
-        report_text,
-        target_sha256,
-        managed_root=root,
-        dependency_path=run_manifest_path,
-        expected_dependency_sha256=run_manifest_snapshot["sha256"],
-        guard_path=root / "experiment.yaml",
-        expected_guard_sha256=manifest_sha256,
-    ):
-        raise RuntimeError(f"Final report changed during publication: {target}")
-    completion: ExperimentCompletionFields = {
-        "status": "completed",
-        "completed_at": utc_now(),
-        "final_report": str(target),
-        "final_report_sha256": report_sha256,
-    }
-    manifest["experiment"].update(completion)
-    if selected_report is not None:
-        manifest["experiment"]["selection_report_sha256"] = selected_report["sha256"]
-    exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)})
-    if selected_report is not None:
-        _validate_hparam_selection_files_unchanged(root, selected_report)
-    if hparam["selected_steps"]:
-        _validate_hparam_checkpoints(rows, hparam["selected_steps"])
-    # The experiment manifest is the terminal commit, so publish it only after the report is durable.
-    if not exp_io.conditional_atomic_replace_text_at(
-        root / "experiment.yaml",
-        yaml.safe_dump(manifest, sort_keys=False),
-        manifest_sha256,
-        managed_root=root,
-        dependency_path=run_manifest_path,
-        expected_dependency_sha256=run_manifest_snapshot["sha256"],
-        guard_path=target,
-        expected_guard_sha256=report_sha256,
-    ):
-        raise RuntimeError("Experiment or run manifest changed during finalization.")
+    with experiment_workspace.managed_run_lock(root):
+        experiment, rows = _managed_workspace(root, lock_held=True)
+        if not rows:
+            raise ValueError("Experiment has no managed runs to finalize.")
+        unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
+        if unresolved:
+            raise ValueError(f"Experiment still has unresolved runs: {unresolved}")
+        missing_stop_reasons = stopped_runs_without_reason(rows)
+        if missing_stop_reasons:
+            run_ids = [f"{row['step_id']} / {row['run_id']}" for row in missing_stop_reasons]
+            raise ValueError(f"Stopped runs are missing required stop_reason: {run_ids}")
+        registered_steps = _registered_plan_steps(root, experiment, rows, require_registered_rows=False)
+        selection_report = (
+            _hparam_selection_report(root)
+            if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
+            else None
+        )
+        snapshot = tracking.experiment_status_snapshot(
+            experiment, registered_steps, rows, root=root, hparam_selection_report=selection_report
+        )
+        if any(blocker["code"] == "unmaterialized_step" for blocker in snapshot["blockers"]):
+            raise ValueError("Experiment cannot be finalized with incomplete canonical steps: unmaterialized_step")
+        hparam = tracking.hparam_selection_lifecycle(registered_steps, rows, root=root, report=selection_report)
+        if hparam["pending_steps"]:
+            raise ValueError("Successful hparam runs must be selected before experiment finalization.")
+        selected_report = selection_report if hparam["selected_steps"] else None
+        if hparam["selected_steps"] and (selected_report is None or not hparam["report_valid"]):
+            raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
+        report_text = _final_report_text(report_path, hparam, selection_report)
+        if not report_text.strip():
+            raise ValueError("Final report is missing or empty.")
+        if hparam["selected_steps"]:
+            _validate_hparam_checkpoints(rows, hparam["selected_steps"])
+
+        exp_io.atomic_replace(target, report_text)
+        append_event(root, "experiment_finalization_prepared", {"report": str(target)})
+        completion: ExperimentCompletionFields = {
+            "status": "completed",
+            "completed_at": utc_now(),
+            "final_report": str(target),
+            "final_report_sha256": hashlib.sha256(report_text.encode()).hexdigest(),
+        }
+        experiment.update(completion)
+        if selected_report is not None:
+            experiment["selection_report_sha256"] = selected_report["sha256"]
+        # The experiment manifest is the terminal commit, so publish it only after the report is durable.
+        exp_io.atomic_replace(root / "experiment.yaml", yaml.safe_dump({"experiment": experiment}, sort_keys=False))
     return target
 
 
@@ -696,34 +574,38 @@ def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
 
     Requires an active, valid managed workspace. Reads local process,
     artifact and Slurm evidence (one ``squeue --me`` query when a Slurm run
-    needs a state), merges observations into run_manifest.tsv
-    and its projections, then writes reports/monitor.md. Also probes the queue
-    runner of every registered plan that has a queue_runner.lock (only a direct
-    hparam queue creates one) without starting any runner. Returns run_dir, the
-    committed runs, that runner liveness and the report path; these are committed
-    observations rather than an experiment_status lifecycle decision.
+    needs a state), merges observations into run_manifest.tsv, then writes
+    reports/monitor.md. Per-poll observation fields (MONITOR_OBSERVATION_FIELDS,
+    such as log_tail and log_age_seconds) appear only in that report and the
+    returned runs, never in run_manifest.tsv. Also probes the queue runner of
+    every registered plan that has a queue_runner.lock (only a direct hparam
+    queue creates one) without starting any runner. Returns run_dir, the
+    committed runs with this poll's observation fields, that runner liveness and
+    the report path; these are observations rather than an experiment_status
+    lifecycle decision.
 
     Invalid ownership/state and unhandled
     observation or write errors propagate; a report-write failure can occur
     after the canonical manifest has already been updated."""
     root = _target_root(run_dir)
-    previous_rows = _managed_rows(root)
+    run_rows = _managed_rows(root)
     report_path = root / "reports" / "monitor.md"
-    exp_io.validate_managed_output_paths(
-        root,
-        [
-            report_path,
-            root / "run_manifest.tsv",
-            root / "run_matrix.csv",
-            root / "reports" / "run_matrix.md",
-            root / "events.jsonl",
-        ],
-    )
-    # Observe the owner-validated input snapshot; the commit still reads fresh under its lock/CAS.
-    run_rows = previous_rows
+    # Observe the owner-validated input snapshot; the commit still rereads canonical rows under the run lock.
     slurm_jobs = managed_scheduler.slurm_job_snapshot(run_rows)
-    observations = [tracking.monitor_run_row(root, row, previous_rows, slurm_jobs=slurm_jobs) for row in run_rows]
-    committed = merge_run_manifest(root, observations)
+    observations = [tracking.monitor_run_row(root, row, run_rows, slurm_jobs=slurm_jobs) for row in run_rows]
+    observed_by_key = {validated_run_key(row): row for row in observations}
+    # run_manifest.tsv drops per-poll observation fields, so the report and returned runs carry this poll's values.
+    committed = [
+        {
+            **row,
+            **{
+                field: str(value)
+                for field, value in observed_by_key.get(validated_run_key(row), {}).items()
+                if field in MONITOR_OBSERVATION_FIELDS
+            },
+        }
+        for row in merge_run_manifest(root, observations)
+    ]
     # Registered plans own canonical rows, and _managed_rows checked every row's experiment_id.
     step_manifests = read_registered_steps(root, experiment_id=str(run_rows[0]["experiment_id"])) if run_rows else []
     queue_runners = [
@@ -847,7 +729,6 @@ def _registered_plan_steps(
 def _hparam_selection_report(root: Path) -> tracking.HparamSelectionReportSnapshot | None:
     path = root / "reports" / "hparam_selection.md"
     ranking_path = root / "reports" / "ranking.csv"
-    exp_io.validate_managed_output_paths(root, [path, ranking_path])
     if not exp_io.path_exists_at(path):
         return None
     read_paths: list[str | Path] = [path]
