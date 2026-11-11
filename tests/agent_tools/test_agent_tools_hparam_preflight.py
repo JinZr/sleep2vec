@@ -609,7 +609,6 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
     }
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = workspace / "plans" / "tune"
-    staging_dir = workspace / "plans" / ".tune.staging"
     effective, _config, preflight = plans.evaluate_recipe(recipe)
     assert preflight.exit_code == 0
     ensure_experiment_workspace(effective, plan_dir, register_step=False)
@@ -622,24 +621,22 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
         calls += 1
         if calls == 1:
             run = dict(runs[0])
-            run["script"] = str(plan_dir / Path(run["script"]).relative_to(staging_dir))
+            script = Path(run["script"])
+            staging_dir = next(parent for parent in script.parents if parent.name.endswith(".staging"))
+            run["script"] = str(plan_dir / script.relative_to(staging_dir))
             row = plan_hparam.hparam_manifest_rows({"runs": [run]})[0]
             merge_run_manifest(workspace, [row])
         return _snapshot(execution, runs)
 
     monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inject_partial_registration)
 
-    report = plans.build_plan(
-        recipe_path=recipe,
-        output_dir=plan_dir,
-        staging_dir=staging_dir,
-    )
+    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     assert report.exit_code == 1
     assert "registration is partial" in report.blocking_issues()[0].message
     assert calls == 2
     assert not plan_dir.exists()
-    assert not staging_dir.exists()
+    assert _staging_dirs(workspace, plan_dir) == []
     assert not (workspace / "steps" / "unit-finetune" / "step.yaml").exists()
     assert (events_path.read_bytes() if events_path.exists() else None) == events_before
     assert [row["run_id"] for row in read_run_manifest(workspace)] == ["run-000"]
@@ -1153,11 +1150,9 @@ def test_validate_only_rejects_non_hparam_without_writes(tmp_path: Path):
 
 
 @pytest.mark.parametrize("static_contract", [True, False])
-@pytest.mark.parametrize(
-    "workspace_state,adaptive_commit", [(True, True), (False, True), (True, False), (False, False)]
-)
+@pytest.mark.parametrize("workspace_state", [True, False])
 def test_hparam_reader_preserves_full_mapping_and_read_modes(
-    tmp_path: Path, monkeypatch, static_contract: bool, workspace_state: bool, adaptive_commit: bool
+    tmp_path: Path, monkeypatch, static_contract: bool, workspace_state: bool
 ):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
@@ -1188,11 +1183,7 @@ def test_hparam_reader_preserves_full_mapping_and_read_modes(
         return result
 
     monkeypatch.setattr(run_artifacts, "_read_plan_documents", capture_documents)
-    result = run_artifacts.read_hparam_plan(
-        plan_dir,
-        require_workspace_state=workspace_state,
-        require_adaptive_commit=adaptive_commit,
-    )
+    result = run_artifacts.read_hparam_plan(plan_dir, require_workspace_state=workspace_state)
     assert result is documents[0]
     assert result == payload
     assert result["recipe"] is documents[0]["recipe"]

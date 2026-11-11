@@ -75,47 +75,6 @@ def test_hparam_init_checkpoint_is_hashed_and_not_used_for_resume(tmp_path, monk
     assert not (out / "launch_manifest.tsv").exists()
 
 
-def test_adaptive_init_inherits_full_model_checkpoint(tmp_path):
-    checkpoint = tmp_path / "selected full.ckpt"
-    checkpoint.write_bytes(b"selected full model")
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
-    payload = yaml.safe_load(recipe.read_text())
-    payload["inputs"]["init_checkpoint_path"] = str(checkpoint)
-    payload["adaptive"] = {
-        "enabled": True,
-        "objective_metric": "val_ahi_pearson",
-        "objective_mode": "max",
-        "test_feedback_for_selection": False,
-        "max_rounds": 2,
-        "max_runs_total": 2,
-        "round_size": 1,
-        "suggest": {"strategy": "best_neighborhood"},
-        "replacement": {"enabled": False},
-    }
-    write_yaml(recipe, payload)
-    workflow = tmp_path / "workflow"
-    result = run_cli("hparam-adaptive-init", "--recipe", str(recipe), "--output-dir", str(workflow))
-    assert result.returncode == 0, result.stdout + result.stderr
-    round_dir = workflow / "adaptive" / "rounds" / "round_000"
-    plan = run_artifacts.read_hparam_plan(round_dir)
-    run = plan["runs"][0]
-    snapshot = {
-        "field": "inputs.init_checkpoint_path",
-        "path": str(checkpoint),
-        "sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
-    }
-    assert plan["recipe"]["inputs"]["init_checkpoint_path"] == str(checkpoint)
-    assert plan_contract.frozen_input_snapshot(plan["recipe"], snapshot["field"]) == snapshot
-    assert run["input_snapshots"] == [snapshot]
-    argv = shlex.split(run["command"])
-    assert argv[argv.index("--init-checkpoint-path") + 1] == str(checkpoint)
-    assert "--ckpt-path" not in argv
-    rows = read_run_manifest(Path(plan["recipe"]["experiment"]["root"]))
-    assert rows[0]["input_snapshots"] == str([snapshot])
-    assert not (round_dir / "launch_manifest.tsv").exists()
-    assert not Path(run["runtime_dir"]).exists()
-
-
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2expert", "sex_age_baseline"])
 def test_full_init_rejects_unsupported_variants(variant):
     issue = finetune_init_checkpoint_issue({"variant": variant, "inputs": {"init_checkpoint_path": "/full.ckpt"}})

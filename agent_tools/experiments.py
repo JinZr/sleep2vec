@@ -1191,9 +1191,9 @@ def _managed_workspace(
         ):
             raise ValueError("Completed experiment selection report differs from its terminal binding.")
 
-    for legacy_path in (root / "trial_status.tsv", root / "adaptive" / "trial_registry.tsv"):
-        if exp_io.path_exists_at(legacy_path, remote=remote):
-            raise ValueError(f"Historical experiment artifacts are read-only: {legacy_path}")
+    legacy_path = root / "trial_status.tsv"
+    if exp_io.path_exists_at(legacy_path, remote=remote):
+        raise ValueError(f"Historical experiment artifacts are read-only: {legacy_path}")
 
     experiment_manifest = root / "experiment_manifest.tsv"
     if validate_experiment_index and exp_io.path_exists_at(experiment_manifest, remote=remote):

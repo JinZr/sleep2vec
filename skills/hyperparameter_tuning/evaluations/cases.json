@@ -7,13 +7,12 @@
       "mode": "max",
       "selection_split": "val"
     },
-    "authority": "Scientific/data/checkpoint/runtime identity is fixed. Training and validation evidence is allowed; test feedback is not available. The bounded technical domain and four remaining runs over two rounds are authorized. Seed is fixed; do not invent independent-seed replication or expand the domain.",
+    "authority": "Scientific/data/checkpoint/runtime identity is fixed. Training and validation evidence is allowed; test feedback is not available. The technical ranges in authorized_ranges and four remaining runs over two rounds are authorized. Seed is fixed; do not invent independent-seed replication or search outside those ranges.",
     "remaining_budget": {
       "runs": 4,
-      "rounds": 2,
-      "round_size": 2
+      "rounds": 2
     },
-    "domain": {
+    "authorized_ranges": {
       "runtime.lr": [
         0.0001,
         0.0004

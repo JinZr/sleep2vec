@@ -47,7 +47,6 @@ from . import (
 from .adapters.base import TaskAdapter
 from .adapters.registry import SUPPORTED_TASKS, composite_adapter, get_adapter
 from .configs import config_summary
-from .decision_hparam import uses_agent_proposals
 from .decision_models import USER_DECISIONS_FILENAME
 from .decisions import (
     DecisionIssue,
@@ -271,14 +270,13 @@ def _materialize_decisions(
                 )
                 continue
         if field == "hparam_search_space":
-            # Domain decisions preserve explicit adaptive seed points; static decisions replace their search shape.
+            # A search-space decision replaces the authored search shape.
             target = dict(target)
             if "profile" in target:
                 if target.get("method") is None:
                     target["method"] = "grid"
                 target.pop("profile")
-            if not uses_agent_proposals(recipe):
-                target.pop("configurations", None)
+            target.pop("configurations", None)
         recipe[section] = {**target, key: value}
     if user_supplied:
         recipe_decisions_value = recipe.get("decisions")
@@ -1075,50 +1073,9 @@ def build_context(
 
 
 def _validate_bound_recipe(
-    recipe: dict[str, Any],
     cfg: ConfigSummaryInput | None,
     report: DecisionReport,
-    out: Path,
-    *,
-    expected_recipe: dict[str, Any] | None,
-    expected_base_recipe: dict[str, Any] | None,
-    registered_recipe_path: str | Path | None,
-    source_config_sha256: str | None,
 ) -> tuple[bytes, str, BoundFinalEvalConfigSnapshot | None] | None:
-    if expected_recipe is not None:
-        recipe_source_value = recipe.get("_local_recipe")
-        recipe_source = recipe_source_value if isinstance(recipe_source_value, dict) else recipe
-        actual_recipe = {key: value for key, value in recipe_source.items() if not str(key).startswith("_")}
-        actual_recipe_json = json.dumps(actual_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        expected_recipe_json = json.dumps(expected_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        if actual_recipe_json != expected_recipe_json:
-            raise ValueError("Plan recipe does not match the bound adaptive recipe.")
-        base_source_value = recipe.get("_base_recipe")
-        base_source = base_source_value if isinstance(base_source_value, dict) else None
-        actual_base_recipe = (
-            {key: value for key, value in base_source.items() if not str(key).startswith("_")}
-            if base_source is not None
-            else None
-        )
-        actual_base_json = json.dumps(actual_base_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        expected_base_json = json.dumps(expected_base_recipe, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        if actual_base_json != expected_base_json:
-            raise ValueError("Plan base recipe does not match the bound adaptive recipe.")
-    if registered_recipe_path is not None:
-        frozen_recipe_path = Path(registered_recipe_path).expanduser()
-        if not frozen_recipe_path.is_absolute():
-            frozen_recipe_path = (Path.cwd() / frozen_recipe_path).resolve()
-        else:
-            frozen_recipe_path = frozen_recipe_path.resolve()
-        try:
-            frozen_recipe_path.relative_to(out)
-        except ValueError as exc:
-            raise ValueError(
-                f"Registered plan recipe must be inside the final plan directory: {frozen_recipe_path}"
-            ) from exc
-        recipe["_recipe_path"] = str(frozen_recipe_path)
-        if isinstance(recipe.get("_local_recipe"), dict):
-            recipe["_local_recipe"]["_recipe_path"] = str(frozen_recipe_path)
     validated_config_bytes = cfg.get("_source_config_bytes") if isinstance(cfg, dict) else None
     validated_config_sha256 = cfg.get("_source_config_sha256") if isinstance(cfg, dict) else None
     final_eval_config: BoundFinalEvalConfigSnapshot | None = (
@@ -1129,8 +1086,6 @@ def _validate_bound_recipe(
             raise ValueError("Successful plan preflight did not bind the source config bytes.")
         if hashlib.sha256(validated_config_bytes).hexdigest() != validated_config_sha256:
             raise ValueError("Validated source config bytes do not match their SHA-256.")
-        if source_config_sha256 is not None and source_config_sha256 != validated_config_sha256:
-            raise ValueError("Source config does not match the externally bound SHA-256.")
         return validated_config_bytes, validated_config_sha256, final_eval_config
     return None
 
@@ -1144,9 +1099,6 @@ def _materialize_adapter_plan(
     write_out: Path,
     output_identity: tuple[int, int] | None,
     generated_staging: bool,
-    staging_dir: str | Path | None,
-    defer_commit: bool,
-    plan_controller: str | None,
     run_index_offset: int | None,
     validate_only: bool,
     unlock_final_test: bool,
@@ -1193,8 +1145,6 @@ def _materialize_adapter_plan(
     if validate_only:
         shutil.rmtree(write_out)
         return report
-    if defer_commit:
-        return report
 
     registration_rows = plan_adapter.registration_rows(read_json(write_out / "plan.json"))
     staged_tree_sha256 = artifacts.plan_tree_sha256(write_out)
@@ -1224,7 +1174,6 @@ def _materialize_adapter_plan(
                 registration_rows,
                 expected_tree_sha256=staged_tree_sha256,
                 expected_tree_entries=plan_tree_entries,
-                plan_controller=plan_controller,
             )
         except BaseException:
             if write_out.exists() and not write_out.is_symlink():
@@ -1234,7 +1183,7 @@ def _materialize_adapter_plan(
             shutil.rmtree(write_out)
             return _registered_plan_immutable_report(report, out)
         out_preexisted = current_output_identity is not None
-        if registration_state == "unregistered" and (staging_dir is not None or generated_staging):
+        if registration_state == "unregistered" and generated_staging:
             try:
                 publish_staged_plan_locked(
                     write_out,
@@ -1277,9 +1226,6 @@ def _materialize_single_run_plan(
     write_out: Path,
     output_identity: tuple[int, int] | None,
     generated_staging: bool,
-    staging_dir: str | Path | None,
-    defer_commit: bool,
-    plan_controller: str | None,
     run_index_offset: int | None,
     unlock_final_test: bool,
     validated_config_bytes: bytes,
@@ -1330,8 +1276,6 @@ def _materialize_single_run_plan(
     write_json(write_out / "plan.json", plan)
     resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
     (write_out / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
-    if defer_commit:
-        return report
     manifest_rows = run_adapter.registration_rows(plan)
     staged_tree_sha256 = artifacts.plan_tree_sha256(write_out)
     plan_tree_entries = frozenset(path.name for path in write_out.iterdir()) if out == root else None
@@ -1361,7 +1305,6 @@ def _materialize_single_run_plan(
                 manifest_rows,
                 expected_tree_sha256=staged_tree_sha256,
                 expected_tree_entries=plan_tree_entries,
-                plan_controller=plan_controller,
             )
         except BaseException:
             if write_out != out and write_out.exists() and not write_out.is_symlink():
@@ -1372,7 +1315,7 @@ def _materialize_single_run_plan(
                 shutil.rmtree(write_out)
             return _registered_plan_immutable_report(report, out)
         out_preexisted = current_output_identity is not None
-        if registration_state == "unregistered" and (staging_dir is not None or generated_staging):
+        if registration_state == "unregistered" and generated_staging:
             try:
                 publish_staged_plan_locked(
                     write_out,
@@ -1386,12 +1329,7 @@ def _materialize_single_run_plan(
                 raise
         elif registration_state != "unregistered" and write_out != out:
             shutil.rmtree(write_out)
-        ensure_experiment_workspace(
-            recipe,
-            out,
-            plan_controller=plan_controller,
-            allow_published_plan=staging_dir is not None or generated_staging,
-        )
+        ensure_experiment_workspace(recipe, out, allow_published_plan=generated_staging)
         merge_run_manifest(
             root,
             manifest_rows,
@@ -1413,15 +1351,6 @@ class PlanBuildRequest:
     user_decisions_path: str | Path | None
     allow_unresolved: bool
     unlock_final_test: bool
-    source_config_sha256: str | None
-    expected_recipe: dict[str, Any] | None
-    expected_base_recipe: dict[str, Any] | None
-    staging_dir: str | Path | None
-    defer_commit: bool
-    registered_recipe_path: str | Path | None
-    allow_adaptive_workflow: bool
-    plan_controller: str | None
-    run_index_offset: int | None
     validate_only: bool
 
 
@@ -1432,15 +1361,6 @@ def build_plan(
     user_decisions_path: str | Path | None = None,
     allow_unresolved: bool = False,
     unlock_final_test: bool = False,
-    source_config_sha256: str | None = None,
-    expected_recipe: dict[str, Any] | None = None,
-    expected_base_recipe: dict[str, Any] | None = None,
-    staging_dir: str | Path | None = None,
-    defer_commit: bool = False,
-    registered_recipe_path: str | Path | None = None,
-    allow_adaptive_workflow: bool = False,
-    plan_controller: str | None = None,
-    run_index_offset: int | None = None,
     validate_only: bool = False,
 ) -> DecisionReport:
     """Validate and publish a frozen plan, returning its DecisionReport without launching runs.
@@ -1448,24 +1368,15 @@ def build_plan(
     Normally registers the plan and run rows in the experiment workspace. A
     blocked report can publish questions/decisions and, with allow_unresolved,
     a non-runnable draft; early blockers can return without publishing anything.
-    Expected recipe and config-hash arguments bind publication to prior inputs.
 
-    staging_dir is a new directory inside experiment.root holding files whose
-    logical paths refer to output_dir. defer_commit requires it and leaves a
-    successful build staged, skipping this wrapper's registration lock and the
-    normal final publication/registration; the caller owns that commit protocol.
     validate_only supports materialized hparam plans: it checks a scratch build
     without publishing a runnable plan, but can create scratch and lock files.
 
-    Adaptive/controller and run-index arguments support coordinated publication.
     Consultation and handled precommit failures return a non-passing report;
     other exceptions propagate. A failure does not promise rollback of every
     workspace artifact. See doc/agent_contracts/ for the publication contracts."""
     build_lock: AbstractContextManager
-    if defer_commit:
-        root = None
-        build_lock = nullcontext()
-    elif validate_only:
+    if validate_only:
         root = None
         build_lock = plan_publication_lock(Path(output_dir))
     else:
@@ -1477,53 +1388,22 @@ def build_plan(
         user_decisions_path=user_decisions_path,
         allow_unresolved=allow_unresolved,
         unlock_final_test=unlock_final_test,
-        source_config_sha256=source_config_sha256,
-        expected_recipe=expected_recipe,
-        expected_base_recipe=expected_base_recipe,
-        staging_dir=staging_dir,
-        defer_commit=defer_commit,
-        registered_recipe_path=registered_recipe_path,
-        allow_adaptive_workflow=allow_adaptive_workflow,
-        plan_controller=plan_controller,
-        run_index_offset=run_index_offset,
         validate_only=validate_only,
     )
     with build_lock:
-        return _build_plan(request=request, locked_root=root, check_locked_root=not (defer_commit or validate_only))
+        return _build_plan(request=request, locked_root=root, check_locked_root=not validate_only)
 
 
-def _prepare_plan_staging(
-    *,
-    out: Path,
-    root: Path,
-    staging_dir: str | Path | None,
-    defer_commit: bool,
-    plan_adapter: TaskAdapter | None,
-) -> tuple[Path, bool]:
-    write_out = out
-    generated_staging = False
-    if staging_dir is not None:
-        if out.exists() and not defer_commit:
-            raise ValueError(f"Atomic plan output already exists: {out}")
-        write_out = canonical_local_experiment_root(staging_dir, Path.cwd())
-        try:
-            write_out.relative_to(root)
-        except ValueError as exc:
-            raise ValueError(f"Atomic plan staging directory must be inside experiment.root: {write_out}") from exc
-        if write_out.is_symlink() or write_out.exists():
-            raise ValueError(f"Atomic plan staging directory must not exist: {write_out}")
-        write_out.mkdir(parents=True)
-    elif plan_adapter is not None:
-        staging_parent = out.parent
-        if os.path.lexists(out) and out.lstat().st_dev != out.parent.lstat().st_dev:
-            # A plan may itself be a mount point, so its parent is not always the destination filesystem.
-            staging_parent = out
-        while not os.path.lexists(staging_parent):
-            staging_parent = staging_parent.parent
-        write_out = Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent))
-        generated_staging = True
-
-    return write_out, generated_staging
+def _prepare_plan_staging(*, out: Path, plan_adapter: TaskAdapter | None) -> tuple[Path, bool]:
+    if plan_adapter is None:
+        return out, False
+    staging_parent = out.parent
+    if os.path.lexists(out) and out.lstat().st_dev != out.parent.lstat().st_dev:
+        # A plan may itself be a mount point, so its parent is not always the destination filesystem.
+        staging_parent = out
+    while not os.path.lexists(staging_parent):
+        staging_parent = staging_parent.parent
+    return Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent)), True
 
 
 def _build_plan(
@@ -1539,21 +1419,10 @@ def _build_plan(
         user_decisions_path=request.user_decisions_path,
         allow_unresolved=request.allow_unresolved,
         unlock_final_test=request.unlock_final_test,
-        allow_existing_output_artifacts=request.defer_commit,
-        allow_adaptive_workflow=request.allow_adaptive_workflow,
     )
     if check_locked_root and experiment_root(preflight_recipe) != locked_root:
         raise ValueError("Experiment root changed while acquiring the plan registration lock.")
-    bound_config = _validate_bound_recipe(
-        preflight_recipe,
-        cfg,
-        report,
-        out,
-        expected_recipe=request.expected_recipe,
-        expected_base_recipe=request.expected_base_recipe,
-        registered_recipe_path=request.registered_recipe_path,
-        source_config_sha256=request.source_config_sha256,
-    )
+    bound_config = _validate_bound_recipe(cfg, report)
     plan_adapter = get_adapter(preflight_recipe.get("task"))
     if _has_output_artifact_issue(report):
         return report
@@ -1592,12 +1461,7 @@ def _build_plan(
             )
             if _has_output_artifact_issue(report):
                 return report
-            workspace, _step_dir = ensure_experiment_workspace(
-                preflight_recipe,
-                out,
-                register_step=False,
-                plan_controller=request.plan_controller,
-            )
+            workspace, _step_dir = ensure_experiment_workspace(preflight_recipe, out, register_step=False)
             _write_questions(out, report)
             template = write_user_decision_template(out, preflight_recipe, report, preserve_existing=False)
             template_path = template[0] if template is not None else None
@@ -1615,7 +1479,7 @@ def _build_plan(
             if not artifacts.is_registered_blocked_plan(out, workspace=workspace):
                 raise ValueError(f"Blocked plan publication did not produce a complete control bundle: {out}")
             # step.yaml is canonical ownership; expose the plan only after its blocked bundle is complete.
-            ensure_experiment_workspace(preflight_recipe, out, plan_controller=request.plan_controller)
+            ensure_experiment_workspace(preflight_recipe, out)
         return report
 
     # A bound config exists only when evaluate_recipe reached the config consultation past its freeze
@@ -1683,31 +1547,16 @@ def _build_plan(
         validated_config_sha256,
     )
 
-    ensure_experiment_workspace(
-        recipe,
-        out,
-        plan_controller=request.plan_controller,
-        validate_only=True,
-    )
-    if not request.defer_commit and not request.validate_only:
+    ensure_experiment_workspace(recipe, out, validate_only=True)
+    if not request.validate_only:
         _assert_no_incomplete_step_registration(recipe, out)
-    run_index_offset = request.run_index_offset
-    if run_index_offset is None:
-        run_index_offset = _registered_plan_run_index(recipe, out)
+    run_index_offset = _registered_plan_run_index(recipe, out)
 
     output_identity = None
     if plan_adapter is not None and os.path.lexists(out):
         output_stat = out.lstat()
         output_identity = (output_stat.st_dev, output_stat.st_ino)
-    if request.defer_commit and request.staging_dir is None:
-        raise ValueError("Deferred plan commit requires a staging directory.")
-    write_out, generated_staging = _prepare_plan_staging(
-        out=out,
-        root=root,
-        staging_dir=request.staging_dir,
-        defer_commit=request.defer_commit,
-        plan_adapter=plan_adapter,
-    )
+    write_out, generated_staging = _prepare_plan_staging(out=out, plan_adapter=plan_adapter)
 
     if plan_adapter is not None and plan_adapter.materializes_plan:
         return _materialize_adapter_plan(
@@ -1718,9 +1567,6 @@ def _build_plan(
             write_out=write_out,
             output_identity=output_identity,
             generated_staging=generated_staging,
-            staging_dir=request.staging_dir,
-            defer_commit=request.defer_commit,
-            plan_controller=request.plan_controller,
             run_index_offset=run_index_offset,
             validate_only=request.validate_only,
             unlock_final_test=request.unlock_final_test,
@@ -1736,9 +1582,6 @@ def _build_plan(
         write_out=write_out,
         output_identity=output_identity,
         generated_staging=generated_staging,
-        staging_dir=request.staging_dir,
-        defer_commit=request.defer_commit,
-        plan_controller=request.plan_controller,
         run_index_offset=run_index_offset,
         unlock_final_test=request.unlock_final_test,
         validated_config_bytes=validated_config_bytes,
@@ -1870,8 +1713,6 @@ def preflight_plan(
     user_decisions_path: str | Path | None = None,
     allow_unresolved: bool = False,
     unlock_final_test: bool = False,
-    allow_existing_output_artifacts: bool = False,
-    allow_adaptive_workflow: bool = False,
 ) -> tuple[dict, ConfigSummaryInput | None, DecisionReport]:
     """Check whether a recipe can be published at output_dir, without publishing it.
 
@@ -1883,9 +1724,7 @@ def preflight_plan(
 
     allow_unresolved permits a blocked draft, never a runnable unresolved plan.
     unlock_final_test is checked against the frozen evaluation policy, not a
-    substitute for it. allow_existing_output_artifacts relaxes the publication
-    artifact guard for staged callers; allow_adaptive_workflow is for the
-    adaptive controller. A passing report does not reserve the output: build_plan
+    substitute for it. A passing report does not reserve the output: build_plan
     rechecks publication under its locks.
 
     The recipe keeps evaluate_recipe's broad type: contract-blocked early
@@ -1898,21 +1737,6 @@ def preflight_plan(
         issue.evidence.get("preflight_before_workspace") is True for issue in report.blocking_issues()
     ):
         return recipe, cfg, report
-    adaptive_value = recipe.get("adaptive")
-    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
-    if adaptive.get("enabled") is True and not allow_adaptive_workflow:
-        report = _append_issues(
-            report,
-            [
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "adaptive.enabled",
-                    "Adaptive recipes must be initialized with hparam-adaptive-init, not plan.",
-                    None,
-                    {"preflight_before_workspace": True},
-                )
-            ],
-        )
     out = canonical_local_experiment_root(output_dir, Path.cwd())
     metadata_unresolved = bool(experiment_metadata_issues(recipe)) or any(
         issue.field in {"experiment", "step"}
@@ -1990,7 +1814,6 @@ def preflight_plan(
             recipe,
             out,
             unlock_final_test=unlock_final_test,
-            allow_existing=allow_existing_output_artifacts,
         )
         root = experiment_root(recipe)
         if root is not None:
@@ -2008,7 +1831,6 @@ def preflight_plan(
             out,
             allow_unresolved=allow_unresolved,
             unlock_final_test=unlock_final_test,
-            allow_existing=allow_existing_output_artifacts,
         )
     return recipe, cfg, report
 
@@ -2187,7 +2009,6 @@ def _assert_no_incomplete_step_registration(recipe: dict[str, Any], out: Path) -
             expected_rows,
             expected_tree_sha256=None,
             expected_tree_entries=None,
-            plan_controller=step_manifest["plan_controller"],
         )
         if state != "complete":
             raise ValueError(
@@ -2202,7 +2023,6 @@ def _plan_registration_state(
     *,
     expected_tree_sha256: str | None,
     expected_tree_entries: frozenset[str] | None,
-    plan_controller: str | None,
 ) -> str:
     root = experiment_root(recipe)
     if root is None:
@@ -2228,7 +2048,6 @@ def _plan_registration_state(
             ensure_experiment_workspace(
                 recipe,
                 out,
-                plan_controller=plan_controller,
                 validate_only=True,
                 allow_published_plan=True,
             )
@@ -2247,7 +2066,6 @@ def _plan_registration_state(
     ensure_experiment_workspace(
         recipe,
         out,
-        plan_controller=plan_controller,
         validate_only=True,
         allow_published_plan=True,
     )
@@ -2354,13 +2172,12 @@ def _guard_pass_plan_publication(
     out: Path,
     *,
     unlock_final_test: bool,
-    allow_existing: bool = False,
 ) -> DecisionReport:
     owners = _registered_plan_owners(recipe, out)
     step_id = str((recipe.get("step") or {}).get("id") or "")
     owned_by_current_step = len(owners) == 1 and str((owners[0].get("step") or {}).get("id") or "") == step_id
     recovering_unowned_plan = _is_unowned_published_plan(recipe, out)
-    if owners and not allow_existing and not owned_by_current_step:
+    if owners and not owned_by_current_step:
         report = _registered_plan_immutable_report(report, out)
     planned_paths = _planned_plan_paths(recipe, out, report, False, unlock_final_test)
     report = _guard_existing_outputs(
@@ -2368,7 +2185,7 @@ def _guard_pass_plan_publication(
         planned_paths,
         _overwrite_policy(recipe),
         root=out,
-        allow_existing=allow_existing or owned_by_current_step or recovering_unowned_plan,
+        allow_existing=owned_by_current_step or recovering_unowned_plan,
     )
     # Blocked bundles are human-editable evidence; reusing one would mix PASS and blocked envelopes.
     return _guard_existing_outputs(
@@ -2387,7 +2204,6 @@ def _guard_blocked_plan_publication(
     *,
     allow_unresolved: bool,
     unlock_final_test: bool,
-    allow_existing: bool = False,
 ) -> DecisionReport:
     planned_paths = _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test)
     blocked_paths = plan_contract.blocked_plan_control_paths(out)
@@ -2397,7 +2213,6 @@ def _guard_blocked_plan_publication(
         blocked_paths,
         overwrite_policy,
         root=out,
-        allow_existing=allow_existing,
         require_fresh="Blocked plan artifacts already exist; retry with a fresh --output-dir.",
     )
     non_control_paths = [path for path in planned_paths if path not in blocked_paths]
@@ -2407,7 +2222,6 @@ def _guard_blocked_plan_publication(
             non_control_paths,
             overwrite_policy,
             root=out,
-            allow_existing=allow_existing,
         )
     root_resident = out == experiment_root(recipe)
     pass_plan_paths = (

@@ -1,23 +1,23 @@
 # Cox initialization after a completed-results review
 
 This is a concept-only reconstruction from an actual initialization session.
-Propose a bounded technical search domain and at most two complete opening
-configurations, with reasons for the boundaries and fixed settings. Explain what
+Propose the searched technical axes and at most two complete opening
+configurations, with reasons for the searched ranges and fixed settings. Explain what
 the opening comparison could establish and what remains unknown. Use the supplied
 evidence only. Do not publish a recipe, run consultation, contact a server,
 launch work or evaluate a model. Numerical choices have no reference answer.
 
 ## Evidence boundary
 
-Use information available by 2026-09-07 16:31:00 UTC, before the new adaptive
+Use information available by 2026-09-07 16:31:00 UTC, before the new tuning
 recipe was authored at 16:31:59 UTC. The old experiment is evidence, not a plan
-to rewrite or resume. The new domain, opening pair and later outcomes are hidden.
+to rewrite or resume. The new search, opening pair and later outcomes are hidden.
 
 ## User request and fixed scientific scope
 
-After inspecting the old candidate results, the user requested adaptive tuning
-based on the observed trends, at most two concurrent runs and two GPUs per run,
-with restrained resource use. They explicitly reset the budget to twelve new
+After inspecting the old candidate results, the user requested tuning that
+uses the observed trends to choose later rounds, at most two concurrent runs and
+two GPUs per run, with restrained resource use. They explicitly reset the budget to twelve new
 fits; prior completed/interrupted runs do not consume it.
 
 Keep the existing sleep2vec2 actigraphy input, 624 Cox endpoints, participant

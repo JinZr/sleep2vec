@@ -8,7 +8,6 @@ import pytest
 import yaml
 
 from agent_tools import configs, execution_snapshot, plan_context
-from agent_tools.decision_hparam import hparam_recipe_contract_issues, hparam_search_issues
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.experiment_workspace import experiment_metadata_issues
 from agent_tools.models import resolve_repo_path, validate_json_value
@@ -184,12 +183,10 @@ def test_validate_json_value_rejects_values_outside_the_json_data_model(value, t
 
 
 def test_validate_json_value_allows_non_finite_floats_only_when_finite_is_false():
-    document = {"adaptive": {"replacement": {"kill_margin": float("nan")}}}
+    document = {"runtime": {"gradient_clip_val": float("nan")}}
 
     validate_json_value(document, "Recipe", finite=False)
-    with pytest.raises(
-        ValueError, match=r"^Recipe\.adaptive\.replacement\.kill_margin contains a non-finite number\.$"
-    ):
+    with pytest.raises(ValueError, match=r"^Recipe\.runtime\.gradient_clip_val contains a non-finite number\.$"):
         validate_json_value(document, "Recipe")
 
 
@@ -311,20 +308,13 @@ def test_recipe_rejects_invalid_search_configurations(tmp_path: Path, configurat
 
 
 @pytest.mark.parametrize(
-    ("adaptive", "field"),
+    "adaptive",
     [
-        ({"enabled": False, "poll_second": 1}, "adaptive.poll_second"),
-        (
-            {"enabled": False, "replacement": {"grace_epoch": 1}},
-            "adaptive.replacement.grace_epoch",
-        ),
-        (
-            {"enabled": False, "suggest": {"stratgey": "best_neighborhood"}},
-            "adaptive.suggest.stratgey",
-        ),
+        {"enabled": False},
+        {"enabled": True, "suggest": {"strategy": "agent_proposal"}, "round_size": 2, "max_rounds": 6},
     ],
 )
-def test_recipe_rejects_unknown_adaptive_fields(tmp_path: Path, adaptive: dict, field: str):
+def test_recipe_rejects_removed_adaptive_block(tmp_path: Path, adaptive: dict):
     payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
     payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
     payload["adaptive"] = adaptive
@@ -334,335 +324,21 @@ def test_recipe_rejects_unknown_adaptive_fields(tmp_path: Path, adaptive: dict, 
     _recipe, _cfg, report = evaluate_recipe(path)
 
     assert report.exit_code == 1
-    assert field in {issue.field for issue in report.blocking_issues()}
-
-
-def _adaptive_contract_fields(*, parameters: dict, adaptive: dict) -> set[str]:
-    issues = hparam_recipe_contract_issues(
-        {"search": {"parameters": parameters}, "adaptive": adaptive},
-        source_layer="effective",
-    )
-    return {issue.field for issue in issues}
-
-
-def _adaptive_semantic_issue_fields(tmp_path: Path, adaptive: dict, *, max_runs=1) -> set[str]:
-    payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
-    payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
-    payload["search"]["max_runs"] = max_runs
-    payload["adaptive"] = adaptive
-    path = tmp_path / "hparam.yaml"
-    path.write_text(yaml.safe_dump(payload, sort_keys=False))
-    _recipe, _cfg, report = evaluate_recipe(path)
-    return {issue.field for issue in report.blocking_issues()}
-
-
-_AGENT_PROPOSAL_REQUIRED_VALUES = {
-    "objective_metric": "val_ahi_pearson",
-    "objective_mode": "max",
-    "round_size": 1,
-    "max_rounds": 2,
-    "max_runs_total": 4,
-}
-
-
-def _valid_adaptive_values() -> dict:
-    return {
-        "enabled": True,
-        "objective_metric": "val_ahi_pearson",
-        "objective_mode": "max",
-        "max_rounds": 2,
-        "max_runs_total": 4,
-        "round_size": 1,
-        "poll_seconds": 1,
-        "replacement": {
-            "enabled": True,
-            "allow_running_stop": True,
-            "grace_epochs": 1,
-            "grace_minutes": 1,
-            "kill_margin": 0.05,
-        },
-        "suggest": {"strategy": "best_neighborhood"},
-    }
+    issue = next(issue for issue in report.blocking_issues() if issue.field == "adaptive")
+    assert issue.message == "Unknown recipe field for task=hparam_tune: adaptive."
 
 
 @pytest.mark.parametrize("value", [True, 1.5, "2"])
 def test_hparam_budget_requires_an_exact_positive_integer(tmp_path: Path, value):
-    fields = _adaptive_semantic_issue_fields(tmp_path, _valid_adaptive_values(), max_runs=value)
+    payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
+    payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
+    payload["search"]["max_runs"] = value
+    path = tmp_path / "hparam.yaml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    assert "hparam_budget" in fields
+    _recipe, _cfg, report = evaluate_recipe(path)
 
-
-@pytest.mark.parametrize("field", ["max_rounds", "max_runs_total", "round_size", "poll_seconds"])
-@pytest.mark.parametrize("value", [True, 1.5, "2"])
-def test_adaptive_integer_fields_require_exact_positive_integers(tmp_path: Path, field: str, value):
-    adaptive = _valid_adaptive_values()
-    adaptive[field] = value
-
-    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
-
-    assert f"adaptive.{field}" in fields
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("enabled", "false"),
-        ("test_feedback_for_selection", "false"),
-    ],
-)
-def test_adaptive_flags_require_booleans(tmp_path: Path, field: str, value):
-    adaptive = _valid_adaptive_values()
-    adaptive[field] = value
-
-    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
-
-    assert f"adaptive.{field}" in fields
-
-
-@pytest.mark.parametrize("field", ["enabled", "allow_running_stop"])
-def test_adaptive_replacement_flags_require_booleans(tmp_path: Path, field: str):
-    adaptive = _valid_adaptive_values()
-    adaptive["replacement"][field] = "false"
-
-    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
-
-    assert f"adaptive.replacement.{field}" in fields
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("grace_epochs", -1),
-        ("grace_minutes", "invalid"),
-        ("kill_margin", float("nan")),
-    ],
-)
-def test_adaptive_replacement_thresholds_must_be_finite_and_non_negative(tmp_path: Path, field: str, value):
-    adaptive = _valid_adaptive_values()
-    adaptive["replacement"][field] = value
-
-    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
-
-    assert f"adaptive.replacement.{field}" in fields
-
-
-@pytest.mark.parametrize("objective_mode", [["max"], {"value": "max"}])
-def test_malformed_adaptive_objective_mode_returns_a_structured_issue(tmp_path: Path, objective_mode):
-    adaptive = _valid_adaptive_values()
-    adaptive["objective_mode"] = objective_mode
-
-    fields = _adaptive_semantic_issue_fields(tmp_path, adaptive)
-
-    assert "adaptive.objective_mode" in fields
-
-
-def test_explicit_best_neighborhood_contract_keeps_existing_parameter_value_semantics():
-    fields = _adaptive_contract_fields(
-        parameters={"runtime.lr": [[1, 2], [3, 4]]},
-        adaptive={"enabled": True, "suggest": {"strategy": "best_neighborhood"}},
-    )
-
-    assert not fields
-
-
-def test_omitted_strategy_defaults_to_agent_proposal():
-    fields = _adaptive_contract_fields(
-        parameters={"runtime.lr": [1e-6, 2e-6]},
-        adaptive={
-            "enabled": True,
-            **_AGENT_PROPOSAL_REQUIRED_VALUES,
-            "suggest": {"bounds": {"runtime.lr": [5e-7, 1e-5]}},
-        },
-    )
-
-    assert not fields
-
-
-@pytest.mark.parametrize("adaptive", [{}, {"enabled": False}])
-def test_inactive_adaptive_block_does_not_start_default_agent_proposal_contract(adaptive: dict):
-    issues = hparam_recipe_contract_issues({"adaptive": adaptive}, source_layer="effective")
-
-    assert not issues
-
-
-def test_agent_proposal_contract_accepts_expanded_numeric_bounds_and_categories():
-    fields = _adaptive_contract_fields(
-        parameters={
-            "runtime.lr": [1e-6, 2e-6],
-            "runtime.batch_size": [8, 16],
-            "yaml:/model/head/name": ["linear", "mlp"],
-            "yaml:/model/use_bias": [True, False],
-        },
-        adaptive={
-            "enabled": True,
-            **_AGENT_PROPOSAL_REQUIRED_VALUES,
-            "replacement": {"enabled": False},
-            "suggest": {
-                "strategy": "agent_proposal",
-                "bounds": {"runtime.lr": [5e-7, 1e-5], "runtime.batch_size": [4, 64]},
-            },
-        },
-    )
-
-    assert not fields
-
-
-def test_agent_proposal_contract_accepts_omitted_replacement_and_default_numeric_envelope():
-    fields = _adaptive_contract_fields(
-        parameters={"runtime.lr": [1e-6, 2e-6]},
-        adaptive={
-            "enabled": True,
-            **_AGENT_PROPOSAL_REQUIRED_VALUES,
-            "suggest": {"strategy": "agent_proposal"},
-        },
-    )
-
-    assert not fields
-
-
-@pytest.mark.parametrize("field", tuple(_AGENT_PROPOSAL_REQUIRED_VALUES))
-@pytest.mark.parametrize("unresolved", ["missing", "null", "empty"])
-def test_agent_proposal_requires_explicit_control_fields(field: str, unresolved: str):
-    adaptive = {
-        "enabled": True,
-        **_AGENT_PROPOSAL_REQUIRED_VALUES,
-        "suggest": {"strategy": "agent_proposal"},
-    }
-    if unresolved == "missing":
-        adaptive.pop(field)
-    else:
-        adaptive[field] = None if unresolved == "null" else ""
-
-    issues = hparam_recipe_contract_issues(
-        {"search": {"parameters": {"runtime.lr": [1e-6, 2e-6]}}, "adaptive": adaptive},
-        source_layer="effective",
-    )
-    issue = next(issue for issue in issues if issue.field == f"adaptive.{field}")
-
-    assert issue.status == DecisionStatus.NEEDS_USER_INPUT
-    assert issue.question
-    assert issue.evidence == {
-        "value": adaptive.get(field),
-        "source_layer": "effective",
-        "preflight_before_workspace": True,
-    }
-
-
-def test_agent_proposal_treats_blank_objective_metric_as_unresolved():
-    adaptive = {
-        "enabled": True,
-        **_AGENT_PROPOSAL_REQUIRED_VALUES,
-        "objective_metric": "   ",
-        "suggest": {"strategy": "agent_proposal"},
-    }
-
-    issues = hparam_recipe_contract_issues(
-        {"search": {"parameters": {"runtime.lr": [1e-6, 2e-6]}}, "adaptive": adaptive},
-        source_layer="effective",
-    )
-    issue = next(issue for issue in issues if issue.field == "adaptive.objective_metric")
-
-    assert issue.status == DecisionStatus.NEEDS_USER_INPUT
-    assert issue.question
-    assert issue.evidence == {
-        "value": "   ",
-        "source_layer": "effective",
-        "preflight_before_workspace": True,
-    }
-
-
-@pytest.mark.parametrize(
-    "objective_metric",
-    [
-        pytest.param(0, id="zero"),
-        pytest.param(False, id="false"),
-        pytest.param([], id="list"),
-        pytest.param({}, id="mapping"),
-        pytest.param(1, id="integer"),
-    ],
-)
-def test_agent_proposal_rejects_non_string_objective_metric(objective_metric):
-    adaptive = {
-        "enabled": True,
-        **_AGENT_PROPOSAL_REQUIRED_VALUES,
-        "objective_metric": objective_metric,
-        "suggest": {"strategy": "agent_proposal"},
-    }
-
-    issues = hparam_recipe_contract_issues(
-        {"search": {"parameters": {"runtime.lr": [1e-6, 2e-6]}}, "adaptive": adaptive},
-        source_layer="effective",
-    )
-    issue = next(issue for issue in issues if issue.field == "adaptive.objective_metric")
-
-    assert issue.status == DecisionStatus.FAIL
-    assert issue.question is None
-    assert issue.evidence == {
-        "value": objective_metric,
-        "source_layer": "effective",
-        "preflight_before_workspace": True,
-    }
-
-
-@pytest.mark.parametrize(
-    ("adaptive", "field"),
-    [
-        ({"suggest": {"strategy": "unknown"}}, "adaptive.suggest.strategy"),
-        ({"suggest": {"strategy": []}}, "adaptive.suggest.strategy"),
-        (
-            {"suggest": {"strategy": "best_neighborhood", "bounds": {"runtime.lr": [1e-7, 1e-5]}}},
-            "adaptive.suggest.bounds",
-        ),
-    ],
-)
-def test_adaptive_suggest_strategy_and_bounds_are_closed(adaptive: dict, field: str):
-    fields = _adaptive_contract_fields(parameters={"runtime.lr": [1e-6]}, adaptive=adaptive)
-
-    assert field in fields
-
-
-@pytest.mark.parametrize("replacement", [{}, {"enabled": True}, {"enabled": False, "grace_epochs": 1}, {"enabled": 0}])
-def test_default_agent_proposal_requires_replacement_to_be_omitted_or_strictly_disabled(replacement: dict):
-    fields = _adaptive_contract_fields(
-        parameters={"runtime.lr": [1e-6]},
-        adaptive={
-            "enabled": True,
-            **_AGENT_PROPOSAL_REQUIRED_VALUES,
-            "replacement": replacement,
-        },
-    )
-
-    assert "adaptive.replacement" in fields
-
-
-@pytest.mark.parametrize(
-    ("parameters", "bounds"),
-    [
-        ({"runtime.lr": [1e-6]}, {"runtime.weight_decay": [0.0, 1.0]}),
-        ({"runtime.lr": [1e-6]}, {"runtime.lr": [1e-7]}),
-        ({"runtime.lr": [1e-6]}, {"runtime.lr": [2e-6, 1e-6]}),
-        ({"runtime.lr": [1e-6]}, {"runtime.lr": [1e-7, float("inf")]}),
-        ({"runtime.lr": [1e-6]}, {"runtime.lr": [False, 1e-5]}),
-        ({"runtime.batch_size": [8, 16]}, {"runtime.batch_size": [4.0, 64]}),
-        ({"yaml:/model/head/name": ["linear", "mlp"]}, {"yaml:/model/head/name": [0, 1]}),
-        ({"runtime.lr": [1e-6, "auto"]}, {}),
-        ({"runtime.lr": [[1, 2], [3, 4]]}, {}),
-    ],
-)
-def test_agent_proposal_rejects_invalid_parameter_envelopes(parameters: dict, bounds: dict):
-    issues = hparam_search_issues(
-        {
-            "search": {"method": "grid", "parameters": parameters},
-            "adaptive": {
-                "enabled": True,
-                **_AGENT_PROPOSAL_REQUIRED_VALUES,
-                "suggest": {"strategy": "agent_proposal", "bounds": bounds},
-            },
-        },
-        high_impact={},
-    )
-
-    assert any(issue.field == "adaptive.suggest.bounds" and issue.status == DecisionStatus.FAIL for issue in issues)
+    assert "hparam_budget" in {issue.field for issue in report.blocking_issues()}
 
 
 def test_recipe_cases_cover_checked_in_examples_and_templates():

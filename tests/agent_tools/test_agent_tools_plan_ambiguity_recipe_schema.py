@@ -605,18 +605,6 @@ def test_hparam_rejects_removed_max_trials_field(tmp_path: Path):
     assert "search.max_trials is no longer supported" in result.stdout
 
 
-def test_hparam_rejects_removed_adaptive_field_when_adaptive_is_disabled(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["adaptive"] = {"enabled": False, "max_trials_total": 4}
-    recipe.write_text(yaml.safe_dump(payload))
-
-    result = run_cli("doctor", "--recipe", str(recipe))
-
-    assert result.returncode == 1
-    assert "adaptive.max_trials_total is no longer supported" in result.stdout
-
-
 @pytest.mark.parametrize(
     ("section", "field"),
     [("execution", "max_concurent"), ("evaluation_policy", "selection_metic")],

@@ -2,25 +2,19 @@
 
 This is invented teaching evidence, not a runnable recipe or an experiment result.
 The scientific task, validation objective, data, checkpoint source and execution
-identity are already authorized. The initial domain includes learning rate
-`[3e-5, 6e-4]`, epochs `[8, 16]` and head dropout `[0.1, 0.3]`; each round permits
-two runs and eight total runs remain. Other settings are fixed with a recorded
-reason. These values illustrate the reasoning, not recommended defaults.
+identity are already authorized. The search covers learning rate, epochs and
+head dropout; each round permits two runs and eight total runs remain. Other
+settings are fixed with a recorded reason. These values illustrate the reasoning, not recommended defaults.
 
 ## Design the opening batch
 
-Keep the domain separate from the first two points. This source fragment spends
-two runs on an LR comparison while leaving training length and dropout available
-for later proposals:
+This source fragment spends two runs on an LR comparison while holding training
+length and dropout for later rounds:
 
 ```yaml
 search:
   method: grid
   max_runs: 2
-  parameters:
-    runtime.lr: [0.00003, 0.0006]
-    runtime.epochs: [8, 16]
-    yaml:/model/head/dropout: [0.1, 0.3]
   configurations:
     - runtime.lr: 0.0001
       runtime.epochs: 8
@@ -30,10 +24,8 @@ search:
       yaml:/model/head/dropout: 0.1
 ```
 
-It requires the enabled `agent_proposal` workflow described in the skill.
-The numeric intervals come from the domain endpoints here; explicit bounds can
-instead define them. The two points need not use those endpoints. The same
-`search.configurations` field is not valid alongside parameters in a static grid.
+Each point names every searched key. A later round is its own new plan with its
+own complete points; it never rewrites this one.
 
 ## Read the evidence
 
@@ -59,18 +51,17 @@ It neither separates the two possible explanations nor acknowledges uncertainty.
 | D | 4e-4 | 8 | 0.1 | Test a higher learning rate at the existing training horizon. |
 
 Use two complete `configurations` points; independent lists for learning rate and
-epochs would accidentally request four combinations. Copy the issued request and
-evidence identities using the current [proposal handshake](../../../doc/agent_contracts/hparam_workflow.md#proposal-handshake),
-not the illustrative A/B labels above. For example, the existing `rationale`
-string could contain:
+epochs would accidentally request four combinations. Cite the canonical run ids
+of the evidence, not the illustrative A/B labels above. For example, the
+`experiment-note` entry written before the next plan could contain:
 
 > B exceeds A by 0.008 AUROC while differing only in learning rate. With no repeats,
 > this is a promising direction rather than a known improvement above noise. Both
 > best checkpoints occur at the last epoch, which leaves training length unresolved;
 > missing curves prevent an underfitting claim. C extends training at B's learning
 > rate. D tests a higher learning rate while keeping the original horizon. Dropout
-> stays fixed so these two runs address those alternatives within the authorized
-> bounds and remaining budget. If C improves and D does not, longer training gains
+> stays fixed so these two runs address those alternatives within the remaining
+> budget. If C improves and D does not, longer training gains
 > support; the reverse favors this local LR direction. If neither improves, retain
 > B and reconsider the alternatives rather than automatically narrowing around C
 > or D. If both improve, a later joint point may be worthwhile, without attributing
@@ -88,8 +79,9 @@ interpretation through `experiment-note`: the longer horizon is promising at thi
 LR; the small advantage still lacks repeat evidence; the higher-LR point did not
 improve on B. Keep the actual incumbent across all completed rounds, including B
 if later candidates are worse. Check C's best epoch and available trajectory before
-choosing another longer horizon. Do not enlarge a frozen boundary or spend beyond
-the authorized budget merely because the new best point is on a boundary.
+choosing another longer horizon. Do not spend beyond the authorized budget or
+change an authorized decision merely because the new best point sits at the edge
+of the searched values.
 
 ## Same best score, different trajectories
 
@@ -122,12 +114,12 @@ cause when available. When a joint LR/dropout/adaptation change helps, attribute
 the observation to that joint strategy until a comparison separates its effects.
 
 For adaptation specifically, suppose matched full-adaptation runs repeatedly show
-the earlier-peak pattern while a supported head-only strategy is already in the
-frozen domain. Testing head-only with other settings fixed is a defensible
+the earlier-peak pattern while the authorized scope already includes a supported
+head-only strategy. Testing head-only with other settings fixed is a defensible
 alternative to another scalar adjustment. If it worsens both training fit and
 validation, that weakens restricting adaptation as the remedy. This comparison
-requires the complete block choices described below; the trajectory itself does
-not authorize adding a new strategy to the domain.
+requires the complete block values described below; the trajectory itself does
+not authorize adding a strategy outside the authorized scope.
 
 ## A worse batch and an uncertain gain
 
@@ -142,7 +134,7 @@ For a separate synthetic case, suppose a candidate exceeds C by only 0.001, and
 available matched repeats vary by about 0.006. That variation makes confirmation
 more valuable than the same gap would be with consistent repeat evidence. A
 repeat comparison is useful only if the frozen contract already represents the
-intended repeat. Duplicate points within one submitted batch are rejected; an
+intended repeat. Do not author duplicate points within one plan; an
 earlier run can be repeated in a later batch for a stated question. Reusing its
 fixed seed does not measure independent-seed variability, and changing an
 unrelated setting does not create a repeat. If the intended repeats cannot be expressed, state that limitation
@@ -155,26 +147,22 @@ continued exploration can still be reasonable, but the gain remains uncertain.
 ## Choose complete configuration blocks
 
 For a separate example, suppose the authorized task has a pretrained backbone,
-and its variant config supports these adaptation and LayerMix choices. Declare
-whole values in `search.parameters` before initialization:
+and its variant config supports these adaptation and LayerMix values. Each
+configuration point sets whole blocks under `yaml:/...` keys:
 
 ```yaml
-yaml:/finetune/tuning:
-  - {preset: full}
-  - {preset: head_only}
-yaml:/finetune/layer_mix:
-  - {enabled: false, layer_indices: null, shared_across_modalities: false}
-  - {enabled: true, layer_indices: [1, 2], shared_across_modalities: false}
+configurations:
+  - yaml:/finetune/tuning: {preset: full}
+    yaml:/finetune/layer_mix: {enabled: false, layer_indices: null, shared_across_modalities: false}
+  - yaml:/finetune/tuning: {preset: full}
+    yaml:/finetune/layer_mix: {enabled: true, layer_indices: [1, 2], shared_across_modalities: false}
 ```
 
-The initial points can select the full-adaptation and disabled-LayerMix choices,
-leaving other blocks available later. A later complete point can select the
-enabled LayerMix block without also changing adaptation, making that comparison
-easier to interpret. Replacing `finetune.tuning` replaces source `groups` overrides
+The second point changes LayerMix without also changing adaptation, making that
+comparison easier to interpret. Replacing `finetune.tuning` replaces source `groups` overrides
 as well; changing only its `preset` would retain those overrides. Every point must
 still include all searched keys, including any runtime axes.
 
-Do not add a second axis inside a searched block, such as
-`yaml:/finetune/layer_mix/enabled`: overlapping paths are rejected because they
-would modify the whole frozen choice. A new layer list or adaptation block that
-was not declared is a domain expansion, even if its resulting config is valid.
+Do not add a second key inside a searched block, such as
+`yaml:/finetune/layer_mix/enabled`: it would edit part of the block the point
+already replaces, so the run would no longer match its declared block.

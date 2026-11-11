@@ -5,7 +5,7 @@ accepted fields and finite allowlists are defined in the
 [task recipe schema](../../recipes/schemas/task_recipe.schema.md).
 
 This contract owns authored and effective inputs, consultation, and runtime
-routing. Ordinary and adaptive hparam protocols belong to
+routing. The hparam protocol belongs to
 [hparam_workflow.md](hparam_workflow.md). Workspace publication, takeover, status,
 and finalization belong to [experiment_workspace.md](experiment_workspace.md);
 canonical lifecycle and scheduler evidence belong to [run_manifest.md](run_manifest.md).
@@ -24,8 +24,8 @@ Recipe shape is validated before config inspection and before any workspace,
 script, manifest, or event is created. Validation is task-aware and owner-based:
 
 - `experiment_workspace` owns `experiment` and `step`;
-- task decision owners own `inputs`, `evaluation_policy`, `execution`, `search`,
-  and `adaptive`;
+- task decision owners own `inputs`, `evaluation_policy`, `execution`, and
+  `search`;
 - renderer mappings own runtime and preset CLI fields;
 - `plans` owns top-level routing and artifacts.
 
@@ -95,7 +95,7 @@ register: final workspace validation and registration locks remain authoritative
 
 `plan.json` and `recipe.resolved.yaml` must contain the same complete effective
 recipe. Retained base/local recipe copies are source audit only; launch,
-selection, adaptive, and postprocess consumers read the effective recipe.
+selection, and postprocess consumers read the effective recipe.
 For hparam plans, top-level `plan.json.resolved_recipe_sha256` binds the exact
 bytes of `recipe.resolved.yaml`; consumers verify that digest before parsing the
 recipe and then verify complete semantic equality between the two copies.

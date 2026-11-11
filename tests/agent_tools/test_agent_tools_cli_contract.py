@@ -41,11 +41,6 @@ SUBCOMMAND_GROUPS = {
         "hparam-stop",
         "hparam-select",
         "hparam-checkpoint-scan",
-        "hparam-digest",
-        "hparam-suggest",
-        "hparam-adaptive-init",
-        "hparam-adaptive-step",
-        "hparam-adaptive-loop",
     },
     "Domain": {
         "config-summary",
@@ -95,11 +90,11 @@ def _subcommand_help(parser: argparse.ArgumentParser, name: str) -> str | None:
     return next((choice.help for choice in subparsers._choices_actions if choice.dest == name), None)
 
 
-def test_cli_has_exactly_39_subcommands():
+def test_cli_has_exactly_34_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == set.union(*SUBCOMMAND_GROUPS.values())
-    assert len(subcommands) == 39
+    assert len(subcommands) == 34
 
 
 def test_every_subcommand_documents_itself():
@@ -183,8 +178,8 @@ def test_architecture_cli_triage_matches_parser_and_ownership():
 @pytest.mark.parametrize(
     ("original", "replacement"),
     [
-        ("39 subcommands", "37 subcommands"),
-        ("Kernel (28)", "Kernel (26)"),
+        ("34 subcommands", "32 subcommands"),
+        ("Kernel (23)", "Kernel (21)"),
         ("infer-launch, ", ""),
         ("infer-launch, ", "unknown-command, "),
         ("infer-launch, infer-stop", "infer-launch, infer-launch"),
@@ -203,7 +198,7 @@ def test_architecture_cli_triage_guard_rejects_drift(original: str, replacement:
 
 def test_architecture_cli_triage_guard_rejects_omission_with_matching_counts():
     document = (Path(cli.__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-    document = document.replace("39 subcommands", "38 subcommands").replace("Kernel (28)", "Kernel (27)")
+    document = document.replace("34 subcommands", "33 subcommands").replace("Kernel (23)", "Kernel (22)")
     document = document.replace("infer-launch, ", "", 1)
 
     with pytest.raises(AssertionError):
@@ -324,23 +319,6 @@ def test_experiment_note_cli_contract():
     assert args.remote is None
     assert "local YAML file path" in actions["entry"].help
     assert "inline text is not accepted" in actions["entry"].help
-
-
-def test_hparam_adaptive_step_cli_contract():
-    parser, subcommands = _parser_contract()
-    actions = _actions(subcommands["hparam-adaptive-step"])
-    args = parser.parse_args(["hparam-adaptive-step", "--workflow-dir", "workflow"])
-
-    assert {name for name, action in actions.items() if action.required} == {"workflow_dir"}
-    assert args.proposal is None
-    assert args.execute is False
-    assert "exact committed proposal may be retried safely" in actions["execute"].help
-    assert "proposal JSON" in actions["proposal"].help
-    assert "terminal results" in actions["proposal"].help
-    assert "without launching" in subcommands["hparam-adaptive-init"].description
-    assert "agent_proposal is the default" in subcommands["hparam-adaptive-init"].description
-    assert "explicit best_neighborhood" in subcommands["hparam-suggest"].description
-    assert "agent_proposal is unsupported" in subcommands["hparam-adaptive-loop"].description
 
 
 def test_plan_cli_contract():

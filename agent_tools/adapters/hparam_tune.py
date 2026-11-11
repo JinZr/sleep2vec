@@ -31,7 +31,7 @@ class HparamTuneAdapter(TaskAdapter):
     task = "hparam_tune"
 
     recipe_extra_fields = frozenset(
-        {"adaptive", "artifacts", "base_recipe", "evaluation_policy", "execution", "inputs", "runtime", "search"}
+        {"artifacts", "base_recipe", "evaluation_policy", "execution", "inputs", "runtime", "search"}
     )
     artifact_fields = frozenset({"overwrite", "results_csv_path"})
     extra_decision_fields = frozenset(

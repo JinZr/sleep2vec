@@ -41,7 +41,6 @@ from .experiment_workspace import (
     SCHEDULER_PLAN_IDENTITY_FIELDS,
     append_event,
     ensure_experiment_workspace,
-    event_matches,
     experiment_metadata_issues,
     experiment_root,
     file_sha256,
@@ -50,7 +49,6 @@ from .experiment_workspace import (
     merge_run_manifest,
     merge_step_manifest,
     plan_registration_rows_state,
-    read_experiment_events,
     read_managed_yaml_mapping,
     read_run_manifest,
     read_step_manifest,
@@ -306,9 +304,7 @@ def read_registered_plan(
     else:
         layout = plan_contract.generic_run_contract(recipe, plan_dir, run_index_offset, adapter)
 
-    plan_controller = step_manifest["plan_controller"]
-    adaptive_enabled = isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
-    if plan_controller == "unassigned" or (plan_controller == "adaptive") != adaptive_enabled:
+    if step_manifest["plan_controller"] != "ordinary":
         raise ValueError(f"Registered plan controller differs from its frozen recipe: {plan_dir}")
     runs = plan.get("runs")
     if not isinstance(runs, list) or not runs or any(not isinstance(run, dict) for run in runs):
@@ -560,7 +556,7 @@ def _validate_registered_recipe(
         effective_overlay = _mapping_overlay(merge_recipe_layers(base_recipe, local_recipe), effective_recipe)
         effective_overlay.update({"task": task, "variant": recipe.get("variant")})
         structure_issues.extend(task_rules.recipe_structure_issues(task, effective_overlay, source_layer="effective"))
-        for field in ("task", "variant", "adaptive"):
+        for field in ("task", "variant"):
             if recipe.get(field) != local_recipe.get(field):
                 raise ValueError(f"Registered composite recipe field differs from its local layer: {field}")
     else:
@@ -738,11 +734,7 @@ def _validate_hparam_workspace_registration(
         {
             "step": recipe["step"],
             "experiment_id": experiment_id,
-            "plan_controller": (
-                "adaptive"
-                if isinstance(recipe.get("adaptive"), dict) and recipe["adaptive"].get("enabled") is True
-                else "ordinary"
-            ),
+            "plan_controller": "ordinary",
             "recipe_path": recipe.get("_recipe_path", ""),
             "plans": [str(run_dir.resolve())],
         },
@@ -795,18 +787,16 @@ def read_hparam_plan(
     *,
     semantic_dir: Path | None = None,
     require_workspace_state: bool = True,
-    require_adaptive_commit: bool = True,
 ) -> plan_contract.HparamPlan:
     """Read and validate a local hparam plan, returning the full plan.json mapping.
 
     Checks frozen recipe/config/script bindings and, by default, registered
-    workspace rows and the adaptive workflow commit. semantic_dir supplies the
-    intended published location when run_dir contains staged physical files;
-    frozen paths remain expressed in that semantic location.
+    workspace rows. semantic_dir supplies the intended published location when
+    run_dir contains staged physical files; frozen paths remain expressed in
+    that semantic location.
 
     require_workspace_state=False skips existing workspace registration checks
-    for unpublished builds; require_adaptive_commit=False skips the adaptive
-    commit check. Neither disables validation of the frozen plan itself. Reads
+    for unpublished builds; it does not disable validation of the frozen plan itself. Reads
     artifacts only, without observing jobs or updating state. Invalid contracts
     raise ValueError; file and parsing failures propagate."""
     physical_dir = run_dir
@@ -852,7 +842,6 @@ def read_hparam_plan(
         )
     search = recipe["search"] if isinstance(recipe.get("search"), dict) else {}
     execution = recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
-    adaptive = recipe["adaptive"] if isinstance(recipe.get("adaptive"), dict) else {}
     workdir = execution.get("workdir")
     if workdir not in (None, "") and not Path(str(workdir)).is_absolute():
         raise ValueError("execution.workdir must be an absolute path when set.")
@@ -869,7 +858,6 @@ def read_hparam_plan(
         for name, present in (
             ("search.max_trials", "max_trials" in search),
             ("execution.gpus_per_trial", "gpus_per_trial" in execution),
-            ("adaptive.max_trials_total", "max_trials_total" in adaptive),
         )
         if present
     ]
@@ -891,8 +879,6 @@ def read_hparam_plan(
     if typed_plan:
         _validate_local_hparam_plan_contract(plan, recipe, physical_dir, plan_dir, runs)
         _validate_hparam_execution_snapshot(plan, physical_dir, plan_dir)
-    if require_adaptive_commit:
-        _validate_adaptive_workflow_commit(plan_dir, recipe, plan)
     # The checks above establish recipe, run rows, and the resolved recipe digest without replacing the mapping.
     return cast(plan_contract.HparamPlan, plan)
 
@@ -989,7 +975,6 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
         physical_dir,
         semantic_dir=plan_dir,
         require_workspace_state=False,
-        require_adaptive_commit=False,
     )
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
@@ -1027,7 +1012,6 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
         physical_dir,
         semantic_dir=plan_dir,
         require_workspace_state=False,
-        require_adaptive_commit=False,
     )
     execution_snapshot.validated_execution_snapshot(
         physical_dir,
@@ -1061,7 +1045,6 @@ def commit_hparam_plan(
         plan = read_hparam_plan(
             plan_dir,
             require_workspace_state=False,
-            require_adaptive_commit=False,
         )
         if "execution_snapshot" not in plan:
             raise ValueError(f"Hparam plan lacks registration preflight evidence: {plan_dir}")
@@ -1106,7 +1089,7 @@ def commit_hparam_plan(
             },
         )
     with experiment_workspace.managed_run_lock(root):
-        read_hparam_plan(plan_dir, require_adaptive_commit=False)
+        read_hparam_plan(plan_dir)
     return plan
 
 
@@ -1166,70 +1149,6 @@ def plan_tree_sha256(root: Path, *, top_level_entries: frozenset[str] | None = N
     return digest.hexdigest()
 
 
-def _validate_adaptive_workflow_commit(run_dir: Path, recipe: dict[str, Any], plan: dict[str, Any]) -> None:
-    adaptive = recipe["adaptive"] if isinstance(recipe.get("adaptive"), dict) else {}
-    if adaptive.get("enabled") is not True:
-        return
-    if run_dir.is_symlink():
-        raise ValueError(f"Adaptive plan directory must not be a symlink: {run_dir}")
-    run_dir = run_dir.resolve()
-    if run_dir.parent.name != "rounds" or run_dir.parent.parent.name != "adaptive":
-        return
-    workflow_root = run_dir.parent.parent.parent
-    workflow_path = workflow_root / "adaptive" / "workflow.json"
-    if workflow_path.is_symlink() or not workflow_path.is_file():
-        raise FileNotFoundError(f"Adaptive workflow initialization is not committed: {workflow_path}")
-    workflow = read_json(workflow_path)
-    if str(workflow.get("root") or "") != str(workflow_root):
-        raise ValueError(f"Adaptive workflow commit marker differs from the plan root: {workflow_path}")
-    initial_round = workflow_root / "adaptive" / "rounds" / "round_000"
-    if run_dir == initial_round:
-        initial_plan = plan
-    else:
-        initial_plan_path = initial_round / "plan.json"
-        snapshot = exp_io.read_managed_files_at(workflow_root, [initial_plan_path])[str(initial_plan_path)]
-        # The default strict reader has already rejected undecodable text.
-        initial_plan = json.loads(snapshot["text"], object_pairs_hook=_json_object_without_duplicate_keys)
-    initial_recipe = initial_plan["recipe"] if isinstance(initial_plan.get("recipe"), dict) else {}
-    plan_event = {
-        "step_id": (initial_recipe.get("step") or {}).get("id"),
-        "plan_dir": str(initial_round),
-        "run_count": len(initial_plan.get("runs", [])),
-    }
-    ready_event = {
-        "round": 0,
-        "recipe_path": workflow.get("recipe_path"),
-        "round_dir": str(initial_round),
-    }
-    workspace = experiment_root(recipe)
-    assert workspace is not None  # read_hparam_plan validated this binding before checking the adaptive commit.
-    events = read_experiment_events(workspace)
-    plan_related = [
-        (index, event)
-        for index, event in enumerate(events)
-        if event.get("event_type") == "plan_created" and event.get("plan_dir") == plan_event["plan_dir"]
-    ]
-    ready_related = [
-        (index, event)
-        for index, event in enumerate(events)
-        if event.get("event_type") == "adaptive_init" and event.get("round_dir") == ready_event["round_dir"]
-    ]
-    if not plan_related or not ready_related:
-        raise FileNotFoundError(f"Adaptive workflow initialization events are not committed: {workflow_path}")
-    plan_positions = [index for index, event in plan_related if event_matches(event, "plan_created", plan_event)]
-    ready_positions = [index for index, event in ready_related if event_matches(event, "adaptive_init", ready_event)]
-    if (
-        len(ready_related) == 1
-        and not ready_positions
-        and ready_related[0][1].get("recipe_path") != workflow.get("recipe_path")
-    ):
-        raise ValueError(f"Adaptive source recipe changed after initialization: {workflow_path}")
-    if len(plan_related) != 1 or len(ready_related) != 1 or len(plan_positions) != 1 or len(ready_positions) != 1:
-        raise ValueError(f"Adaptive workflow initialization events conflict: {workflow_path}")
-    if plan_positions[0] >= ready_positions[0]:
-        raise ValueError(f"Adaptive workflow initialization events are out of order: {workflow_path}")
-
-
 def iter_registered_hparam_plans(
     workspace: Path,
     step_id: str,
@@ -1242,7 +1161,7 @@ def iter_registered_hparam_plans(
 
     Reads the step manifest when iterated, skips recognized blocked bundles and
     plans whose frozen task is not hparam_tune, and validates hparam plans via
-    read_hparam_plan with its default workspace/adaptive checks. Each yielded
+    read_hparam_plan with its default workspace checks. Each yielded
     (directory, full plan mapping) must match step_id and all three supplied
     selection values exactly. Missing/corrupt artifacts and mismatches raise
     during iteration rather than being skipped; earlier yields remain possible.

@@ -11,8 +11,8 @@ import pytest
 import yaml
 
 from agent_tools import execution_snapshot, plans
-from agent_tools.adaptive_proposals import validate_configurations, validate_parameter_envelopes
 from agent_tools.configs import config_summary
+from agent_tools.decision_hparam import hparam_search_issues
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.domain.finetune_hparam_profile import (
     _balanced_configurations,
@@ -374,7 +374,6 @@ def test_profile_rejects_freezing_random_source_backbone():
         (lambda recipe: recipe["inputs"].update({"label_name": "custom_label"}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe["search"].update({"max_runs": 3}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe["search"].update({"max_runs": 33}), DecisionStatus.NEEDS_USER_INPUT),
-        (lambda recipe: recipe.update({"adaptive": {"enabled": True}}), DecisionStatus.NEEDS_USER_INPUT),
         (lambda recipe: recipe["runtime"].update({"lr": 0}), DecisionStatus.FAIL),
     ],
 )
@@ -457,7 +456,6 @@ def _profile_recipe(tmp_path: Path, *, max_runs: int | None = None) -> tuple[Pat
     base_path.write_text(yaml.safe_dump(base, sort_keys=False))
 
     recipe = yaml.safe_load((REPO_ROOT / "recipes/templates/hparam_tune_ppg_ahi.yaml").read_text())
-    del recipe["adaptive"]
     recipe["search"] = {"profile": "finetune_balanced"}
     recipe["experiment"] = experiment
     recipe["step"] = {"id": "auto-tune", "phase": "train", "purpose": "Select a bounded candidate."}
@@ -660,33 +658,21 @@ def test_tiny_fixture_keeps_legacy_explicit_search():
     "template_name",
     ["hparam_tune_ppg_ahi.yaml", "hparam_tune_sleep2vec2_ppg_ahi.yaml", "hparam_tune_sleep2expert_ahi.yaml"],
 )
-def test_checked_in_templates_use_bounded_terminal_agent_proposals(template_name):
+def test_checked_in_templates_use_explicit_configurations(template_name):
     template_dir = REPO_ROOT / "recipes/templates"
     template = yaml.safe_load((template_dir / template_name).read_text())
     search = template["search"]
-    adaptive = template["adaptive"]
+    points = search["configurations"]
 
     assert "profile" not in search
+    assert "parameters" not in search
     assert search["method"] == "grid"
-    assert adaptive["enabled"] is True
-    assert adaptive["suggest"]["strategy"] == "agent_proposal"
-    assert adaptive["replacement"] == {"enabled": False}
-    assert {key: adaptive[key] for key in hparam_search_defaults()} == hparam_search_defaults()
-    assert search["max_runs"] == adaptive["round_size"]
-    assert adaptive["objective_metric"] == template["evaluation_policy"]["selection_metric"]
-    assert adaptive["objective_mode"] == template["evaluation_policy"]["selection_mode"]
-    envelopes = validate_parameter_envelopes(search["parameters"], adaptive["suggest"]["bounds"])
-    assert envelopes["runtime.epochs"]["max"] > max(search["parameters"]["runtime.epochs"])
-    assert envelopes["runtime.lr"]["max"] > max(search["parameters"]["runtime.lr"])
-
-    points = validate_configurations(search["configurations"], envelopes, location="search.configurations")
-    assert len(points) == search["max_runs"]
+    assert search["max_runs"] == len(points) <= hparam_search_defaults()["max_runs_total"]
+    assert not hparam_search_issues(template, high_impact={})
     base = yaml.safe_load((template_dir / template["base_recipe"]).read_text())
     source = REPO_ROOT / base["inputs"]["config"]
     payload = yaml.safe_load(source.read_text())
     for point in points:
-        for key, value in point.items():
-            assert envelopes[key]["min"] <= value <= envelopes[key]["max"]
         candidate = copy.deepcopy(payload)
         apply_search_overrides(candidate, point)
         validate_finetune_config_bytes(_recipe(variant=template["variant"]), yaml.safe_dump(candidate).encode())
@@ -702,26 +688,23 @@ def test_checked_in_templates_use_bounded_terminal_agent_proposals(template_name
             "require_manual_unlock_for_final_test": True,
             "final_test_unlocked": False,
         }
-        assert adaptive["test_feedback_for_selection"] is False
         assert template["decisions"]["external_test_locked"]["value"] is True
         assert template["decisions"]["test_after_fit"]["value"] is False
         assert template["decisions"]["train_val_test_policy"]["value"] == "val"
     else:
-        assert adaptive["test_feedback_for_selection"] is True
         assert template["evaluation_policy"]["test_after_fit"] is True
         assert template["decisions"]["test_after_fit"]["value"] is True
 
 
-def test_task_recipe_schema_adaptive_skeleton_keeps_test_locked():
+def test_task_recipe_schema_hparam_skeleton_keeps_test_locked():
     text = (REPO_ROOT / "recipes/schemas/task_recipe.schema.md").read_text()
     block = text.split("```yaml\n", 1)[1].split("\n```", 1)[0]
     skeleton = yaml.safe_load(block)
 
     assert "profile" not in skeleton["search"]
-    assert skeleton["adaptive"]["suggest"]["strategy"] == "agent_proposal"
-    assert skeleton["adaptive"]["replacement"] == {"enabled": False}
-    assert {key: skeleton["adaptive"][key] for key in hparam_search_defaults()} == hparam_search_defaults()
-    assert skeleton["search"]["max_runs"] == skeleton["adaptive"]["round_size"]
+    assert "adaptive" not in skeleton
+    assert skeleton["search"]["max_runs"] == len(skeleton["search"]["configurations"])
+    assert not hparam_search_issues(skeleton, high_impact={})
     policy = skeleton["evaluation_policy"]
     assert policy["selection_metric"] == "val_ahi_pearson"
     assert policy["selection_split"] == "val"

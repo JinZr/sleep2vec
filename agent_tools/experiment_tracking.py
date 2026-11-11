@@ -742,7 +742,7 @@ def _experiment_lifecycle_decision(
                         status,
                         _status_reason(matching),
                         rows=matching,
-                        blocked_actions=["adaptive_advance", "finalize", "launch", "resubmit"],
+                        blocked_actions=["finalize", "launch", "resubmit"],
                     )
                 )
             uncertain_keys = {managed_run_key(row) for row in uncertain}
@@ -753,7 +753,7 @@ def _experiment_lifecycle_decision(
                         "active_runs",
                         "Canonical runs are still active. Refresh recorded evidence before another lifecycle decision.",
                         rows=[row for row in remaining_active if str(row["step_id"]) == step_id],
-                        blocked_actions=["adaptive_advance", "finalize", "launch", "resubmit"],
+                        blocked_actions=["finalize", "launch", "resubmit"],
                     )
                 )
             decision["recommended_next"] = _monitor_action(root, remote)
@@ -765,7 +765,7 @@ def _experiment_lifecycle_decision(
                         "active_runs",
                         "Canonical runs are still active. Refresh recorded evidence before another lifecycle decision.",
                         rows=[row for row in active if str(row["step_id"]) == step_id],
-                        blocked_actions=["adaptive_advance", "finalize", "launch", "resubmit"],
+                        blocked_actions=["finalize", "launch", "resubmit"],
                     )
                 )
             decision["recommended_next"] = _monitor_action(root, remote)
@@ -896,10 +896,7 @@ def experiment_status_snapshot(
         if missing_stop_reason_rows:
             raise ValueError("Completed experiment metadata conflicts with stopped runs missing stop_reason.")
         if plan_blockers:
-            raise ValueError(
-                "Completed experiment metadata cannot be verified for adaptive plans, or for "
-                "unmaterialized registered steps."
-            )
+            raise ValueError("Completed experiment metadata cannot be verified for unmaterialized registered steps.")
         has_terminal_report_binding = experiment.get("final_report_sha256") not in (None, "")
         # A modern terminal binding makes disappearing selection evidence corruption, not legacy state.
         incomplete_steps = (
@@ -1582,33 +1579,6 @@ def _plan_advice(
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
         manifest = registered["manifest"]
         step_id = str(manifest["step"]["id"])
-        plan_controller = manifest["plan_controller"]
-        if plan_controller == "adaptive":
-            code = f"{plan_controller}_phase_deferred"
-            message = (
-                f"Experiment-status cannot verify {plan_controller} controller completion or interpret its eligibility."
-            )
-            blocked_actions = [f"{plan_controller}_advance", "finalize"]
-            if registered["plans"]:
-                for plan in sorted(registered["plans"], key=lambda item: str(item["path"])):
-                    blockers.append(
-                        _status_blocker(
-                            code,
-                            message,
-                            rows=[rows_by_key[key] for key in plan["run_keys"]],
-                            blocked_actions=blocked_actions,
-                        )
-                    )
-            else:
-                blockers.append(
-                    _status_blocker(
-                        code,
-                        message,
-                        step_id=step_id,
-                        blocked_actions=blocked_actions,
-                    )
-                )
-            continue
         if not registered["plans"]:
             blockers.append(
                 _status_blocker(

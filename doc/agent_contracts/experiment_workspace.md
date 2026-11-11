@@ -48,10 +48,10 @@ explicit baseline. Experiment and step ids use lowercase letters, digits,
 hyphens, and underscores. Step phase is one of `prepare`, `train`, `evaluate`,
 or `analyze`. Every step file uses the shared
 `{step, experiment_id, plan_controller, recipe_path, plans}` envelope.
-`plan_controller` is the only owner of whether the step is `ordinary` or
-`adaptive`. `experiment-register-step` initially records `unassigned` with no
-recipe or plans; the first planner may bind it to one concrete owner, and that
-binding cannot later change.
+`plan_controller` is the only owner of whether the step has a plan owner.
+`experiment-register-step` initially records `unassigned` with no recipe or
+plans; the first planner binds it to `ordinary`, and that binding cannot later
+change.
 
 Existing experiment and step metadata are read through the workspace owner and
 merged through their reducers. Missing files may be created only by their
@@ -78,7 +78,7 @@ Local recipe roots are based at the repository root; local experiment CLI roots
 are based at the caller's current working directory. Both are expanded and
 resolved once. Local repository-owned management locators are persisted as
 absolute paths, including recipe, plan, run, config, script, artifact, report,
-runtime/checkpoint, adaptive, and event paths.
+runtime/checkpoint, and event paths.
 
 SSH roots and locators remain exact remote strings. User-authored semantic data
 and checkpoint paths are not normalized by this management rule.
@@ -101,8 +101,7 @@ combinations, and required final-evaluation snapshots. Synchronized edits to a
 manifest and its artifacts cannot redefine the frozen recipe. Resolved recipes
 retain the source-config snapshot and hparam recipes retain the explicit
 final-evaluation config snapshot when applicable. Task-specific gates belong to
-[hparam registration preflight](hparam_workflow.md#registration-preflight) and
-[adaptive initialization readiness](hparam_workflow.md#initialization-readiness).
+[hparam registration preflight](hparam_workflow.md#registration-preflight).
 
 ## Takeover and continue execution
 
@@ -126,7 +125,7 @@ the entrypoint-specific checks and the current authorization.
 | Registered plan, no credible submission evidence | Perform that entrypoint's launch checks; launch only within existing authorization. | `planned` alone proves a historical manually wrapped job was never submitted. |
 | Credible queued/running scheduler or process evidence | Continue monitoring the same frozen run. | Queue delay, missing output or SSH disconnection permits duplicate submission. |
 | Training terminal, required checkpoint tests incomplete | Follow the task's remaining test phase or diagnose missing evidence. | Fit completion or a log message permits test ranking. |
-| Current adaptive round terminal, required results complete, budget remains | Follow the [proposal handshake](hparam_workflow.md#proposal-handshake), including tool-issued input, exact proposal, preflight and authorized execute. | A generic continue instruction expands the envelope or bypasses an evidence blocker. |
+| Current tuning round terminal, required results complete, budget remains | Record the evidence with `experiment-note`, then plan the next round as a new ordinary plan within the total budget ([search space](hparam_workflow.md#search-space)); launching it needs launch authority. | A generic continue instruction expands the budget or bypasses an evidence blocker. |
 | Declared work complete, no active runs, selection/report requirements met | Apply [finalization](#finalization), including controller-owned completion checks. | One completed phase closes every assigned obligation, or a result directory proves success. |
 
 Distinguish normal waiting (queue, training, checkpoint testing) from diagnosis
@@ -134,8 +133,8 @@ Distinguish normal waiting (queue, training, checkpoint testing) from diagnosis
 decision (uncovered scientific choice or required `NEEDS_USER_INPUT`). Do not
 re-ask already explicit label/split/metric/budget choices. A new launch blocker
 does not cancel monitoring duties for existing work. Estimate end-to-end time
-including queue delay, post-fit checkpoint tests, proposal/preflight and
-controller work, not just training fit time.
+including queue delay, post-fit checkpoint tests and preflight, not just
+training fit time.
 
 An incidental question about status, GPU use or timing does not revoke unfinished
 authorized work. Answer it, then continue the remaining obligations in the active
@@ -269,7 +268,7 @@ not a duplicate. This contract does not itself authorize an automation change.
 | --- | --- |
 | Stable scope, exact root/workflow entry paths, authorization locator and this takeover contract | Job lists, per-run state, metrics, checkpoint inventories and historical hashes |
 | Current monitoring/continuation duties, predecessor gates, authorized update policy and valid scoped exceptions/expiry | Completed phases, resolved blocker transcripts, superseded pins and exhausted one-time repair/network permissions |
-| Effective scientific, test-access, budget and runtime-provenance limits; meaningful-change reporting and whole-assignment stop conditions | Full schemas, the takeover table, adaptive handshake and unchanged polling history |
+| Effective scientific, test-access, budget and runtime-provenance limits; meaningful-change reporting and whole-assignment stop conditions | Full schemas, the takeover table and unchanged polling history |
 
 Before an authorized revision, verify entry paths, current phase, authority and
 remaining obligations. Remove obsolete active blocker wording only after fresh
@@ -395,7 +394,6 @@ fact should not create an entry.
 | `hparam-monitor`, `experiment-monitor` | Observe and write canonical evidence/projections, never launch pending work. |
 | `hparam-stop` | Reasoned stop under authenticated identity rules; [prelaunch stop](hparam_workflow.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-uncertain-states). |
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers). |
-| `hparam-adaptive-*` | Tool-owned round publication and advancement; [adaptive workflow](hparam_workflow.md#adaptive-workflow). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
 | `experiment-status` | Validate and display the [read-only snapshot](#read-only-status-and-advisory-actions). |
 | `experiment-rank`, `experiment-finalize` | Write experiment ranking; commit completion only under [finalization](#finalization). |
@@ -415,7 +413,7 @@ step and frozen plan control bundle, and canonical `run_manifest.tsv`, then
 prints a deterministic snapshot. It may display already-recorded scheduler,
 process, health, checkpoint and runtime-manifest fields but never refreshes
 them. `run_status.tsv`, `launch_manifest.tsv`, events, logs, runtime manifests,
-W&B and adaptive controller state are not alternate lifecycle inputs.
+and W&B state are not alternate lifecycle inputs.
 Modern hparam selection reports, shared rankings and plan-local checkpoint
 audits are read only as hash-bound consistency evidence for canonical selection
 rows. Status does not read checkpoint contents or write workspace state.
@@ -447,18 +445,10 @@ precedes step ownership. Historical blocked plans without `decisions.yaml`
 remain readable. Plans bind the registered step's core `id`, `phase`, `purpose`;
 manifest-owned `inputs` and `outputs` remain valid metadata.
 
-Only step `plan_controller` classifies launch advice and controller-deferred
-blockers; frozen recipes must agree with it. Active adaptive plans defer their
-own advance/finalize actions without blocking unrelated ordinary launch advice.
-Status's read-set contains no controller completion proof, so completed
-experiment metadata with any adaptive plan is corrupt under this read-set. A registered step with no
-materialized plan and no canonical rows also blocks finalization; completed
-metadata cannot prove the declared work was absent or finished.
-
-These status blockers do not bind `experiment-finalize`: once an adaptive
-controller has validated its own frozen terminal state, the experiment may be
-finalized. The direct finalizer independently rejects unmaterialized
-steps rather than treating status's incomplete controller read-set as proof.
+A registered plan's step must have the `ordinary` `plan_controller`. A
+registered step with no materialized plan and no canonical rows blocks
+finalization; completed metadata cannot prove the declared work was absent or
+finished. The direct finalizer independently rejects unmaterialized steps.
 A canonical `stopped` row without non-empty `stop_reason` blocks finalize advice
 and makes completed metadata corrupt; the finalizer enforces the same boundary.
 Valid blockers return success; corrupt control state or local/SSH read failure

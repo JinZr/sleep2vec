@@ -23,7 +23,6 @@ def test_hparam_tune_facade_preserves_collector_order(monkeypatch):
         "_hparam_execution_issues",
         lambda *_args, **_kwargs: [_sentinel("execution")],
     )
-    monkeypatch.setattr(decision_hparam, "_hparam_adaptive_issues", lambda *_args, **_kwargs: [_sentinel("adaptive")])
     monkeypatch.setattr(
         decision_hparam,
         "_hparam_search_budget_issues",
@@ -36,7 +35,7 @@ def test_hparam_tune_facade_preserves_collector_order(monkeypatch):
     )
 
     issues = decision_hparam.hparam_tune_issues(
-        {"search": {}, "execution": {}, "runtime": {}, "adaptive": {}},
+        {"search": {}, "execution": {}, "runtime": {}},
         None,
         {},
         {},
@@ -47,7 +46,6 @@ def test_hparam_tune_facade_preserves_collector_order(monkeypatch):
         "config",
         "search",
         "execution",
-        "adaptive",
         "budget",
         "evaluation",
     ]

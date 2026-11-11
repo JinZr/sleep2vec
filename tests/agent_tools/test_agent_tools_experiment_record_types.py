@@ -153,7 +153,6 @@ def test_experiment_record_types_reach_callers(tmp_path):
             merged["experiment_id"] = 12
             merged["recipe_path"] = Path("relative.yaml")
             merged["step"]["purpose"] = 7
-            workspace.validate_step_registration("/workspace", merged)
             committed, created = workspace.commit_step_manifest("/workspace", merged)
             was_created: bool = created
             committed["plans"] = [1]  # type: ignore[list-item]

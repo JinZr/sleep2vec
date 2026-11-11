@@ -47,7 +47,6 @@ def _add_plan(
     step_id: str,
     status: str = "planned",
     task: str = "finetune",
-    adaptive: bool = False,
     host: str | None = None,
 ) -> tuple[Path, dict[str, str]]:
     experiment = yaml.safe_load((root / "experiment.yaml").read_text())["experiment"]
@@ -109,10 +108,6 @@ def _add_plan(
                 "_local_recipe": local_recipe,
             }
         )
-    if adaptive:
-        recipe["adaptive"] = {"enabled": True, "suggest": {"strategy": "best_neighborhood"}}
-        if task == "hparam_tune":
-            recipe["_local_recipe"]["adaptive"] = recipe["adaptive"]
     if task == "sleep2stat":
         config_bytes = yaml.safe_dump(
             {"run": {"output_dir": str(root / "analysis")}, "analyzers": [], "reducers": []},
@@ -174,9 +169,6 @@ def _add_plan(
         (plan_dir / "run.sh").write_text(script_path.read_text())
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
 
-    plan_controller = "ordinary"
-    if adaptive:
-        plan_controller = "adaptive"
     step_dir = root / "steps" / step_id
     step_dir.mkdir(parents=True)
     (step_dir / "step.yaml").write_text(
@@ -184,7 +176,7 @@ def _add_plan(
             {
                 "step": step,
                 "experiment_id": experiment["id"],
-                "plan_controller": plan_controller,
+                "plan_controller": "ordinary",
                 "recipe_path": str(recipe_path),
                 "plans": [str(plan_dir)],
             },

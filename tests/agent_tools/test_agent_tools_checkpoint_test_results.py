@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_tools import adaptive_evidence, checkpoint_test_results, hparam_selection
+from agent_tools import checkpoint_test_results, hparam_selection
 
 
 def test_checkpoint_test_results_preserve_manifest_order_and_numeric_scores():
@@ -150,47 +150,3 @@ def test_hparam_selection_keeps_evidence_and_hash_order(monkeypatch):
 
     assert calls == ["expected", "evidence", "validate", "evidence", "sha256"]
     assert rows[0]["checkpoint_sha256"] == "a" * 64
-
-
-def test_adaptive_checkpoint_evidence_keeps_invalid_none_and_epoch_tie_break():
-    manifest = {
-        "test_all_checkpoints_after_fit": True,
-        "checkpoint_test_results": [
-            {
-                "checkpoint_path": "/checkpoints/epoch=2-step=20.ckpt",
-                "epoch": 2,
-                "metrics": {"test_metric": 0.5},
-            },
-            {
-                "checkpoint_path": "/checkpoints/epoch=1-step=10.ckpt",
-                "epoch": 1,
-                "metrics": {"test_metric": 0.5},
-            },
-        ],
-    }
-    objective = {"metric": "test_metric", "mode": "max"}
-    checkpoint_names = ["epoch=1-step=10.ckpt", "epoch=2-step=20.ckpt"]
-
-    evidence = adaptive_evidence._test_checkpoint_evidence(
-        manifest,
-        objective,
-        "/checkpoints",
-        checkpoint_names,
-    )
-    assert evidence is not None
-    selected, trajectory = evidence
-    assert trajectory == sorted(manifest["checkpoint_test_results"], key=lambda row: row["epoch"])
-    manifest["checkpoint_test_results"].pop()
-    invalid = adaptive_evidence._test_checkpoint_evidence(
-        manifest,
-        objective,
-        "/checkpoints",
-        checkpoint_names,
-    )
-
-    assert selected == {
-        "checkpoint_path": "/checkpoints/epoch=1-step=10.ckpt",
-        "epoch": 1,
-        "score": 0.5,
-    }
-    assert invalid is None
