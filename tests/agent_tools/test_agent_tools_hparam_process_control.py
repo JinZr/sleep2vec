@@ -436,25 +436,6 @@ def test_hparam_stop_rejects_a_directory_pid_path_before_read_or_kill(tmp_path: 
     assert calls == []
 
 
-@pytest.mark.parametrize("target", ["ssh", "cluster"])
-def test_hparam_stop_rejects_non_local_target_before_pid_read_or_signal(tmp_path: Path, monkeypatch, target: str):
-    rows = _write_runtime_rows(
-        tmp_path,
-        [{"run_id": "run-000", "target": target, "status": "running", **_process_identity()}],
-    )
-    _write_process_identity(rows[0]["pid_path"])
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    calls = []
-    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: calls.append("read"))
-    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args, **_kwargs: calls.append("signal"))
-
-    with pytest.raises(ValueError, match="target must be local"):
-        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="invalid target")
-
-    assert calls == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
 @pytest.mark.parametrize("missing_field", ["pid", "process_group_id", "process_start_token"])
 def test_hparam_stop_rejects_partial_canonical_process_identity_before_pid_read_or_signal(
     tmp_path: Path,

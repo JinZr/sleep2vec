@@ -331,6 +331,22 @@ def test_hparam_launch_rejects_workspace_frozen_drift_before_start(tmp_path: Pat
     launcher.assert_not_started()
 
 
+def test_hparam_launch_rejects_replaced_execution_snapshot_before_start(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
+    snapshot_path = plan_dir / "execution_snapshot.json"
+    snapshot = json.loads(snapshot_path.read_text())
+    snapshot["runtime_hostname"] = "other-host"
+    snapshot_path.write_text(json.dumps(snapshot))
+    launcher = FakeLauncher()
+
+    with pytest.raises(ValueError, match="execution snapshot changed after registration"):
+        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
+
+    launcher.assert_not_started()
+
+
 @pytest.mark.parametrize(
     ("field", "changed"),
     [

@@ -888,39 +888,6 @@ def compile_hparam_run_all_script(recipe: dict[str, Any], out: Path) -> str:
     )
 
 
-def compile_hparam_plan_contract(
-    recipe: dict[str, JsonValue],
-    out: Path,
-    *,
-    run_index_offset: int,
-    config_bytes: bytes,
-) -> plan_contract.HparamCompiledPlanContract:
-    contracts = compile_hparam_run_contracts(
-        recipe,
-        out,
-        run_index_offset,
-        source_config_bytes=config_bytes or None,
-    )
-    final_command = compile_hparam_final_command(recipe, out)
-    final_config_required = final_command is not None and has_explicit_final_eval_config(recipe)
-    final_snapshot = None
-    if final_config_required:
-        final_snapshot = plan_contract.frozen_input_snapshot(recipe, "inputs.final_eval_config_path")
-        if final_snapshot["path"] != str(_resolved_final_eval_config_path(recipe, None) or ""):
-            raise ValueError("Frozen final evaluation config differs from its recipe path.")
-    return {
-        "runs": [contract["row"] for contract in contracts],
-        "run_files": contracts,
-        "launch_script_text": compile_hparam_run_all_script(recipe, out),
-        "final_command": final_command,
-        "final_script_text": (
-            render_hparam_final_script(recipe, out, final_command) if final_command is not None else None
-        ),
-        "final_eval_config_required": final_config_required,
-        "final_eval_config_sha256": final_snapshot["sha256"] if final_snapshot is not None else None,
-    }
-
-
 def write_hparam_plan(
     recipe: dict[str, JsonValue],
     out: Path,

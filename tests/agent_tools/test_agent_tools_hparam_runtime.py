@@ -293,12 +293,15 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
     }
     resolved_path = root / "recipe.resolved.yaml"
     resolved_path.write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
+    snapshot_path = root / execution_snapshot.EXECUTION_SNAPSHOT_NAME
+    snapshot_path.write_text("{}\n")
     (root / "plan.json").write_text(
         json.dumps(
             {
                 "runs": runs,
                 "recipe": resolved_recipe,
                 "resolved_recipe_sha256": file_sha256(resolved_path),
+                "execution_snapshot": {"path": str(snapshot_path), "sha256": file_sha256(snapshot_path)},
             }
         )
     )

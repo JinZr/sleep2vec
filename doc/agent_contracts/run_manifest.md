@@ -369,8 +369,8 @@ diagnostic evidence, but it cannot erase or bypass the canonical stop intent.
 controller classification belongs to `steps/<step.id>/step.yaml.plan_controller`,
 not a duplicate table field. The complete
 [read-only status and advisory contract](experiment_workspace.md#read-only-status-and-advisory-actions)
-owns frozen-plan validation, controller blockers, and the distinction from
-non-launching monitors that write fresh observations.
+owns registered-plan binding checks, controller blockers, and the distinction
+from non-launching monitors that write fresh observations.
 
 Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, or collection.
 

@@ -76,7 +76,7 @@ class ExperimentCompletionFields(TypedDict):
 
 def _preset_direct_workspace(plan_dir: Path) -> Path:
     # The locator is untrusted and only names the workspace to lock; run_manifest.tsv may be replaced by a concurrent
-    # lock holder, so callers read workspace state through _read_preset_direct_plan under the run lock.
+    # lock holder, so callers read the plan and workspace state through _read_preset_direct_plan under the run lock.
     initial = read_json(plan_dir / "plan.json")
     recipe = initial.get("recipe")
     if not isinstance(recipe, dict) or recipe.get("task") != "preset_prepare":
@@ -89,27 +89,33 @@ def _preset_direct_workspace(plan_dir: Path) -> Path:
     return workspace
 
 
-def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
-    # All execution fields below come from the registered frozen plan, not the untrusted locator.
-    workspace = _preset_direct_workspace(plan_dir)
+def _read_target_plan(plan_dir: Path, workspace: Path) -> tuple[artifacts.RegisteredPlanSummary, list[dict[str, str]]]:
+    """Read only the registered plan a launch or stop names, under the caller's run lock."""
     experiment, rows = _managed_workspace(workspace, lock_held=True)
-    registered_steps = _registered_plan_steps(workspace, experiment, rows, require_registered_rows=True)
-    for registered in registered_steps:
-        for plan in registered["plans"]:
-            if plan["path"] != str(plan_dir):
-                continue
-            execution = plan["recipe"].get("execution") or {}
-            if (
-                registered["manifest"]["plan_controller"] != "ordinary"
-                or plan["task"] != "preset_prepare"
-                or len(plan["runs"]) != 1
-                or execution.get("scheduler") != {"type": "direct"}
-                or any(not execution.get(field) for field in ("python", "runtime_commit", "workdir"))
-                or plan["runs"][0].get("terminal_status_owner") != "script"
-            ):
-                raise ValueError("preset-launch and run-stop require one new local managed direct preset run.")
-            return workspace, plan, rows
-    raise ValueError(f"Preset plan is not registered in its experiment workspace: {plan_dir}")
+    for manifest in read_registered_steps(workspace, experiment_id=str(experiment["id"])):
+        if str(plan_dir) in manifest["plans"]:
+            plan = artifacts.read_registered_plan(
+                plan_dir, workspace_experiment=experiment, step_manifest=manifest, workspace_rows=rows
+            )
+            return plan, rows
+    raise ValueError(f"Plan is not registered in its experiment workspace: {plan_dir}")
+
+
+def _read_preset_direct_plan(
+    plan_dir: Path, workspace: Path
+) -> tuple[artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
+    # All execution fields below come from the registered frozen plan, not the untrusted locator.
+    plan, rows = _read_target_plan(plan_dir, workspace)
+    execution = plan["recipe"].get("execution") or {}
+    if (
+        plan["task"] != "preset_prepare"
+        or len(plan["runs"]) != 1
+        or execution.get("scheduler") != {"type": "direct"}
+        or any(not execution.get(field) for field in ("python", "runtime_commit", "workdir"))
+        or plan["runs"][0].get("terminal_status_owner") != "script"
+    ):
+        raise ValueError("preset-launch and run-stop require one new local managed direct preset run.")
+    return plan, rows
 
 
 def _record_definitely_unlaunched_failure(workspace: Path, key: tuple[str, str], reason: str) -> None:
@@ -139,9 +145,7 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
     owner_dir = Path(plan_dir).absolute()
     workspace = _preset_direct_workspace(owner_dir)
     with experiment_workspace.managed_run_lock(workspace):
-        locked_workspace, plan, rows = _read_preset_direct_plan(owner_dir)
-        if locked_workspace != workspace:
-            raise ValueError("Preset plan workspace changed before launch.")
+        plan, rows = _read_preset_direct_plan(owner_dir, workspace)
         run = plan["runs"][0]
         key = validated_run_key(run)
         previous = {managed_run_key(row): row for row in rows}[key]
@@ -219,9 +223,7 @@ def stop_preset_run(plan_dir: str | Path, run_id: str, *, reason: str) -> Path:
     owner_dir = Path(plan_dir).absolute()
     workspace = _preset_direct_workspace(owner_dir)
     with experiment_workspace.managed_run_lock(workspace):
-        locked_workspace, plan, rows = _read_preset_direct_plan(owner_dir)
-        if locked_workspace != workspace:
-            raise ValueError("Preset plan workspace changed before stop.")
+        plan, rows = _read_preset_direct_plan(owner_dir, workspace)
         run = plan["runs"][0]
         key = validated_run_key(run)
         if key[1] != run_id:
@@ -245,7 +247,7 @@ def stop_preset_run(plan_dir: str | Path, run_id: str, *, reason: str) -> Path:
             )
             append_event(workspace, "run_stopped", {"step_id": key[0], "run_id": key[1], "reason": reason})
             return workspace / "run_manifest.tsv"
-        if previous.get("target") != "local" or previous.get("pid_path") != str(Path(run["run_dir"]) / "pid"):
+        if previous.get("pid_path") != str(Path(run["run_dir"]) / "pid"):
             raise ValueError("Preset run lacks its frozen local launch identity.")
         populated = {field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")}
         if populated and populated != PROCESS_IDENTITY_FIELDS:
@@ -281,9 +283,7 @@ def stop_preset_run(plan_dir: str | Path, run_id: str, *, reason: str) -> Path:
             ):
                 raise
     with experiment_workspace.managed_run_lock(workspace):
-        locked_workspace, _plan, rows = _read_preset_direct_plan(owner_dir)
-        if locked_workspace != workspace:
-            raise ValueError("Preset plan workspace changed before stop completion.")
+        _experiment, rows = _managed_workspace(workspace, lock_held=True)
         latest = {managed_run_key(row): row for row in rows}[key]
         validate_frozen_run_update(latest, stopping)
         merge_run_manifest(
@@ -297,7 +297,7 @@ def stop_preset_run(plan_dir: str | Path, run_id: str, *, reason: str) -> Path:
 
 def _infer_slurm_workspace(plan_dir: Path) -> Path:
     # The initial document only locates the workspace to lock; run_manifest.tsv may be replaced by a concurrent lock
-    # holder, so callers read workspace state through _read_infer_slurm_plan under the run lock.
+    # holder, so callers read the plan and workspace state through _read_infer_slurm_plan under the run lock.
     initial = read_json(plan_dir / "plan.json")
     recipe = initial.get("recipe")
     if not isinstance(recipe, dict) or recipe.get("task") != "infer":
@@ -310,24 +310,14 @@ def _infer_slurm_workspace(plan_dir: Path) -> Path:
     return workspace
 
 
-def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
-    # Execution uses the strict registered-plan reader below, not the locating document.
-    workspace = _infer_slurm_workspace(plan_dir)
-    experiment, rows = _managed_workspace(workspace, lock_held=True)
-    registered_steps = _registered_plan_steps(workspace, experiment, rows, require_registered_rows=True)
-    for registered in registered_steps:
-        for plan in registered["plans"]:
-            if plan["path"] != str(plan_dir):
-                continue
-            if (
-                registered["manifest"]["plan_controller"] != "ordinary"
-                or plan["task"] != "infer"
-                or len(plan["runs"]) != 1
-                or scheduler_type(plan["runs"][0]) != "slurm"
-            ):
-                raise ValueError("infer-launch and run-stop require one ordinary managed Slurm inference run.")
-            return workspace, plan, rows
-    raise ValueError(f"Inference plan is not registered in its experiment workspace: {plan_dir}")
+def _read_infer_slurm_plan(
+    plan_dir: Path, workspace: Path
+) -> tuple[artifacts.RegisteredPlanSummary, list[dict[str, str]]]:
+    # Execution uses the registered plan read under the run lock, not the locating document.
+    plan, rows = _read_target_plan(plan_dir, workspace)
+    if plan["task"] != "infer" or len(plan["runs"]) != 1 or scheduler_type(plan["runs"][0]) != "slurm":
+        raise ValueError("infer-launch and run-stop require one ordinary managed Slurm inference run.")
+    return plan, rows
 
 
 def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
@@ -338,9 +328,7 @@ def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_s
     owner_dir = Path(plan_dir).absolute()
     workspace = _infer_slurm_workspace(owner_dir)
     with experiment_workspace.managed_run_lock(workspace):
-        locked_workspace, plan, _rows = _read_infer_slurm_plan(owner_dir)
-        if locked_workspace != workspace:
-            raise ValueError("Inference plan workspace changed before launch.")
+        plan, _rows = _read_infer_slurm_plan(owner_dir, workspace)
         recipe = plan["recipe"]
         try:
             return managed_scheduler.launch_managed_runs(
@@ -365,9 +353,7 @@ def stop_infer_run(plan_dir: str | Path, run_id: str, *, reason: str) -> Path:
     owner_dir = Path(plan_dir).absolute()
     workspace = _infer_slurm_workspace(owner_dir)
     with experiment_workspace.managed_run_lock(workspace):
-        locked_workspace, plan, rows = _read_infer_slurm_plan(owner_dir)
-        if locked_workspace != workspace:
-            raise ValueError("Inference plan workspace changed before stop.")
+        plan, rows = _read_infer_slurm_plan(owner_dir, workspace)
         key = validated_run_key(plan["runs"][0])
         if key[1] != run_id:
             raise ValueError(f"Unknown run_id: {run_id}")
@@ -721,24 +707,14 @@ def _registered_plan_steps(
         step_rows = [row for row in rows if str(row["step_id"]) == step_id]
         plans: list[artifacts.RegisteredPlanSummary] = []
         plan_keys: list[tuple[str, str]] = []
-        run_index_offset = 0
         for plan_path in manifest["plans"]:
             if artifacts.is_registered_blocked_plan(plan_path, workspace=root):
                 continue
             plan = artifacts.read_registered_plan(
-                plan_path,
-                workspace=root,
-                workspace_experiment=experiment,
-                step_manifest=manifest,
-                workspace_rows=rows,
-                expected_recipe_path=(
-                    manifest["recipe_path"] if manifest["plan_controller"] == "ordinary" and not plans else None
-                ),
-                run_index_offset=run_index_offset,
+                plan_path, workspace_experiment=experiment, step_manifest=manifest, workspace_rows=rows
             )
             plans.append(plan)
             plan_keys.extend(plan["run_keys"])
-            run_index_offset += len(plan["run_keys"])
         if len(plan_keys) != len(set(plan_keys)):
             raise ValueError(f"Managed step registers duplicate run keys across plans: {step_id}")
         canonical_keys = {managed_run_key(row) for row in step_rows}

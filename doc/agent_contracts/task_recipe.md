@@ -256,9 +256,10 @@ Local relative `inputs.config` values remain planning-source locators under
 `REPO_ROOT`. The planner freezes their bytes and gives the runtime a plan-local
 absolute config path.
 Successful plans also freeze an internal `_plan_context` containing the creator
-home, manager Python, and repository root. Registered-plan recompilation uses
-that exact context for relative source locators and implicit script defaults;
-it never substitutes the status reader's host environment.
+home, manager Python, and repository root. Plan compilation uses that exact
+context for relative source locators and implicit script defaults; registered
+plans are never recompiled by a reader, so no reader host environment is
+substituted.
 
 - Generic and variant-local Kaldi inference requires a `kaldi_data_root`
   directory plus a `kaldi_manifest` file and rejects NPZ preset overrides.
@@ -321,12 +322,11 @@ its variant-local preset command and frozen planned runtime identity. Its top-le
 and execution requires `--execute`. Do not launch the worker `launch.sh`
 separately or add a background SSH shell wrapper.
 
-The launcher validates the registered plan and frozen inputs, then records the
-execution identity and launch attempt before starting a detached process.
-The launch command rechecks the frozen worker script and config hashes before
-spawning, including changes made after the manager's initial validation, and
-requires a clean importable-code state and the lifecycle module in the current
-repository. Under the short runtime lock it observes HEAD immediately before
+The launcher reads only the named plan and checks its registration and
+workspace binding, then records the execution identity and launch attempt
+before starting a detached process. The launch command checks the frozen worker
+script and config hashes before spawning, and requires a clean importable-code
+state and the lifecycle module in the current repository. Under the short runtime lock it observes HEAD immediately before
 spawning and adds that value to the new managed PID receipt. It does not perform
 the hparam workload module-origin or live-argv checks.
 Stdin is closed to input; stdout and stderr share the run's persistent

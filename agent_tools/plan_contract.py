@@ -1,14 +1,14 @@
 """Deterministic run identities, paths, config bytes, and executable scripts.
 
-Together with the adapters' ``compile_plan_contract()`` hooks it owns what plan
-publication and registered-plan validation must agree on: run identities,
-control and artifact paths, derived config bytes, complete executable scripts,
-and final-evaluation requirements.
+Together with the adapters' ``compile_plan_contract()`` hooks and
+``plan_hparam`` it owns what plan publication produces: run identities, control
+and artifact paths, derived config bytes, complete executable scripts, and
+final-evaluation requirements.
 
 A task adapter may derive that contract only from the frozen recipe -- its
 strict creator-host plan context and input snapshots, plus plan-owned config
-bytes -- never from live observation, so validating a published plan reproduces
-the same contract that created it.
+bytes -- never from live observation, so the same frozen recipe always
+reproduces the same contract.
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ import copy
 from pathlib import Path
 import re
 import sys
-from typing import Any, Literal, Mapping, Sequence, TypedDict
+from typing import Any, Literal, Mapping, TypedDict
 
-from typing_extensions import Never, NotRequired
+from typing_extensions import NotRequired
 
 from . import plan_rendering as rendering, slurm
 from .decision_models import USER_DECISIONS_FILENAME
@@ -132,27 +132,6 @@ class GenericCompiledPlanContract(TypedDict):
     script_text: str
     scheduler_script_text: NotRequired[str]
     launch_script_text: NotRequired[str]
-    run_files: NotRequired[Never]
-    final_command: NotRequired[Never]
-    final_script_text: NotRequired[Never]
-    final_eval_config_required: NotRequired[Never]
-    final_eval_config_sha256: NotRequired[Never]
-
-
-class HparamCompiledPlanContract(TypedDict):
-    runs: list[dict[str, Any]]
-    run_files: Sequence[HparamRunContract | MaterializedHparamRunContract]
-    launch_script_text: str
-    final_command: str | None
-    final_script_text: str | None
-    final_eval_config_required: bool
-    final_eval_config_sha256: str | None
-    commands: NotRequired[Never]
-    script_text: NotRequired[Never]
-    scheduler_script_text: NotRequired[Never]
-
-
-CompiledPlanContract = GenericCompiledPlanContract | HparamCompiledPlanContract
 
 
 def blocked_plan_control_paths(plan_dir: Path) -> list[Path]:
@@ -347,41 +326,3 @@ def generic_script_text(
         )
         + "\n"
     )
-
-
-def validate_final_eval_contract(
-    plan: dict[str, Any],
-    recipe: dict[str, Any],
-    plan_dir: Path,
-    contract: Mapping[str, Any],
-) -> tuple[Path | None, str | None]:
-    required = bool(contract.get("final_eval_config_required"))
-    present = "final_eval_config" in plan
-    if required != present:
-        requirement = "missing" if required else "unexpected"
-        raise ValueError(f"Registered plan has {requirement} final_eval_config: {plan_dir / 'plan.json'}")
-    final_path = None
-    if present:
-        descriptor = plan["final_eval_config"]
-        expected_sha256 = contract.get("final_eval_config_sha256")
-        required_fields = {"path", "sha256", "source_path"}
-        if (
-            not isinstance(descriptor, dict)
-            or set(descriptor) != required_fields
-            or any(not isinstance(descriptor[field], str) or not descriptor[field].strip() for field in required_fields)
-            or _SHA256_RE.fullmatch(descriptor["sha256"]) is None
-        ):
-            raise ValueError(
-                f"Registered final_eval_config must define path, sha256, and source_path: {plan_dir / 'plan.json'}"
-            )
-        if descriptor["sha256"] != expected_sha256:
-            raise ValueError(
-                f"Registered final_eval_config differs from its frozen recipe digest: {plan_dir / 'plan.json'}"
-            )
-        final_path = plan_dir / FROZEN_FINAL_EVAL_CONFIG_NAME
-        inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
-        if descriptor["path"] != str(final_path) or descriptor["source_path"] != str(
-            inputs.get("final_eval_config_path") or ""
-        ):
-            raise ValueError(f"Registered final_eval_config differs from its frozen recipe: {plan_dir / 'plan.json'}")
-    return final_path, contract.get("final_command")

@@ -35,6 +35,7 @@ from .experiment_workspace import (
     TERMINAL_STATUSES,
     append_event,
     experiment_root,
+    file_sha256,
     has_managed_launch_evidence,
     merge_run_manifest,
     merge_run_row,
@@ -265,6 +266,10 @@ def _launch_hparam_runs(
     execution = execution_value if isinstance(execution_value, dict) else {}
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
+    # Every launch check compares the live target against this file, so it must be the one registered with the plan.
+    snapshot_path = run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
+    if file_sha256(snapshot_path) != plan["execution_snapshot"]["sha256"]:
+        raise ValueError(f"Hparam execution snapshot changed after registration: {snapshot_path}")
     validated_snapshot: Callable[..., execution_snapshot.ExecutionSnapshotResult]
     if _is_direct_plan(plan):
 
@@ -272,7 +277,6 @@ def _launch_hparam_runs(
             # The launch command's runtime_identity and cli_preflight programs check this frozen snapshot against
             # the live target, and the frozen config and launch.sh hashes, right before process start; a mismatch is
             # a definite launch_failed. launch.sh then checks its frozen input snapshots, such as an init checkpoint.
-            snapshot_path = run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
             return cast(execution_snapshot.ExecutionSnapshot, read_json(snapshot_path)), False
 
     else:
@@ -381,8 +385,6 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                         f"{', '.join(sorted(missing_execution_identity))}"
                     )
 
-                if previous.get("target") != "local":
-                    raise ValueError(f"Canonical run target must be local for run_id: {run_id}")
                 populated_process_fields = {
                     field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")
                 }

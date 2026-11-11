@@ -10,7 +10,6 @@ import yaml
 
 from agent_tools import plan_contract, plan_hparam, plans, run_artifacts
 from agent_tools.adapters.base import TaskAdapter
-from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 
 
 def test_hparam_precommit_failure_removes_staging_without_publication(tmp_path: Path, monkeypatch):
@@ -99,11 +98,12 @@ def test_compiled_plan_phase_fields_and_row_identity(tmp_path: Path, phase: str)
     )
     before = copy.deepcopy(recipe)
     out = tmp_path / "unwritten-plan"
-    adapter = TaskAdapter() if phase == "generic" else HPARAM_TUNE_ADAPTER
-
-    compiled = adapter.compile_plan_contract(
-        recipe, out, run_index_offset=7, config_bytes=b"" if phase == "hparam_rows" else config_bytes
-    )
+    if phase == "generic":
+        compiled = TaskAdapter().compile_plan_contract(recipe, out, run_index_offset=7, config_bytes=config_bytes)
+    else:
+        run_files = plan_hparam.compile_hparam_run_contracts(
+            recipe, out, 7, source_config_bytes=config_bytes if phase == "hparam_materialized" else None
+        )
 
     assert recipe == before
     assert not out.exists()
@@ -113,22 +113,9 @@ def test_compiled_plan_phase_fields_and_row_identity(tmp_path: Path, phase: str)
         assert isinstance(compiled["script_text"], str)
         assert compiled["runs"][0]["config_sha256"] == hashlib.sha256(config_bytes).hexdigest()
     else:
-        assert set(compiled) == {
-            "runs",
-            "run_files",
-            "launch_script_text",
-            "final_command",
-            "final_script_text",
-            "final_eval_config_required",
-            "final_eval_config_sha256",
-        }
-        assert compiled["final_command"] is None
-        assert compiled["final_script_text"] is None
-        assert compiled["final_eval_config_required"] is False
-        assert compiled["final_eval_config_sha256"] is None
-        assert [row["run_id"] for row in compiled["runs"]] == ["run-007", "run-008"]
-        for row, run_file in zip(compiled["runs"], compiled["run_files"]):
-            assert row is run_file["row"]
+        assert [run_file["row"]["run_id"] for run_file in run_files] == ["run-007", "run-008"]
+        for run_file in run_files:
+            row = run_file["row"]
             if phase == "hparam_rows":
                 assert set(run_file) == {"row"}
                 assert "config_sha256" not in row and "script_sha256" not in row

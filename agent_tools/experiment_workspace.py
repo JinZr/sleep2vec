@@ -712,10 +712,9 @@ def ensure_experiment_workspace(
         merge_step_manifest(existing_step, step_payload)
         existing_recipe_path = existing_step["recipe_path"]
         incoming_recipe_path = step_payload["recipe_path"]
-        # Before its first canonical run, an ordinary step's initial recipe remains the retry provenance owner.
+        # Before its first canonical run, a step's initial recipe remains the retry provenance owner.
         if (
-            existing_step["plan_controller"] == "ordinary"
-            and existing_recipe_path
+            existing_recipe_path
             and incoming_recipe_path not in (None, "", existing_recipe_path)
             and not any(str(row["step_id"]) == str(step["id"]) for row in workspace_rows)
         ):

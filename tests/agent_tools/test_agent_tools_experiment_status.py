@@ -121,22 +121,20 @@ def _add_plan(
         }
     ]
     plan_contract.bind_plan_context(recipe)
-    adapter = get_adapter(task)
-    assert adapter is not None
-    contract = adapter.compile_plan_contract(
-        recipe,
-        plan_dir,
-        run_index_offset=0,
-        config_bytes=config_bytes,
-    )
-    run = dict(contract["runs"][0])
+    if task == "hparam_tune":
+        run_files = plan_hparam.compile_hparam_run_contracts(recipe, plan_dir, 0, source_config_bytes=config_bytes)[0]
+        run = dict(run_files["row"])
+    else:
+        adapter = get_adapter(task)
+        assert adapter is not None
+        contract = adapter.compile_plan_contract(recipe, plan_dir, run_index_offset=0, config_bytes=config_bytes)
+        run = dict(contract["runs"][0])
     run_dir = Path(run["run_dir"])
     run_dir.mkdir(parents=True)
     config_path = Path(run["config"])
     script_path = Path(run["script"])
     artifacts_path = Path(run["artifacts"])
     if task == "hparam_tune":
-        run_files = contract["run_files"][0]
         config_path.write_bytes(run_files["config_bytes"])
         script_path.write_text(run_files["script_text"])
         (plan_dir / "config.source.yaml").write_bytes(config_bytes)
@@ -159,7 +157,7 @@ def _add_plan(
     plan = {"status": "PASS", "recipe": recipe, "runs": [plan_run]}
     if task == "hparam_tune":
         plan["resolved_recipe_sha256"] = _sha256(resolved_path)
-        (plan_dir / "run_all.sh").write_text(contract["launch_script_text"])
+        (plan_dir / "run_all.sh").write_text(plan_hparam.compile_hparam_run_all_script(recipe, plan_dir))
     else:
         plan["commands"] = commands
         (plan_dir / "run.sh").write_text(script_path.read_text())

@@ -221,31 +221,26 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     assert status["runs"][0]["status"] == row["status"]
 
 
-@pytest.mark.parametrize("failure", ["missing_python", "runtime_preflight", "script_hash", "config_hash"])
+# The start command itself verifies artifact drift; test_preset_launch_rechecks_artifacts_in_the_actual_start_command
+# covers that guard.
+@pytest.mark.parametrize("failure", ["missing_python", "runtime_preflight"])
 def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_runtime, monkeypatch, failure):
     if failure == "missing_python":
         preset_runtime["execution"]["python"] = str(tmp_path / "missing-python")
-    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
     if failure == "runtime_preflight":
         monkeypatch.setattr(
             execution_snapshot,
             "run_execution_command",
             lambda _execution, command: subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed"),
         )
-    if failure.endswith("_hash"):
-        Path(plan["runs"][0][failure.removesuffix("_hash")]).write_text("changed bytes\n")
-    before = read_run_manifest(preset_runtime["workspace"])
     with pytest.raises((ValueError, RuntimeError)):
         experiments.launch_preset_run(plan_dir, dry_run=False)
-    if failure.endswith("_hash"):
-        # The registered-plan reader rejects drifted artifacts before the scheduler can own a failure state.
-        assert read_run_manifest(preset_runtime["workspace"]) == before
-    else:
-        (row,) = read_run_manifest(preset_runtime["workspace"])
-        assert row["status"] == "launch_failed"
-        assert row["scheduler_reason"].startswith("Pre-launch guard failed: Preset runtime preflight failed:")
-        assert not has_managed_launch_evidence(row)
-        assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
+    (row,) = read_run_manifest(preset_runtime["workspace"])
+    assert row["status"] == "launch_failed"
+    assert row["scheduler_reason"].startswith("Pre-launch guard failed: Preset runtime preflight failed:")
+    assert not has_managed_launch_evidence(row)
+    assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
     assert not preset_runtime["payload"].exists()
 
 
