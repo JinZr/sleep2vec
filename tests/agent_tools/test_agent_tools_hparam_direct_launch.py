@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 
-from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS, FakeLauncher, run_cli
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS, FakeLauncher, frozen_artifact_launch, run_cli
 import pytest
 from test_agent_tools_hparam_runtime import (
     _hparam_recipe,
@@ -47,8 +47,8 @@ def test_hparam_launch_rejects_unregistered_plan_copy_before_start(tmp_path: Pat
     shutil.copytree(plan_dir, copied_plan)
     launcher = FakeLauncher()
 
-    # The frozen contract is checked before locking, so the copy's stale run paths fail ahead of registration.
-    with pytest.raises(ValueError, match="differs from canonical expected runs field run_dir"):
+    # The copy names the same workspace, but its step registers only the original plan directory.
+    with pytest.raises(ValueError, match="not registered by its managed step"):
         hparam_runtime.launch_hparam_runs(copied_plan, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
@@ -331,38 +331,6 @@ def test_hparam_launch_rejects_workspace_frozen_drift_before_start(tmp_path: Pat
     launcher.assert_not_started()
 
 
-def test_hparam_runtime_rejects_tampered_relative_workdir_before_start(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    plan_path = plan_dir / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    plan["recipe"]["execution"] = {"workdir": "relative/runtime"}
-    plan_path.write_text(json.dumps(plan))
-    launcher = FakeLauncher()
-
-    with pytest.raises(ValueError, match="absolute path"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-
-
-def test_hparam_runtime_rejects_workdir_that_differs_from_frozen_runtime_path(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    plan_path = plan_dir / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    plan["recipe"]["execution"] = {"workdir": str(tmp_path / "other-runtime")}
-    plan_path.write_text(json.dumps(plan))
-    launcher = FakeLauncher()
-
-    with pytest.raises(ValueError, match="runtime_dir differs"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-
-
 @pytest.mark.parametrize(
     ("field", "changed"),
     [
@@ -576,7 +544,12 @@ def test_hparam_run_queue_fails_on_missing_pid_capacity_blocker_from_another_pla
     assert exc_info.value.run_id == first_run["run_id"]
 
 
-def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_path: Path, monkeypatch):
+def _launch_verification(command: str) -> list[list[str]]:
+    """Return the verification programs a managed launch command runs before it starts the process."""
+    return json.loads(shlex.split(command)[-1])
+
+
+def test_hparam_launch_verifies_the_frozen_execution_snapshot_inside_the_launch_command(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_runs"] = 2
@@ -585,12 +558,20 @@ def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_pa
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     calls = _set_execution_probe(monkeypatch, plan_dir)
+    snapshot_bytes = (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes()
     launcher = FakeLauncher(lambda _execution, _command: calls.append("start") or "launched")
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
-    snapshot = json.loads((plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_text())
-    assert calls == ["identity", "parse", "start"]
+    # The manager does not probe the target; the launch command checks the frozen snapshot at process start.
+    assert calls == ["start"]
+    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot_bytes
+    snapshot = json.loads(snapshot_bytes)
+    identity, cli_preflight = _launch_verification(launcher.commands[0])
+    assert identity[2] == python_programs.source("managed_scheduler.runtime_identity")
+    assert json.loads(identity[4]) == snapshot
+    assert cli_preflight[2] == python_programs.source("managed_scheduler.cli_preflight")
+    assert cli_preflight[3] == snapshot["module"]
     assert snapshot["python"] == json.loads((plan_dir / "plan.json").read_text())["recipe"]["execution"]["python"]
     assert (
         snapshot["runtime_commit"]
@@ -600,35 +581,6 @@ def test_hparam_launch_revalidates_verified_execution_target_before_start(tmp_pa
     assert snapshot["module"] == "sleep2vec.finetune"
     assert set(snapshot["required_options"]).issubset(snapshot["supported_options"])
     assert not list(plan_dir.glob(f".{execution_snapshot.EXECUTION_SNAPSHOT_NAME}.*"))
-
-
-def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    plan = json.loads((plan_dir / "plan.json").read_text())
-    resolved = yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())
-    for payload in (plan["recipe"], resolved):
-        payload["execution"].pop("python")
-        payload["execution"].pop("runtime_commit")
-    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
-    (plan_dir / "recipe.resolved.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
-    plan["resolved_recipe_sha256"] = file_sha256(plan_dir / "recipe.resolved.yaml")
-    (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
-    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
-    monkeypatch.setattr(
-        execution_snapshot,
-        "run_execution_command",
-        lambda *_args, **_kwargs: pytest.fail("legacy plan must fail before target probing"),
-    )
-    launcher = FakeLauncher()
-
-    with pytest.raises(ValueError, match="lacks execution.python or execution.runtime_commit; create a new plan"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
-    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
 
 
 def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch):
@@ -1084,69 +1036,6 @@ def test_execution_probe_rejects_runtime_module_outside_verified_repository(tmp_
         )
 
 
-def test_hparam_launch_rejects_runtime_preflight_failure_before_managed_writes(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    launcher = FakeLauncher()
-
-    def reject_protocol(_execution, command):
-        assert command[2] == python_programs.source("managed_scheduler.runtime_identity")
-        assert command[-1]
-        return subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed")
-
-    monkeypatch.setattr(execution_snapshot, "run_execution_command", reject_protocol)
-
-    with pytest.raises(RuntimeError, match="Target runtime preflight failed"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
-
-
-def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(
-        tmp_path,
-        execution={"workdir": str(tmp_path), "wandb_project": "unit", "wandb_group": "runtime-preflight"},
-    )
-    payload = yaml.safe_load(recipe.read_text())
-    base_recipe = Path(payload["base_recipe"])
-    base_payload = yaml.safe_load(base_recipe.read_text())
-    base_payload["runtime"]["wandb_mode"] = "online"
-    write_yaml(base_recipe, base_payload)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    _set_execution_probe(monkeypatch, plan_dir, missing_options={"--wandb-mode"})
-    launcher = FakeLauncher()
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-
-    with pytest.raises(ValueError, match=r"does not accept planned options: --wandb-mode"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-    assert all(path.read_bytes() == content for path, content in before.items())
-    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
-    row = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert row["status"] == "planned"
-    assert row.get("target", "") == ""
-
-
-def test_hparam_launch_rejects_frozen_cli_values_before_managed_writes(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    calls = _set_execution_probe(monkeypatch, plan_dir, parse_error="invalid choice: bf16-mixed")
-    launcher = FakeLauncher()
-
-    with pytest.raises(ValueError, match="rejected frozen arguments.*invalid choice"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-    assert calls == ["identity", "parse"]
-    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
-
-
 def test_hparam_launch_accepts_runtime_commit_drift_and_records_both_commits(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "runtime_commit": "a" * 40})
     plan_dir = tmp_path / "plan"
@@ -1173,7 +1062,7 @@ def test_hparam_launch_accepts_runtime_commit_drift_and_records_both_commits(tmp
     launcher = FakeLauncher(start)
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
-    assert calls == ["identity", "parse"]
+    assert calls == []
     assert len(launcher.starts) == 1
     assert snapshot_path.read_bytes() == snapshot_before
     row = _read_table(tmp_path / "run_manifest.tsv")[0]
@@ -1205,20 +1094,6 @@ def test_hparam_launch_accepts_runtime_commit_drift_before_next_wave(tmp_path: P
 
     assert len(launcher.starts) == 2
     assert snapshot_path.read_bytes() == snapshot_before
-
-
-def test_hparam_launch_accepts_additional_cli_options_on_a_rolling_runtime(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    calls = _set_execution_probe(monkeypatch, plan_dir, extra_options={"--new-unrelated-option"})
-    launcher = FakeLauncher("launch_failed")
-
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    assert calls == ["identity", "parse"]
-    assert len(launcher.starts) == 1
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launch_failed"
 
 
 def test_repeated_dry_run_does_not_observe_runtime_before_execute(tmp_path: Path, monkeypatch):
@@ -1372,8 +1247,8 @@ def test_hparam_launch_fail_flag_reports_owned_missing_pid_before_start(tmp_path
     assert {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")} == expected
 
 
-def test_hparam_launch_validates_every_snapshot_before_starting(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+def test_hparam_launch_command_verifies_each_run_frozen_config_and_script(tmp_path: Path):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1})
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_runs"] = 2
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
@@ -1382,35 +1257,28 @@ def test_hparam_launch_validates_every_snapshot_before_starting(tmp_path: Path):
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
     Path(runs[1]["config"]).write_text("changed: true\n")
-    launcher = FakeLauncher()
+    launcher = FakeLauncher(frozen_artifact_launch)
 
-    with pytest.raises(ValueError, match="snapshot hash changed"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
-    launcher.assert_not_started()
-
-
-def test_hparam_runtime_rejects_legacy_plan_without_side_effects(tmp_path: Path, monkeypatch):
-    (tmp_path / "plan.json").write_text(json.dumps({"trials": [{"trial_id": "trial_000"}], "recipe": {}}))
-    launch_path = tmp_path / "launch_manifest.tsv"
-    status_path = tmp_path / "trial_status.tsv"
-    launch_path.write_text("trial_id\tstatus\ntrial_000\tlaunched\n")
-    status_path.write_text("trial_id\tstatus\ntrial_000\tlaunched\n")
-    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
-    launcher = FakeLauncher()
-    killed = []
-    # Monitor and stop take no hooks, so the public owner guards them against starting a process.
-    monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
-    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    with pytest.raises(ValueError, match="Legacy hparam plan"):
-        hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
-    with pytest.raises(ValueError, match="Legacy hparam plan"):
-        hparam_runtime.stop_hparam_run(tmp_path, "trial_000", reason="legacy")
-
-    launcher.assert_not_started()
-    assert killed == []
-    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+    # Each run's own launch command re-hashes its frozen config and launch.sh right before process start, so the
+    # changed config fails inside run-001's command as a definite launch_failed, not retried, while run-000 starts.
+    assert len(launcher.commands) == 2
+    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    assert (rows[runs[1]["run_id"]]["status"], rows[runs[1]["run_id"]]["scheduler_reason"]) == (
+        "launch_failed",
+        f"launch exit 2: Frozen run artifact changed before process start: {runs[1]['config']}",
+    )
+    assert rows[runs[0]["run_id"]]["status"] != "launch_failed"
+    for run, command in zip(runs, launcher.commands):
+        identity = _launch_verification(command)[0]
+        assert identity[2] == python_programs.source("managed_scheduler.runtime_identity")
+        assert json.loads(identity[5]) == [
+            {"path": run["script"], "sha256": run["script_sha256"]},
+            {"path": run["config"], "sha256": run["config_sha256"]},
+        ]
+    assert file_sha256(runs[1]["config"]) != runs[1]["config_sha256"]
 
 
 def test_execution_snapshot_preserves_dynamic_identity_and_drift(tmp_path: Path):
@@ -1463,6 +1331,12 @@ def test_execution_snapshot_preserves_dynamic_identity_and_drift(tmp_path: Path)
         {},
         inspector=inspect,
     ) == (snapshot, False)
+    # A Slurm submission may probe from another login node; the probing host is not runtime identity.
+    identity["runtime_hostname"] = "other-login-node"
+    resubmitted, written = execution_snapshot.validated_execution_snapshot(
+        tmp_path, execution, runs, {}, inspector=inspect
+    )
+    assert (resubmitted["runtime_hostname"], written) == ("other-login-node", False)
     identity["extra_evidence"] = [1, 3]
     with pytest.raises(ValueError, match="Frozen execution snapshot changed: extra_evidence"):
         execution_snapshot.validated_execution_snapshot(tmp_path, execution, runs, {}, inspector=inspect)

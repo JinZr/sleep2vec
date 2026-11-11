@@ -195,7 +195,8 @@ def test_hparam_plan_preflights_before_registration(tmp_path: Path, monkeypatch)
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     assert report.exit_code == 0
-    assert len(calls) == 2
+    # One target probe freezes the snapshot; publication neither re-reads the plan nor probes again.
+    assert len(calls) == 1
     assert (plan_dir / "execution_snapshot.json").is_file()
     plan = run_artifacts.read_hparam_plan(plan_dir)
     assert plan["execution_snapshot"]["sha256"] == file_sha256(plan_dir / "execution_snapshot.json")
@@ -321,7 +322,7 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
     validate_only_card = _preflight_card(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert calls == ["hparam", "hparam"]
+    assert calls == ["hparam"]
     assert _workspace_files(workspace) == before
     assert not plan_dir.exists()
     assert _staging_dirs(workspace, plan_dir) == []
@@ -330,7 +331,7 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
     plan_stdout_card = _preflight_card(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert calls == ["hparam", "hparam", "hparam", "hparam"]
+    assert calls == ["hparam", "hparam"]
     assert plan_stdout_card == validate_only_card
     plan_markdown = (plan_dir / "plan.md").read_text()
     assert plan_markdown.count(_PREFLIGHT_CARD_HEADING) == 1
@@ -484,55 +485,6 @@ def test_hparam_validate_only_holds_publication_lock(tmp_path: Path, monkeypatch
     assert returned == [result]
 
 
-def test_hparam_registration_recheck_rejects_target_drift_without_writes(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
-    plan_dir = workspace / "plans" / "tune"
-    before = _workspace_files(workspace)
-    calls = 0
-
-    def inspect(execution, runs, *, plan_label):
-        nonlocal calls
-        calls += 1
-        snapshot = _snapshot(execution, runs)
-        if calls == 2:
-            snapshot["runtime_hostname"] = "changed-host"
-        return snapshot
-
-    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    assert "Frozen execution snapshot changed" in report.blocking_issues()[0].message
-    assert _workspace_files(workspace) == before
-    assert not plan_dir.exists()
-
-
-def test_hparam_registration_rejects_snapshot_drift_without_writes(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
-    plan_dir = workspace / "plans" / "tune"
-    before = _workspace_files(workspace)
-    monkeypatch.setattr(
-        execution_snapshot,
-        "inspect_execution_target",
-        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
-    )
-    commit = run_artifacts.commit_hparam_plan
-
-    def tamper_snapshot(out, **kwargs):
-        (Path(out) / "execution_snapshot.json").write_text("{}\n")
-        return commit(out, **kwargs)
-
-    monkeypatch.setattr(run_artifacts, "commit_hparam_plan", tamper_snapshot)
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    assert "execution snapshot changed" in report.blocking_issues()[0].message.lower()
-    assert _workspace_files(workspace) == before
-    assert not plan_dir.exists()
-
-
 def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_writes(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -564,11 +516,11 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
 
     monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inject_partial_registration)
 
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
+    # Rows registered while the target probe runs are caught by the publication lock's registration check.
+    with pytest.raises(ValueError, match="registration is partial"):
+        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
-    assert report.exit_code == 1
-    assert "registration is partial" in report.blocking_issues()[0].message
-    assert calls == 2
+    assert calls == 1
     assert not plan_dir.exists()
     assert _staging_dirs(workspace, plan_dir) == []
     assert not (workspace / "steps" / "unit-finetune" / "step.yaml").exists()
@@ -766,7 +718,7 @@ def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, 
     assert manifest_path.read_bytes() == before
 
 
-def test_hparam_registration_drift_preserves_existing_overwrite_destination(tmp_path: Path, monkeypatch):
+def test_hparam_preflight_failure_preserves_existing_overwrite_destination(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["artifacts"] = {**payload.get("artifacts", {}), "overwrite": True}
@@ -779,22 +731,16 @@ def test_hparam_registration_drift_preserves_existing_overwrite_destination(tmp_
     stale.write_text('{"old": true}\n')
     sentinel.write_text("preserve me\n")
     before = _workspace_files(workspace)
-    calls = 0
 
-    def inspect(execution, runs, *, plan_label):
-        nonlocal calls
-        calls += 1
-        snapshot = _snapshot(execution, runs)
-        if calls == 2:
-            snapshot["runtime_hostname"] = "changed-host"
-        return snapshot
+    def inspect(_execution, _runs, *, plan_label):
+        raise RuntimeError("Target execution identity preflight failed: unit")
 
     monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     assert report.exit_code == 1
-    assert "Frozen execution snapshot changed" in report.blocking_issues()[0].message
+    assert "Target execution identity preflight failed" in report.blocking_issues()[0].message
     assert _workspace_files(workspace) == before
     assert stale.read_text() == '{"old": true}\n'
     assert sentinel.read_text() == "preserve me\n"
@@ -1076,13 +1022,13 @@ def test_hparam_reader_skips_missing_workspace_registration_when_disabled(tmp_pa
         execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
     )
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
-    (workspace / "experiment.yaml").unlink()
+    (workspace / "run_manifest.tsv").unlink()
     before = _workspace_files(workspace)
 
     result = run_artifacts.read_hparam_plan(plan_dir, require_workspace_state=False)
 
     assert result["runs"]
     assert _workspace_files(workspace) == before
-    with pytest.raises(ValueError, match="not bound to an initialized experiment workspace"):
+    with pytest.raises(FileNotFoundError, match="run manifest is missing"):
         run_artifacts.read_hparam_plan(plan_dir)
     assert _workspace_files(workspace) == before

@@ -1,4 +1,6 @@
+import csv
 import hashlib
+import json
 from pathlib import Path
 import shlex
 import subprocess
@@ -9,14 +11,14 @@ import pytest
 from test_agent_plan_blocks_on_ambiguity import _RUNTIME_COMMIT, _hparam_recipe
 import yaml
 
-from agent_tools import hparam_runtime, plan_contract, run_artifacts, slurm
+from agent_tools import hparam_runtime, hparam_selection, plan_contract, run_artifacts
 from agent_tools.adapters.finetune import FINETUNE_ADAPTER
 from agent_tools.decision_paths import finetune_init_checkpoint_issue
-from agent_tools.experiment_workspace import read_run_manifest, verify_run_snapshot
+from agent_tools.experiment_workspace import merge_run_manifest, read_run_manifest, verify_run_snapshot
 
 
 @pytest.mark.parametrize("scheduler_type", ["direct", "slurm"])
-def test_hparam_init_checkpoint_is_hashed_and_not_used_for_resume(tmp_path, monkeypatch, scheduler_type):
+def test_hparam_init_checkpoint_is_hashed_and_not_used_for_resume(tmp_path, scheduler_type):
     checkpoint = tmp_path / "selected full.ckpt"
     checkpoint.write_bytes(b"selected full model")
     final_checkpoint = tmp_path / "final.ckpt"
@@ -61,17 +63,53 @@ def test_hparam_init_checkpoint_is_hashed_and_not_used_for_resume(tmp_path, monk
     checkpoint.write_bytes(b"changed checkpoint")
     with pytest.raises(ValueError, match="input snapshot hash changed"):
         verify_run_snapshot(run)
-    with pytest.raises(ValueError, match="input snapshot hash changed"):
-        run_artifacts.read_hparam_plan(out)
     result = subprocess.run(shlex.split(verification), capture_output=True, text=True)
     assert result.returncode != 0
     assert "input snapshot hash changed" in result.stderr
-    monkeypatch.setattr(slurm, "submit", lambda *_args, **_kwargs: pytest.fail("Changed input reached Slurm submit"))
+    # Plan reads and launch passes do not hash inputs: launch.sh rejects the changed checkpoint when the run
+    # starts, and job.sbatch (Slurm) or the launch command (direct) first re-hashes launch.sh itself.
+    assert run_artifacts.read_hparam_plan(out) == plan
     launcher = FakeLauncher()
-    for dry_run in (True, False):
-        with pytest.raises(ValueError, match="input snapshot hash changed"):
-            hparam_runtime.launch_hparam_runs(out, dry_run=dry_run, hooks=launcher.hooks())
+    hparam_runtime.launch_hparam_runs(out, dry_run=True, hooks=launcher.hooks())
     launcher.assert_not_started()
+    if scheduler_type == "slurm":
+        assert f"{run['script_sha256']}  {run['script']}" in Path(run["scheduler_script"]).read_text()
+    else:
+        hparam_runtime.launch_hparam_runs(out, dry_run=False, hooks=launcher.hooks())
+        identity = json.loads(shlex.split(launcher.commands[0])[-1])[0]
+        assert {"path": run["script"], "sha256": run["script_sha256"]} in json.loads(identity[5])
+
+
+def test_hparam_stop_and_select_work_after_the_init_checkpoint_moves(tmp_path):
+    checkpoint = tmp_path / "selected full.ckpt"
+    checkpoint.write_bytes(b"selected full model")
+    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2", parameters={"runtime.lr": [1e-6, 2e-6]}, max_runs=2)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["inputs"]["init_checkpoint_path"] = str(checkpoint)
+    payload["execution"] = {"workdir": str(tmp_path), "python": sys.executable, "runtime_commit": _RUNTIME_COMMIT}
+    write_yaml(recipe, payload)
+    out = tmp_path / "plan"
+    prepare_hparam_plan_fixture(recipe, out)
+    plan = run_artifacts.read_hparam_plan(out)
+    workspace = Path(plan["recipe"]["experiment"]["root"])
+    trained, unlaunched = plan["runs"]
+    assert trained["input_snapshots"][0]["path"] == str(checkpoint)
+    trained_checkpoint = Path(trained["checkpoint_dir"]) / "epoch=1.ckpt"
+    trained_checkpoint.parent.mkdir(parents=True)
+    trained_checkpoint.write_text("trained")
+    Path(trained["runtime_dir"], "run_manifest.json").write_text(
+        json.dumps({"metrics": {"val_ahi_pearson": 0.9}, "best_model_path": str(trained_checkpoint), "epoch": 1})
+    )
+    merge_run_manifest(workspace, [{"step_id": trained["step_id"], "run_id": trained["run_id"], "status": "completed"}])
+    # Training is over and the init checkpoint was archived; only launch.sh needs it, when a run starts.
+    checkpoint.rename(tmp_path / "archived-init.ckpt")
+
+    hparam_runtime.stop_hparam_run(out, unlaunched["run_id"], reason="drop the unlaunched candidate")
+    ranking = hparam_selection.select_hparam_candidates(out)
+
+    rows = {row["run_id"]: row for row in read_run_manifest(workspace)}
+    assert rows[unlaunched["run_id"]]["status"] == "stopped"
+    assert [row["run_id"] for row in csv.DictReader(ranking.read_text().splitlines())] == [trained["run_id"]]
 
 
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2expert", "sex_age_baseline"])

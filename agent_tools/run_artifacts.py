@@ -19,21 +19,13 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import stat
 import subprocess
 from typing import Any, Iterator, TypedDict, cast
 
 import yaml
 
-from . import (
-    decision_rules as task_rules,
-    execution_snapshot,
-    experiment_io as exp_io,
-    experiment_workspace,
-    plan_contract,
-    plan_hparam,
-)
+from . import decision_rules as task_rules, execution_snapshot, experiment_io as exp_io, plan_contract, plan_hparam
 from .adapters.base import TaskAdapter
 from .adapters.registry import get_adapter
 from .decision_models import USER_DECISIONS_FILENAME
@@ -47,13 +39,11 @@ from .experiment_workspace import (
     managed_run_key,
     managed_run_parameters,
     merge_run_manifest,
-    merge_step_manifest,
     plan_registration_rows_state,
     read_managed_yaml_mapping,
     read_run_manifest,
     read_step_manifest,
     validate_managed_run_rows,
-    verify_run_snapshot,
 )
 from .manifests import read_json, write_json, write_text
 from .models import JsonValue
@@ -137,8 +127,6 @@ def _read_plan_documents(
         if not plan_path.exists():
             raise FileNotFoundError(f"Missing hparam plan: {plan_path}")
         plan = read_json(plan_path)
-        if isinstance(plan, dict) and "trials" in plan:
-            raise ValueError(f"Legacy hparam plan is read-only and cannot be managed: {plan_path}")
         if not resolved_recipe_path.exists():
             raise FileNotFoundError(f"Missing frozen hparam recipe: {resolved_recipe_path}")
         resolved_recipe_bytes = resolved_recipe_path.read_bytes()
@@ -146,8 +134,6 @@ def _read_plan_documents(
         resolved_recipe_sha256 = hashlib.sha256(resolved_recipe_bytes).hexdigest()
     if not isinstance(plan, dict):
         raise ValueError(f"Registered plan manifest must be a mapping: {plan_path}")
-    if "trials" in plan:
-        raise ValueError(f"Legacy hparam plan is read-only and cannot be managed: {plan_path}")
     expected_resolved_sha256 = plan.get("resolved_recipe_sha256")
     if require_resolved_sha256 and expected_resolved_sha256 != resolved_recipe_sha256:
         raise ValueError(f"Frozen hparam recipe SHA-256 is missing or changed: {resolved_recipe_path}")
@@ -696,235 +682,56 @@ def _validate_registered_run_parameters(
             raise ValueError(f"Workspace run manifest differs from plan field {field}: {key[0]} / {key[1]}")
 
 
-def _validate_hparam_workspace_registration(
-    *,
-    run_dir: Path,
-    workspace: Path,
-    recipe: dict[str, Any],
-    runs: list[dict[str, Any]],
-    step_id: str,
-    experiment_id: str,
-    expected_experiment: dict[str, Any],
-) -> None:
-    experiment_manifest_path = workspace / "experiment.yaml"
-    if not experiment_manifest_path.exists():
-        raise ValueError(f"Hparam plan is not bound to an initialized experiment workspace: {workspace}")
-    experiment_manifest = read_managed_yaml_mapping(
-        experiment_manifest_path.read_text(),
-        source=f"Managed experiment manifest {experiment_manifest_path}",
-    )
-    existing_experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
-    if not isinstance(existing_experiment, dict) or any(
-        existing_experiment.get(field) != expected_experiment.get(field)
-        for field in ("id", "title", "objective", "root", "baseline")
-    ):
-        raise ValueError(f"Hparam plan experiment metadata differs from the managed workspace: {workspace}")
-    step_manifest = read_step_manifest(workspace, step_id)
-    assert step_manifest is not None  # Missing steps raise unless allow_missing is explicitly enabled.
-    expected_step_manifest = merge_step_manifest(
-        step_manifest,
-        {
-            "step": recipe["step"],
-            "experiment_id": experiment_id,
-            "plan_controller": "ordinary",
-            "recipe_path": recipe.get("_recipe_path", ""),
-            "plans": [str(run_dir.resolve())],
-        },
-    )
-    if expected_step_manifest != step_manifest:
-        raise ValueError(f"Hparam plan is not registered by its managed step: {run_dir}")
-    workspace_rows = read_run_manifest(workspace)
-    workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
-    missing_runs = [run for run in runs if managed_run_key(run) not in workspace_by_key]
-    if missing_runs:
-        missing = ", ".join(f"{run['step_id']} / {run['run_id']}" for run in missing_runs)
-        raise ValueError(f"Workspace run_manifest.tsv is missing plan runs: {missing}")
-    for run in runs:
-        workspace_row = workspace_by_key[managed_run_key(run)]
-        if workspace_row.get("status") in (None, ""):
-            raise ValueError(f"Workspace run manifest is missing status: {run['step_id']} / {run['run_id']}")
-        for field in (
-            "experiment_id",
-            "step_id",
-            "run_id",
-            "run_name",
-            "parameter_summary",
-            "version",
-            "config",
-            "config_sha256",
-            "script",
-            "script_sha256",
-            "run_dir",
-            "artifacts",
-            "runtime_dir",
-            "checkpoint_dir",
-            "terminal_status_owner",
-            *sorted(SCHEDULER_PLAN_IDENTITY_FIELDS),
-        ):
-            if str(workspace_row.get(field) or "") != str(run.get(field) or ""):
-                raise ValueError(
-                    f"Workspace run manifest differs from plan field {field}: {run['step_id']} / {run['run_id']}"
-                )
-        if run.get("scheduler_type") == "slurm" and str(workspace_row.get("log_path") or "") != str(
-            run.get("log_path") or ""
-        ):
-            raise ValueError(
-                f"Workspace run manifest differs from plan field log_path: {run['step_id']} / {run['run_id']}"
-            )
-        _validate_registered_run_parameters(recipe, run, workspace_row)
+def hparam_plan_workspace(plan_dir: Path) -> Path:
+    """Return the experiment root that plan.json names, to pick the run lock before the locked read.
 
-
-def read_hparam_plan(
-    run_dir: Path,
-    *,
-    semantic_dir: Path | None = None,
-    require_workspace_state: bool = True,
-) -> plan_contract.HparamPlan:
-    """Read and validate a local hparam plan, returning the full plan.json mapping.
-
-    Checks frozen recipe/config/script bindings and, by default, registered
-    workspace rows. semantic_dir supplies the intended published location when
-    run_dir contains staged physical files; frozen paths remain expressed in
-    that semantic location.
-
-    require_workspace_state=False skips existing workspace registration checks
-    for unpublished builds; it does not disable validation of the frozen plan itself. Reads
-    artifacts only, without observing jobs or updating state. Invalid contracts
-    raise ValueError; file and parsing failures propagate."""
-    physical_dir = run_dir
-    plan_dir = semantic_dir or physical_dir
-    plan_path = physical_dir / "plan.json"
-    resolved_recipe_path = physical_dir / "recipe.resolved.yaml"
-    plan, resolved_recipe = _read_plan_documents(physical_dir, require_resolved_sha256=True)
-    legacy_status = physical_dir / "trial_status.tsv"
-    if legacy_status.exists():
-        raise ValueError(f"Legacy hparam status is read-only and cannot be managed: {legacy_status}")
-    runs = plan.get("runs")
-    if not isinstance(runs, list) or not runs:
-        raise ValueError(f"Hparam plan must define a non-empty runs list: {plan_path}")
-    _validate_run_rows(runs, source=str(plan_path), require_artifact_paths=True)
-    recipe = plan["recipe"] if isinstance(plan.get("recipe"), dict) else {}
-    metadata_issues = experiment_metadata_issues(recipe)
-    if metadata_issues:
-        raise ValueError(
-            "Invalid hparam workspace binding: " + "; ".join(issue["message"] for issue in metadata_issues)
-        )
-    workspace = experiment_root(recipe)
+    Reads only plan.json and validates nothing else: every value a caller acts on comes from
+    read_hparam_plan under that lock."""
+    plan_path = plan_dir / "plan.json"
+    if not plan_path.exists():
+        raise FileNotFoundError(f"Missing hparam plan: {plan_path}")
+    recipe = read_json(plan_path).get("recipe")
+    workspace = experiment_root(recipe) if isinstance(recipe, dict) else None
     if workspace is None:
         raise ValueError("Invalid hparam workspace binding: experiment.root is required.")
-    try:
-        plan_dir.resolve().relative_to(workspace.resolve())
-    except ValueError as exc:
-        raise ValueError(f"Hparam plan must be inside experiment.root: {workspace}") from exc
-    step_id = str(recipe["step"]["id"])
-    expected_experiment = recipe["experiment"]
-    experiment_id = str(expected_experiment["id"])
-    for run in runs:
-        if str(run["experiment_id"]) != experiment_id or str(run["step_id"]) != step_id:
-            raise ValueError("Managed run identity does not match the hparam recipe workspace binding.")
+    return workspace
+
+
+def read_hparam_plan(run_dir: Path, *, require_workspace_state: bool = True) -> plan_contract.HparamPlan:
+    """Read a local hparam plan and return the full plan.json mapping.
+
+    Checks the recorded recipe.resolved.yaml digest and that plan.json's recipe equals it, since
+    launch commands are rebuilt from that recipe's execution block. By default it also checks the
+    canonical workspace state: the plan's managed step registers this directory and
+    run_manifest.tsv holds every plan run. Callers hold the workspace run lock for that read;
+    require_workspace_state=False skips it for a plan that is not registered yet.
+
+    Frozen configs, scripts and input snapshots are verified where they are used, by launch.sh,
+    job.sbatch and the launch command's runtime_identity check, not here. Reads artifacts only.
+    Invalid contracts raise ValueError; file and parsing failures propagate."""
+    plan_path = run_dir / "plan.json"
+    plan, resolved_recipe = _read_plan_documents(run_dir, require_resolved_sha256=True)
+    recipe = plan.get("recipe")
+    if not isinstance(recipe, dict) or _resolved_recipe_view(recipe) != resolved_recipe:
+        raise ValueError(f"Hparam plan recipe differs from recipe.resolved.yaml: {run_dir / 'recipe.resolved.yaml'}")
+    runs = plan.get("runs")
+    if not isinstance(runs, list) or not runs or any(not isinstance(run, dict) for run in runs):
+        raise ValueError(f"Hparam plan must define a non-empty runs list of mappings: {plan_path}")
     if require_workspace_state:
-        _validate_hparam_workspace_registration(
-            run_dir=run_dir,
-            workspace=workspace,
-            recipe=recipe,
-            runs=runs,
-            step_id=step_id,
-            experiment_id=experiment_id,
-            expected_experiment=expected_experiment,
-        )
-    search = recipe["search"] if isinstance(recipe.get("search"), dict) else {}
-    execution = recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
-    workdir = execution.get("workdir")
-    if workdir not in (None, "") and not Path(str(workdir)).is_absolute():
-        raise ValueError("execution.workdir must be an absolute path when set.")
-    run_cwd = Path(str(workdir or plan_contract.frozen_plan_context(recipe)["repo_root"]))
-    for run in runs:
-        expected_runtime_dir = run_cwd / "log-finetune" / str(run["version"])
-        expected_checkpoint_dir = expected_runtime_dir / "checkpoints"
-        if str(run["runtime_dir"]) != str(expected_runtime_dir):
-            raise ValueError(f"Managed run runtime_dir differs from execution.workdir: {run['run_id']}")
-        if str(run["checkpoint_dir"]) != str(expected_checkpoint_dir):
-            raise ValueError(f"Managed run checkpoint_dir differs from execution.workdir: {run['run_id']}")
-    legacy_fields = [
-        name
-        for name, present in (
-            ("search.max_trials", "max_trials" in search),
-            ("execution.gpus_per_trial", "gpus_per_trial" in execution),
-        )
-        if present
-    ]
-    if legacy_fields:
-        raise ValueError(f"Legacy hparam fields are read-only and unsupported: {', '.join(legacy_fields)}")
-    frozen_recipe = _resolved_recipe_view(recipe)
-    if frozen_recipe != resolved_recipe:
-        raise ValueError(f"Hparam plan recipe differs from recipe.resolved.yaml: {resolved_recipe_path}")
-    for run in runs:
-        physical_run = dict(run)
-        for field in ("config", "script", "scheduler_script"):
-            if run.get(field) not in (None, ""):
-                physical_run[field] = str(_physical_plan_path(Path(str(run[field])), plan_dir, physical_dir))
-        verify_run_snapshot(physical_run)
-    typed_plan = recipe.get("task") == "hparam_tune"
-    pass_plan = plan.get("status") == "PASS"
-    if typed_plan != pass_plan:
-        raise ValueError(f"Hparam plan has an incomplete static contract: {plan_path}")
-    if typed_plan:
-        _validate_local_hparam_plan_contract(plan, recipe, physical_dir, plan_dir, runs)
-        _validate_hparam_execution_snapshot(plan, physical_dir, plan_dir)
+        workspace = experiment_root(recipe)
+        if workspace is None:
+            raise ValueError("Invalid hparam workspace binding: experiment.root is required.")
+        step_manifest = read_step_manifest(workspace, str(recipe["step"]["id"]))
+        assert step_manifest is not None  # Missing steps raise unless allow_missing is explicitly enabled.
+        if str(run_dir.resolve()) not in [str(path) for path in step_manifest.get("plans") or []]:
+            raise ValueError(f"Hparam plan is not registered by its managed step: {run_dir}")
+        manifest_keys = {managed_run_key(row) for row in read_run_manifest(workspace)}
+        missing = [run for run in runs if managed_run_key(run) not in manifest_keys]
+        if missing:
+            labels = ", ".join(f"{run.get('step_id')} / {run.get('run_id')}" for run in missing)
+            raise ValueError(f"Workspace run_manifest.tsv is missing plan runs: {labels}")
     # The checks above establish recipe, run rows, and the resolved recipe digest without replacing the mapping.
     return cast(plan_contract.HparamPlan, plan)
-
-
-def _validate_local_hparam_plan_contract(
-    plan: dict[str, Any],
-    recipe: dict[str, Any],
-    physical_dir: Path,
-    plan_dir: Path,
-    runs: list[dict[str, Any]],
-) -> None:
-    plan_path = physical_dir / "plan.json"
-    resolved_plan_dir = plan_dir.resolve()
-    first_run_id = str(runs[0].get("run_id") or "")
-    match = re.fullmatch(r"run-(\d+)", first_run_id)
-    if match is None:
-        raise ValueError(f"Hparam plan has an invalid first run id: {first_run_id}")
-    source_config = physical_dir / "config.source.yaml"
-    if not source_config.is_file():
-        raise FileNotFoundError(f"Missing frozen hparam source config: {source_config}")
-    contract = plan_hparam.compile_hparam_plan_contract(
-        recipe,
-        resolved_plan_dir,
-        run_index_offset=int(match.group(1)),
-        config_bytes=source_config.read_bytes(),
-    )
-    _validate_plan_contract_runs(runs, contract["runs"], plan_path)
-    launch_script = physical_dir / "run_all.sh"
-    if not launch_script.is_file() or launch_script.read_text() != contract["launch_script_text"]:
-        raise ValueError(f"Hparam plan launch script differs from its frozen recipe: {launch_script}")
-    for run, run_files in zip(runs, contract["run_files"]):
-        config_path = _physical_plan_path(Path(run["config"]), resolved_plan_dir, physical_dir)
-        script_path = _physical_plan_path(Path(run["script"]), resolved_plan_dir, physical_dir)
-        if config_path.read_bytes() != run_files["config_bytes"]:
-            raise ValueError(f"Hparam plan config differs from its frozen recipe: {run['run_id']}")
-        if script_path.read_text() != run_files["script_text"]:
-            raise ValueError(f"Hparam plan script differs from its frozen recipe: {run['run_id']}")
-        scheduler_text = run_files.get("scheduler_script_text")
-        scheduler_path = _physical_plan_path(
-            Path(str(run.get("scheduler_script") or "")), resolved_plan_dir, physical_dir
-        )
-        if scheduler_text is not None and scheduler_path.read_text() != scheduler_text:
-            raise ValueError(f"Hparam Slurm script differs from its frozen recipe: {run['run_id']}")
-    final_path, final_command = plan_contract.validate_final_eval_contract(plan, recipe, resolved_plan_dir, contract)
-    if final_path is not None:
-        physical_final_path = _physical_plan_path(final_path, resolved_plan_dir, physical_dir)
-        if not physical_final_path.is_file() or file_sha256(physical_final_path) != plan["final_eval_config"]["sha256"]:
-            raise ValueError(f"Frozen final evaluation config changed after planning: {final_path}")
-    final_script = physical_dir / "final_external_test.sh"
-    if (final_command is not None) != final_script.is_file():
-        requirement = "missing" if final_command is not None else "unexpected"
-        raise ValueError(f"Hparam plan has {requirement} final external-test script: {final_script}")
-    if final_command is not None and final_script.read_text() != contract["final_script_text"]:
-        raise ValueError(f"Hparam final external-test script differs from its frozen recipe: {final_script}")
 
 
 def _physical_plan_path(path: Path, semantic_dir: Path, physical_dir: Path) -> Path:
@@ -935,27 +742,6 @@ def _physical_plan_path(path: Path, semantic_dir: Path, physical_dir: Path) -> P
     return physical_dir / relative
 
 
-def _validate_hparam_execution_snapshot(
-    plan: dict[str, Any],
-    physical_dir: Path,
-    plan_dir: Path,
-) -> None:
-    binding = plan.get("execution_snapshot")
-    if binding is None:
-        return
-    expected_path = plan_dir.resolve() / "execution_snapshot.json"
-    if not isinstance(binding, dict) or set(binding) != {"path", "sha256"}:
-        raise ValueError(f"Hparam execution snapshot binding is invalid: {physical_dir / 'plan.json'}")
-    if binding["path"] != str(expected_path) or not re.fullmatch(r"[0-9a-f]{64}", str(binding["sha256"])):
-        raise ValueError(f"Hparam execution snapshot binding is invalid: {physical_dir / 'plan.json'}")
-    snapshot_path = physical_dir / "execution_snapshot.json"
-    if snapshot_path.is_symlink() or not snapshot_path.is_file() or snapshot_path.stat().st_nlink != 1:
-        raise ValueError(f"Hparam execution snapshot is not an independent regular file: {snapshot_path}")
-    if file_sha256(snapshot_path) != binding["sha256"]:
-        raise ValueError(f"Hparam execution snapshot changed after planning: {snapshot_path}")
-    read_json(snapshot_path)  # Must parse as a JSON object.
-
-
 class HparamRegistrationPreflightError(ValueError):
     pass
 
@@ -963,13 +749,8 @@ class HparamRegistrationPreflightError(ValueError):
 def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path) -> str:
     physical_dir = Path(physical_out)
     plan_dir = Path(semantic_out)
-    plan = read_hparam_plan(
-        physical_dir,
-        semantic_dir=plan_dir,
-        require_workspace_state=False,
-    )
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
+    plan = read_hparam_plan(physical_dir, require_workspace_state=False)
+    recipe = plan["recipe"]
     run_configs = [
         (
             run,
@@ -1000,21 +781,6 @@ def preflight_hparam_plan(physical_out: str | Path, *, semantic_out: str | Path)
     }
     # Keep plan.json as the terminal physical-plan manifest after adding the frozen target evidence.
     write_json(physical_dir / "plan.json", plan_payload)
-    read_hparam_plan(
-        physical_dir,
-        semantic_dir=plan_dir,
-        require_workspace_state=False,
-    )
-    execution_snapshot.validated_execution_snapshot(
-        physical_dir,
-        execution,
-        validation_runs,
-        {},
-        inspector=_inspect_hparam_execution_target,
-        plan_label="hparam",
-    )
-    _hparam_registration_state(plan)
-    plan_hparam.validate_hparam_output_paths(plan_dir, plan)
     return card
 
 
@@ -1024,24 +790,15 @@ def _inspect_hparam_execution_target(
     return execution_snapshot.inspect_execution_target(execution, runs, plan_label="hparam")
 
 
-def commit_hparam_plan(
-    out: str | Path,
-    *,
-    emit_event: bool = True,
-    preflight_validated: bool = False,
-) -> plan_contract.HparamPlan:
+def commit_hparam_plan(out: str | Path, *, emit_event: bool = True) -> plan_contract.HparamPlan:
     plan_dir = Path(out).expanduser()
     if not plan_dir.is_absolute():
         plan_dir = plan_dir.resolve()
     try:
-        plan = read_hparam_plan(
-            plan_dir,
-            require_workspace_state=False,
-        )
+        plan = read_hparam_plan(plan_dir, require_workspace_state=False)
         if "execution_snapshot" not in plan:
             raise ValueError(f"Hparam plan lacks registration preflight evidence: {plan_dir}")
-        recipe_value = plan.get("recipe")
-        recipe = recipe_value if isinstance(recipe_value, dict) else {}
+        recipe = plan["recipe"]
         ensure_experiment_workspace(
             recipe,
             plan_dir,
@@ -1049,23 +806,6 @@ def commit_hparam_plan(
             allow_published_plan=True,
         )
         root, manifest_rows = _hparam_registration_state(plan)
-        # Trusted publication callers already checked these bytes; the strict read above still rejects artifact drift.
-        if not preflight_validated:
-            plan_hparam.validate_hparam_run_configs(
-                recipe,
-                [(run, Path(str(run["config"])).read_bytes()) for run in plan["runs"]],
-            )
-            plan_hparam.validate_hparam_output_paths(plan_dir, plan)
-            execution_value = recipe.get("execution")
-            execution = execution_value if isinstance(execution_value, dict) else {}
-            execution_snapshot.validated_execution_snapshot(
-                plan_dir,
-                execution,
-                plan["runs"],
-                {},
-                inspector=_inspect_hparam_execution_target,
-                plan_label="hparam",
-            )
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
         raise HparamRegistrationPreflightError(str(exc)) from exc
     ensure_experiment_workspace(recipe, plan_dir, allow_published_plan=True)
@@ -1080,8 +820,6 @@ def commit_hparam_plan(
                 "run_count": len(manifest_rows),
             },
         )
-    with experiment_workspace.managed_run_lock(root):
-        read_hparam_plan(plan_dir)
     return plan
 
 

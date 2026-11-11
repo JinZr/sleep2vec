@@ -4,17 +4,17 @@ import csv
 import json
 import os
 from pathlib import Path
-from shlex import quote as shlex_quote
+from shlex import quote as shlex_quote, split as shlex_split
 import subprocess
 import sys
 
-from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import FakeLauncher, frozen_artifact_launch, run_cli, write_finetune_recipe, write_yaml
 import pytest
 from test_agent_plan_blocks_on_ambiguity import _RUNTIME_COMMIT, _bound_config_summary, _first_run, _hparam_recipe
 from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
-from agent_tools import experiments, plan_contract, plan_hparam, plans
+from agent_tools import experiments, hparam_runtime, plan_contract, plan_hparam, plans
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
 
@@ -493,7 +493,7 @@ def test_hparam_relative_workdir_fails_before_workspace_creation(tmp_path: Path)
     assert not output_dir.exists()
 
 
-def test_hparam_run_all_rejects_tampered_leaf_before_execution(tmp_path: Path):
+def test_hparam_run_all_queue_rehashes_tampered_leaf_before_its_process_starts(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     output_dir = tmp_path / "plan"
     marker = tmp_path / "ran.txt"
@@ -505,14 +505,21 @@ def test_hparam_run_all_rejects_tampered_leaf_before_execution(tmp_path: Path):
         f"{shlex_quote(sys.executable)} -m agent_tools hparam-run-queue "
         f"--plan-dir {shlex_quote(str(output_dir.resolve()))} --execute" in run_all_text
     )
-    Path(_first_run(output_dir)["script"]).write_text(
-        f"#!/usr/bin/env bash\nset -euo pipefail\nprintf ok > {shlex_quote(str(marker))}\n"
+    run = _first_run(output_dir)
+    Path(run["script"]).write_text(f"#!/usr/bin/env bash\nset -euo pipefail\nprintf ok > {shlex_quote(str(marker))}\n")
+    launcher = FakeLauncher(frozen_artifact_launch)
+
+    # run_all.sh only starts the queue; each run's launch command re-hashes its leaf right before process start.
+    hparam_runtime.launch_hparam_runs(output_dir, dry_run=False, hooks=launcher.hooks())
+
+    identity = json.loads(shlex_split(launcher.commands[0])[-1])[0]
+    assert {"path": run["script"], "sha256": run["script_sha256"]} in json.loads(identity[5])
+    workspace = Path(json.loads((output_dir / "plan.json").read_text())["recipe"]["experiment"]["root"])
+    row = read_run_manifest(workspace)[0]
+    assert (row["status"], row["scheduler_reason"]) == (
+        "launch_failed",
+        f"launch exit 2: Frozen run artifact changed before process start: {run['script']}",
     )
-
-    run_all = subprocess.run(["bash", str(output_dir / "run_all.sh")], cwd=tmp_path, text=True, capture_output=True)
-
-    assert run_all.returncode != 0
-    assert "snapshot hash changed" in run_all.stderr
     assert not marker.exists()
 
 

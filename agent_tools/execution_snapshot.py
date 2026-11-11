@@ -80,7 +80,8 @@ def validated_execution_snapshot(
         frozen = read_json(snapshot_path)
         actual = inspect(execution, runs)
         # A rolling checkout may advance after registration; its live commit is recorded per run at launch.
-        rolling_evidence_fields = {"runtime_commit", "supported_options", "cli_options_sha256"}
+        # A Slurm submission may run on another login node than the plan's, so the probing host is not identity.
+        rolling_evidence_fields = {"runtime_commit", "supported_options", "cli_options_sha256", "runtime_hostname"}
         changed = sorted(
             key
             for key in set(frozen) | set(actual)

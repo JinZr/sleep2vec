@@ -6,6 +6,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import threading
@@ -15,6 +16,7 @@ from agent_tool_test_helpers import (
     SUBPROCESS_WAIT_SECONDS,
     FakeLauncher,
     call_while_run_lock_holder_commits,
+    frozen_artifact_launch,
     run_cli,
     run_cli_subprocess,
     write_finetune_recipe,
@@ -244,8 +246,9 @@ def test_hparam_plan_rejects_workspace_parameter_contract_drift(tmp_path: Path, 
         writer.writeheader()
         writer.writerows(rows)
 
+    # Run parameters in run_manifest.tsv are reconciled with the registered plan by experiment status.
     with pytest.raises(ValueError, match="parameters differ|runtime\\.lr|Historical parameter fields"):
-        run_artifacts.read_hparam_plan(plan_dir)
+        experiments.experiment_status(tmp_path)
 
 
 def test_hparam_plan_ignores_blank_shared_manifest_parameter_padding(tmp_path: Path):
@@ -346,11 +349,19 @@ def test_launch_rejects_modified_frozen_script(tmp_path: Path):
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     Path(run["script"]).write_text("#!/usr/bin/env bash\nexit 0\n")
+    launcher = FakeLauncher(frozen_artifact_launch)
 
-    result = run_cli("hparam-run-queue", "--plan-dir", str(plan_dir))
+    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
-    assert result.returncode == 1
-    assert "hash" in result.stderr.lower()
+    # The launch command re-hashes launch.sh against its frozen hash right before the process starts; a mismatch
+    # is a definite launch_failed carrying the verifier's message.
+    identity = json.loads(shlex.split(launcher.commands[0])[-1])[0]
+    assert {"path": run["script"], "sha256": run["script_sha256"]} in json.loads(identity[5])
+    row = read_run_manifest(run_artifacts.hparam_plan_workspace(plan_dir))[0]
+    assert (row["status"], row["scheduler_reason"]) == (
+        "launch_failed",
+        f"launch exit 2: Frozen run artifact changed before process start: {run['script']}",
+    )
 
 
 def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):

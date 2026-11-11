@@ -26,12 +26,10 @@ import yaml
 
 from agent_tools import (
     cli,
-    execution_snapshot,
     experiments,
     hparam_runtime,
     managed_scheduler,
     manifests,
-    plan_hparam,
     process_identity,
     run_artifacts,
     run_evidence,
@@ -364,28 +362,6 @@ def test_hparam_plan_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
     )
 
     assert plan == run_artifacts.read_hparam_plan(plan_dir)
-
-
-def test_hparam_plan_commit_rereads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    assert result.returncode == 0, result.stderr
-    plan = run_artifacts.read_hparam_plan(plan_dir)
-    # Skip the registration reads and merge before the final full read, which the harness then races.
-    monkeypatch.setattr(
-        run_artifacts, "_hparam_registration_state", lambda _plan: (tmp_path, plan_hparam.hparam_manifest_rows(plan))
-    )
-    monkeypatch.setattr(run_artifacts, "ensure_experiment_workspace", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(run_artifacts, "merge_run_manifest", lambda *_args, **_kwargs: None)
-
-    committed = call_while_run_lock_holder_commits(
-        monkeypatch,
-        tmp_path,
-        lambda: run_artifacts.commit_hparam_plan(plan_dir, emit_event=False, preflight_validated=True),
-    )
-
-    assert committed["runs"] == plan["runs"]
 
 
 def test_stop_signal_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
@@ -844,8 +820,6 @@ def test_hparam_run_queue_fails_after_dead_unfrozen_process_identity(tmp_path: P
         "_require_process_script",
         lambda *_args: (_ for _ in ()).throw(AssertionError("dead identity must remain unbound")),
     )
-    # The hand-written plan froze no execution snapshot; the launch pass still observes before it fills capacity.
-    monkeypatch.setattr(execution_snapshot, "validated_execution_snapshot", lambda *_args, **_kwargs: (None, False))
     monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: pytest.fail("no start"))
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
 

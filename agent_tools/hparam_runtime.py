@@ -8,7 +8,7 @@ itself queues the jobs.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import dataclasses
 import functools
 import math
@@ -17,6 +17,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from typing import cast
 
 from . import (
     execution_snapshot,
@@ -24,7 +25,6 @@ from . import (
     experiment_workspace,
     managed_scheduler as scheduler,
     plan_contract,
-    plan_hparam,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -43,7 +43,7 @@ from .experiment_workspace import (
     validate_frozen_run_update,
     validated_run_key,
 )
-from .manifests import utc_now
+from .manifests import read_json, utc_now
 from .models import JsonValue
 
 LAUNCH_TIMEOUT_SECONDS = scheduler.LAUNCH_TIMEOUT_SECONDS
@@ -56,16 +56,13 @@ class QueueRunnerStart:
 
 
 def read_hparam_plan_under_run_lock(run_dir: Path) -> plan_contract.HparamPlan:
-    """Return the fully validated hparam plan, reading workspace state under the workspace run lock.
+    """Return the registered hparam plan, reading workspace state under the workspace run lock.
 
-    The frozen-plan read only locates the workspace. Launches, stops and run
-    scripts replace run_manifest.tsv under the run lock, so the full read holds
-    it. The caller must not already hold that lock: it is not reentrant.
+    plan.json first only locates the workspace. Launches, stops and run scripts
+    replace run_manifest.tsv under the run lock, so the registered read holds it.
+    The caller must not already hold that lock: it is not reentrant.
     """
-    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False)
-    workspace = experiment_root(plan["recipe"])
-    assert workspace is not None  # read_hparam_plan rejects a plan without experiment.root.
-    with experiment_workspace.managed_run_lock(workspace):
+    with experiment_workspace.managed_run_lock(artifacts.hparam_plan_workspace(run_dir)):
         return artifacts.read_hparam_plan(run_dir)
 
 
@@ -78,7 +75,8 @@ def launch_hparam_runs(
 ) -> scheduler.LaunchResult:
     """Attempt one scheduling pass for a registered hparam plan and return its LaunchResult.
 
-    Validates frozen inputs and serializes the pass with the workspace run lock.
+    Reads the registered plan and serializes the pass with the workspace run lock;
+    frozen configs, scripts and inputs are verified by the launch command itself.
     dry_run=True previews scheduling without starting processes or submitting
     jobs: its launch_rows carry each untargeted launchable run's prospective GPU
     group and command, which are never committed. It still re-commits the plan's
@@ -96,27 +94,21 @@ def launch_hparam_runs(
     are not rolled back on later failure.
 
     hooks lets Python callers such as tests replace the process effects. Only
-    three fields are used: ``validated_snapshot`` replaces the frozen
-    execution-target check, ``build_command`` the launch-command builder and
+    three fields are used: ``validated_snapshot`` replaces the frozen execution
+    snapshot (read from execution_snapshot.json for a direct plan, re-probed at
+    Slurm submission), ``build_command`` the launch-command builder and
     ``start_process`` the process start; a ``None`` field uses the canonical
     owner, looked up when the pass starts. Manifest merges, event appends
     and frozen-run validation are not replaceable."""
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
-    # Only the frozen workspace binding is needed to lock; a concurrent lock holder may replace run_manifest.tsv
-    # and events.jsonl, so _launch_hparam_runs repeats the full workspace-state validation under the lock.
-    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False)
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    workspace = experiment_root(recipe)
-    if workspace is None:
-        raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    with experiment_workspace.managed_run_lock(workspace):
+    # plan.json only locates the workspace to lock; a concurrent lock holder may replace run_manifest.tsv
+    # and events.jsonl, so _launch_hparam_runs reads the registered plan under the lock.
+    with experiment_workspace.managed_run_lock(artifacts.hparam_plan_workspace(run_dir)):
         return _launch_hparam_runs(
             run_dir,
             dry_run=dry_run,
-            manifest_lock_held=True,
             fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
             hooks=hooks,
         )
@@ -202,18 +194,14 @@ def run_hparam_queue(
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
-    # Only the frozen workspace binding is needed to lock; launched run scripts and concurrent monitors replace
-    # run_manifest.tsv under the run lock, so every workspace-state read below holds it.
-    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False)
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    workspace = experiment_root(recipe)
-    if workspace is None:
-        raise ValueError("Hparam plan is not bound to an experiment workspace.")
     if dry_run:
         return launch_hparam_runs(run_dir, dry_run=True).launch_rows
-    with experiment_workspace.managed_run_lock(workspace):
-        plan = artifacts.read_hparam_plan(run_dir)
+    # Launched run scripts and concurrent monitors replace run_manifest.tsv under the run lock, so every
+    # workspace-state read below holds it. Each launch pass rereads only the registered plan, and the
+    # scheduler checks every run it starts against its canonical row.
+    plan = read_hparam_plan_under_run_lock(run_dir)
+    workspace = experiment_root(plan["recipe"])
+    assert workspace is not None  # The registered read rejects a plan without experiment.root.
     if not _is_direct_plan(plan):
         launch_hparam_runs(run_dir, dry_run=False)
         return _canonical_plan_rows(workspace, plan)
@@ -263,52 +251,43 @@ def _drain_hparam_queue(
 
 
 def _launch_hparam_runs(
-    plan_dir: str | Path,
+    run_dir: Path,
     *,
-    dry_run: bool = True,
-    manifest_lock_held: bool,
+    dry_run: bool,
     fail_on_missing_pid_blocker: bool,
     hooks: scheduler.SchedulerHooks | None,
 ) -> scheduler.LaunchResult:
-    run_dir = Path(plan_dir).expanduser()
-    if not run_dir.is_absolute():
-        run_dir = run_dir.resolve()
     plan = artifacts.read_hparam_plan(run_dir)
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
+    recipe = plan["recipe"]
     workspace = experiment_root(recipe)
-    if workspace is None:
-        raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    exp_io.validate_managed_output_paths(workspace, [run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME])
+    assert workspace is not None  # The registered read rejects a plan without experiment.root.
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
-    canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
-    launchable_runs = [
-        run
-        for run in plan["runs"]
-        if canonical_by_key[validated_run_key(run)].get("status") in scheduler.LAUNCHABLE_STATUSES
-    ]
-    if launchable_runs:
-        # Observation and capacity can only narrow this set; dry-run must validate the same prospective candidates.
-        plan_hparam.validate_hparam_run_configs(
-            recipe,
-            [(run, Path(str(run["config"])).read_bytes()) for run in launchable_runs],
+    validated_snapshot: Callable[..., execution_snapshot.ExecutionSnapshotResult]
+    if _is_direct_plan(plan):
+
+        def validated_snapshot(*_scheduler_state: object) -> execution_snapshot.ExecutionSnapshotResult:
+            # The launch command's runtime_identity and cli_preflight programs check this frozen snapshot against
+            # the live target, and the frozen config and launch.sh hashes, right before process start; a mismatch is
+            # a definite launch_failed. launch.sh then checks its frozen input snapshots, such as an init checkpoint.
+            snapshot_path = run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME
+            return cast(execution_snapshot.ExecutionSnapshot, read_json(snapshot_path)), False
+
+    else:
+        validated_snapshot = functools.partial(
+            execution_snapshot.validated_execution_snapshot,
+            inspector=_inspect_execution_target,
+            plan_label="hparam",
         )
-        if not dry_run:
-            plan_hparam.validate_hparam_output_paths(run_dir, plan, runs=launchable_runs)
 
     # Built per pass so a patched public owner takes effect; hooks replace only the process effects.
     launch_hooks = scheduler.SchedulerHooks(
         merge_manifest=merge_run_manifest,
         append_event=append_event,
         validate_run_update=validate_frozen_run_update,
-        validated_snapshot=functools.partial(
-            execution_snapshot.validated_execution_snapshot,
-            inspector=_inspect_execution_target,
-            plan_label="hparam",
-        ),
+        validated_snapshot=validated_snapshot,
         build_command=scheduler.build_launch_command,
         start_process=scheduler.start_process,
     )
@@ -328,7 +307,7 @@ def _launch_hparam_runs(
         dry_run=dry_run,
         fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
         hooks=launch_hooks,
-        lock_held=manifest_lock_held,
+        lock_held=True,
     )
 
 
@@ -342,14 +321,9 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     if not reason.strip():
         raise ValueError("Stopping a run requires a non-empty reason.")
     root = Path(run_dir)
-    # Only the frozen workspace binding is needed to lock; a concurrent lock holder may replace run_manifest.tsv
-    # and events.jsonl, so the full workspace-state validation runs under the lock.
-    plan = artifacts.read_hparam_plan(root, require_workspace_state=False)
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    workspace = experiment_root(recipe)
-    if workspace is None:
-        raise ValueError("Hparam plan is not bound to an experiment workspace.")
+    # plan.json only locates the workspace to lock; a concurrent lock holder may replace run_manifest.tsv
+    # and events.jsonl, so the registered plan is read under the lock.
+    workspace = artifacts.hparam_plan_workspace(root)
     with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(root)
         expected_keys = {validated_run_key(run) for run in plan["runs"]}
