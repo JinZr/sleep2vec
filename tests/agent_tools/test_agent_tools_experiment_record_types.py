@@ -68,16 +68,16 @@ def test_normalized_research_record_preserves_order_and_omits_empty_optionals(tm
 
 def test_step_merge_retains_dynamic_values_and_raw_reader_identity(tmp_path, monkeypatch):
     recipe_path = Path("relative/recipe.yaml")
-    inputs = {"data": ["index.csv"]}
+    purpose = {"summary": ["Tune the model."], "revision": 7}
     existing = {
-        "step": {"id": "train", "phase": "train", "purpose": 7, "inputs": inputs},
+        "step": {"id": "train", "phase": "train", "purpose": purpose},
         "experiment_id": 12,
         "recipe_path": recipe_path,
         "plans": [Path("/plans/b")],
     }
     merged = experiment_workspace.merge_step_manifest(existing, {"plans": ["/plans/b", Path("/plans/a")]})
     assert merged == {**existing, "plan_controller": "", "plans": ["/plans/b", "/plans/a"]}
-    assert merged["step"]["inputs"] is inputs
+    assert merged["step"]["purpose"] is purpose
     assert merged["recipe_path"] is recipe_path
     assert existing["plans"] == [Path("/plans/b")]
     payload = {**merged, "recipe_path": "", "plan_controller": "ordinary"}
@@ -87,9 +87,8 @@ def test_step_merge_retains_dynamic_values_and_raw_reader_identity(tmp_path, mon
     step_path.write_text("fixture")
     read = experiment_workspace.read_step_manifest(tmp_path, "train")
     assert read is payload
-    assert read["step"]["purpose"] == 7
+    assert read["step"]["purpose"] is purpose
     assert read["experiment_id"] == 12
-    assert read["step"]["inputs"] is inputs
 
 
 @pytest.mark.parametrize("raw", [None, [], 17, {"title": 17}, {"status": "completed"}])

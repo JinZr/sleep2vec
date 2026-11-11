@@ -2935,13 +2935,7 @@ def test_long_semantic_identity_canonicalizes_nested_mappings_but_preserves_list
 
 def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():
     existing = {
-        "step": {
-            "id": "train",
-            "phase": "train",
-            "purpose": "Tune the model.",
-            "inputs": ["data.csv"],
-            "outputs": ["ranking.csv"],
-        },
+        "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
         "experiment_id": "experiment",
         "plan_controller": "ordinary",
         "recipe_path": "recipes/first.yaml",
@@ -2959,8 +2953,7 @@ def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():
         },
     )
 
-    assert merged["step"]["inputs"] == ["data.csv"]
-    assert merged["step"]["outputs"] == ["ranking.csv"]
+    assert merged["step"] == existing["step"]
     assert merged["recipe_path"] == "recipes/first.yaml"
     assert merged["plans"] == ["/workspace/plan-a", "/workspace/plan-b"]
 
