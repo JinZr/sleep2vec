@@ -439,7 +439,7 @@ def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
     assert canonical["stop_reason"] == "cancel during monitor commit"
 
 
-@pytest.mark.parametrize("entrypoint", ["monitor", "queue", "reconcile"])
+@pytest.mark.parametrize("entrypoint", ["monitor", "queue"])
 def test_hparam_runtime_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch, entrypoint):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -452,7 +452,6 @@ def test_hparam_runtime_reads_workspace_state_only_under_run_lock(tmp_path: Path
     calls = {
         "monitor": lambda: hparam_runtime.monitor_hparam_runs(plan_dir),
         "queue": lambda: hparam_runtime.run_hparam_queue(plan_dir, dry_run=False),
-        "reconcile": lambda: hparam_runtime.reconcile_hparam_launch_artifacts(plan_dir, set()),
     }
 
     call_while_run_lock_holder_commits(monkeypatch, tmp_path, calls[entrypoint])

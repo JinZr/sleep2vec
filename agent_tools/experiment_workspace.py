@@ -4,7 +4,7 @@ Layer 0 leaf, and the workspace facade. Owns ``run_manifest.tsv`` -- the
 lifecycle owner for run status -- its managed run lock, the frozen run,
 scheduler, process, and runtime-provenance identity field sets, the phase and
 status vocabularies, and the one-way step ``plan_controller`` binding that
-classifies a plan as ordinary or adaptive.
+moves a step from unassigned to ordinary when its first plan registers.
 
 ``research_log`` publishes behind this facade rather than writing to the
 workspace directly.
@@ -47,46 +47,8 @@ class StepManifest(TypedDict):
     plans: list[str]
 
 
-class AdaptiveInitEvent(TypedDict):
-    round: int
-    recipe_path: str
-    round_dir: str
-
-
-class AdaptiveProposalRequestBinding(TypedDict):
-    source_round: int
-    target_round: int
-    request_id: str
-    input_path: str
-    input_sha256: str
-    proposal_path: str
-
-
-class AdaptiveProposalRequestedEvent(AdaptiveProposalRequestBinding):
-    digest: str
-
-
-class AdaptiveProposalAcceptedEvent(TypedDict):
-    round: int
-    request_id: str
-    proposal_path: str
-    proposal_sha256: str
-    suggestion: str
-    suggestion_sha256: str
-
-
-class PlanCreatedEvent(TypedDict):
-    step_id: Any
-    plan_dir: str
-    run_count: int
-
-
-AdaptiveEventPayload = (
-    AdaptiveInitEvent | AdaptiveProposalRequestedEvent | AdaptiveProposalAcceptedEvent | PlanCreatedEvent
-)
-
 PHASES = {"prepare", "train", "evaluate", "analyze"}
-PLAN_CONTROLLERS = {"unassigned", "ordinary", "adaptive"}
+PLAN_CONTROLLERS = {"unassigned", "ordinary"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
 SUCCESS_STATUSES = frozenset({"completed", "finished"})
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
@@ -514,11 +476,6 @@ def merge_step_manifest(
     }
 
 
-def validate_step_registration(root: str | Path, incoming: StepManifest | dict[str, Any]) -> None:
-    existing = read_step_manifest(root, str(incoming["step"]["id"]), allow_missing=True)
-    merge_step_manifest(existing or {}, incoming)
-
-
 def _validated_step_manifest(text: str, path: Path, step_id: str) -> dict[str, Any]:
     payload = read_managed_yaml_mapping(text, source=f"Managed step manifest {path}")
     normalized = merge_step_manifest(payload, {})
@@ -754,7 +711,6 @@ def ensure_experiment_workspace(
     output_dir: str | Path,
     *,
     register_step: bool = True,
-    plan_controller: str | None = None,
     validate_only: bool = False,
     allow_published_plan: bool = False,
 ) -> tuple[Path, Path]:
@@ -771,9 +727,6 @@ def ensure_experiment_workspace(
     experiment = _public_mapping(recipe_experiment)
     step_value = recipe.get("step")
     step = _public_mapping(step_value if isinstance(step_value, dict) else {})
-    adaptive_value = recipe.get("adaptive")
-    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
-    controller = plan_controller or ("adaptive" if adaptive.get("enabled") is True else "ordinary")
     manifest_path = root / "experiment.yaml"
     manifest_exists = manifest_path.exists()
     workspace_rows = []
@@ -792,7 +745,7 @@ def ensure_experiment_workspace(
     step_payload: StepManifest = {
         "step": step,
         "experiment_id": experiment["id"],
-        "plan_controller": controller,
+        "plan_controller": "ordinary",
         "recipe_path": recipe.get("_recipe_path", ""),
         "plans": [str(plan_path)],
     }
@@ -816,7 +769,6 @@ def ensure_experiment_workspace(
         # Before its first canonical run, an ordinary step's initial recipe remains the retry provenance owner.
         if (
             existing_step["plan_controller"] == "ordinary"
-            and controller == "ordinary"
             and existing_recipe_path
             and incoming_recipe_path not in (None, "", existing_recipe_path)
             and not any(str(row["step_id"]) == str(step["id"]) for row in workspace_rows)
@@ -841,7 +793,7 @@ def ensure_experiment_workspace(
     return root, step_dir
 
 
-def append_event(root: str | Path, event_type: str, payload: dict[str, Any] | AdaptiveEventPayload) -> None:
+def append_event(root: str | Path, event_type: str, payload: dict[str, Any]) -> None:
     root = Path(root)
     path = root / "events.jsonl"
     row = {"time": _now(), "event_type": event_type, **json_ready(payload)}

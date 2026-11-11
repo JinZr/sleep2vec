@@ -61,16 +61,6 @@ def compile_finetune_balanced_profile(
                 {"method": search.get("method")},
             )
         ]
-    adaptive_value = recipe.get("adaptive")
-    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
-    if adaptive.get("enabled") is True:
-        return None, [
-            _issue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "finetune_balanced does not support adaptive.enabled=true; staged adaptive search is deferred.",
-                {"adaptive_enabled": True},
-            )
-        ]
     variant = recipe.get("variant")
     inputs = recipe.get("inputs")
     label = (inputs or {}).get("label_name") if isinstance(inputs, dict) else None

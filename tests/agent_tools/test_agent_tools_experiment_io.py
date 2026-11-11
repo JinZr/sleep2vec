@@ -1275,8 +1275,8 @@ def test_local_conditional_create_does_not_leave_a_temporary_hardlink(tmp_path: 
 
 def test_local_conditional_replace_rejects_public_parent_alias_drift(tmp_path: Path, monkeypatch):
     root = tmp_path / "workspace"
-    parent = root / "adaptive"
-    moved_parent = root / "adaptive-original"
+    parent = root / "reports"
+    moved_parent = root / "reports-original"
     outside = tmp_path / "outside"
     target = parent / "run_registry.tsv"
     outside_target = outside / target.name
@@ -1312,8 +1312,8 @@ def test_local_conditional_write_reports_unknown_when_public_parent_moves_during
     target_exists: bool,
 ):
     root = tmp_path / "workspace"
-    parent = root / "adaptive"
-    moved_parent = root / "adaptive-original"
+    parent = root / "reports"
+    moved_parent = root / "reports-original"
     outside = tmp_path / "outside"
     target = parent / "run_registry.tsv"
     outside_target = outside / target.name
@@ -1357,8 +1357,8 @@ def test_embedded_conditional_write_reports_unknown_when_public_parent_moves_dur
     mode: str,
 ):
     root = tmp_path / "workspace"
-    parent = root / "adaptive"
-    moved_parent = root / "adaptive-moved"
+    parent = root / "reports"
+    moved_parent = root / "reports-moved"
     outside = tmp_path / "outside"
     target = parent / "run_registry.tsv"
     outside_target = outside / target.name

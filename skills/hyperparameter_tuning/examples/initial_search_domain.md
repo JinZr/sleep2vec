@@ -1,4 +1,4 @@
-# Choosing an initial search domain
+# Choosing an initial search
 
 This invented concept-only example is separate from the historical UKB review
 case. Its scores and curves are synthetic, not experiment evidence or reusable
@@ -22,10 +22,10 @@ make it the incumbent. C supplies no direct reason to extend the high-LR edge.
 There are no repeats or wall-clock measurements, so neither noise magnitude nor
 a compute-optimal horizon is established.
 
-## Allocate the domain to competing explanations
+## Allocate the opening search to competing explanations
 
 One defensible allocation preserves an LR comparison near B while leaving a
-bounded longer-horizon option for A. Another uses the opening pair to compare
+longer-horizon option for A. Another uses the opening pair to compare
 regularization around B because its supplied training/validation divergence
 makes that question useful. Explain which question gets the first two fits and
 why the other deserves later room, or is deliberately excluded from eight fits.
@@ -41,11 +41,11 @@ cost. A fit-count or concurrency cap is not a measured time budget.
 Changing the horizon may also change a horizon-dependent decay schedule. A new
 regularization axis needs complete valid values and an explicit reason to hold
 head capacity and adaptation settings fixed. Do not add many unrelated axes just
-because the controller can represent them, or invent a seed axis after freezing.
+because the recipe can represent them, or invent a seed axis after freezing.
 
 The useful explanation connects each opening point to evidence, gives reasons
-for both searched bounds and fixed settings, and describes which later results
+for both searched values and fixed settings, and describes which later results
 would change the allocation. It does not need a new report schema or approval for
 individual technical values. Publication still resolves effective configuration
-and consultation; launch still needs its existing authority. Judge the domain
+and consultation; launch still needs its existing authority. Judge the opening search
 using the evidence available when it was chosen, not later outcomes.

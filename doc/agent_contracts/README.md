@@ -13,7 +13,7 @@ Run each through `python -m agent_tools`; every subcommand documents itself with
 | 1 | `skills --list` | Lists the task playbooks. Read the matching `skills/<task>/SKILL.md` first. |
 | 2 | `experiment-status --run-dir <experiment-root>` | On takeover, prints recorded state read-only. Then follow [takeover](experiment_workspace.md#takeover-and-continue-execution). |
 | 3 | `doctor --recipe <recipe> --output-dir <dir>` | Consultation and diagnostics. Exit 0 continues, 1 fails, 2 needs [user decisions](user_decisions.md). It publishes no runnable commands. |
-| 4 | `plan --recipe <recipe> --output-dir <plan-dir> [--user-decisions <decisions.yaml>]` | Publishes a frozen plan in a fresh directory inside `experiment.root`. Adaptive recipes use `hparam-adaptive-init` instead. It does not launch. |
+| 4 | `plan --recipe <recipe> --output-dir <plan-dir> [--user-decisions <decisions.yaml>]` | Publishes a frozen plan in a fresh directory inside `experiment.root`. It does not launch. |
 | 5 | `hparam-launch --plan-dir <plan-dir>` | Dry run by default (`infer-launch` and `preset-launch` likewise). Add `--execute` only with explicit launch authorization. |
 
 Monitors (`experiment-monitor`, `hparam-monitor`) refresh observations and never launch. The
@@ -47,7 +47,7 @@ Other exceptions are bugs and keep their traceback.
 | Can a purged job finish when accounting is disabled? | [Terminal evidence](run_manifest.md#terminal-evidence) |
 | Read recorded status or refresh observations? | [Read-only status](experiment_workspace.md#read-only-status-and-advisory-actions) versus [entrypoint effects](experiment_workspace.md#lifecycle-entrypoints) |
 | Why is selection/finalization blocked? | [Selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers), then [finalization](experiment_workspace.md#finalization) |
-| How does the next adaptive round proceed; where may the proposer write? | [Adaptive workflow](hparam_workflow.md#adaptive-workflow) and [proposal handshake](hparam_workflow.md#proposal-handshake) |
+| How does a further tuning round proceed? | [Search space](hparam_workflow.md#search-space) |
 | Where do meaningful observations and decisions go? | [Research log](experiment_workspace.md#research-log) |
 | What runtime-update or heartbeat setup may be carried forward? | [Conditional runtime refresh](experiment_workspace.md#conditional-runtime-refresh-before-initialization), [short heartbeat maintenance](experiment_workspace.md#short-heartbeat-maintenance) |
 
@@ -59,7 +59,7 @@ second lifecycle or authorization source.
 | Contract | Owner |
 | --- | --- |
 | Recipe workflow, effective recipe, and task/variant routing | [task_recipe.md](task_recipe.md) |
-| Ordinary and adaptive hparam search, launch, selection and rounds | [hparam_workflow.md](hparam_workflow.md) |
+| Hparam search, launch, selection and further rounds | [hparam_workflow.md](hparam_workflow.md) |
 | Accepted recipe fields and finite allowlists | [task recipe schema](../../recipes/schemas/task_recipe.schema.md) |
 | Explicit decision format, materialization, and precedence | [user_decisions.md](user_decisions.md) |
 | Workspace ownership, publication, takeover, status, finalization and research log | [experiment_workspace.md](experiment_workspace.md) |

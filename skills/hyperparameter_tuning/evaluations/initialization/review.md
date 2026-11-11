@@ -1,6 +1,6 @@
-# Reviewing initial-domain reasoning
+# Reviewing initial-search reasoning
 
-Use `ukb.md` to review a new search before its domain is frozen. This is a
+Use `ukb.md` to review a new search before its first plan is frozen. This is a
 retrospective concept-only reconstruction. It authorizes
 no consultation, recipe publication, live resource inspection or execution.
 
@@ -10,23 +10,23 @@ Give an independent agent the case and the guidance revision being assessed.
 Ask it to fulfill the case request using only those files and any explicitly
 assigned initialization example. Keep the worked example independent of this
 historical case; it must not reproduce its observations or original choices.
-Withhold this review, original authored domains
+Withhold this review, original authored searches
 and all subsequent outcomes. Keep case bytes, task wording, model/settings and
 available evidence identical across before/after passes, apart from the guidance
 being compared. Retain both outputs and identify the revisions read. If source
 corrections change a case, discard earlier comparisons and rerun both sides.
 
 Assess **supported**, **mixed** or **unsupported**, with concrete output evidence.
-Different defensible numerical domains can be equally good. Do not reward wider
-bounds, more axes or reproducing the original author's choices by themselves.
+Different defensible numerical searches can be equally good. Do not reward wider
+ranges, more axes or reproducing the original author's choices by themselves.
 
 | Dimension | Evidence to inspect |
 | --- | --- |
 | Source and authority | Distinguishes user-fixed semantics from provisional defaults and historical requests; preserves test-tuned interpretation and unresolved publication prerequisites. |
 | Boundary reasons | Explains both useful alternatives and practical limits. UKB's final-checkpoint winners make horizon relevant but do not prove a rising curve. |
 | Budget and coupling | Allocates twelve fits coherently, without turning two GPUs or two concurrent runs into a horizon limit. Accounts for effective batch, scheduler/horizon coupling and unknown throughput; does not invent a GPU-hour estimate. |
-| Opening comparison | Gives complete points for every proposed domain key, with no unintended Cartesian expansion. Describes what their joint or isolated differences could establish. |
-| Later options | Explains whether plausible opening outcomes can be investigated inside the proposed frozen domain, including continued boundary improvement or deterioration. A fixed choice has a reason, and any deliberately excluded alternative is visible. |
+| Opening comparison | Gives complete points for every proposed searched key, with no unintended Cartesian expansion. Describes what their joint or isolated differences could establish. |
+| Later options | Explains whether plausible opening outcomes can be investigated within the remaining budget, including continued improvement at the edge of the searched values or deterioration. A fixed choice has a reason, and any deliberately excluded alternative is visible. |
 | Honest inference | Keeps failed/untested runs unranked; does not assign isolated LR effects to joint historical changes or call small score differences significant without repeat evidence. |
 
 ## Provenance and historical choices: reviewer only

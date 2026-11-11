@@ -5,7 +5,7 @@ import re
 from agent_tool_test_helpers import hparam_search_defaults
 import yaml
 
-from agent_tools.adaptive_proposals import validate_configurations, validate_parameter_envelopes
+from agent_tools.decision_hparam import hparam_search_issues
 from agent_tools.models import REPO_ROOT, SUPPORTED_VARIANTS
 from agent_tools.skills import validate_skills
 
@@ -120,34 +120,30 @@ def test_hparam_guidance_separates_search_budget_from_launch_authority():
     assert "Concept planning discusses" not in skill
 
 
-def test_hparam_guidance_defaults_to_adaptive_without_rewriting_authored_searches():
+def test_hparam_guidance_uses_static_plans_and_leaves_budget_numbers_to_the_policy():
     defaults = hparam_search_defaults()
-    restated = (
-        f"{defaults['max_runs_total']}-run",
-        f"`round_size: {defaults['round_size']}`",
-        f"`max_rounds: {defaults['max_rounds']}`",
-        f"min({defaults['round_size']},",
-        "ceil(total",
-    )
-    for name in (
-        "AGENTS.md",
-        "skills/hyperparameter_tuning/SKILL.md",
-        "doc/agent_contracts/hparam_workflow.md",
-        "recipes/schemas/task_recipe.schema.md",
-    ):
+    static_rule = {
+        "AGENTS.md": "uses static `hparam_tune` plans",
+        "doc/agent_contracts/hparam_workflow.md": "uses a static `hparam_tune` plan",
+        "recipes/schemas/task_recipe.schema.md": "uses a static plan",
+    }
+    for name in (*static_rule, "skills/hyperparameter_tuning/SKILL.md"):
         guidance = " ".join((REPO_ROOT / name).read_text().split())
-        assert "terminal-only" in guidance
-        assert "agent_proposal" in guidance
-        # The consultation policy owns the default search size and how a cap lowers it.
+        # The consultation policy owns the default search size.
         assert "hparam_search_defaults" in guidance
-        assert [phrase for phrase in restated if phrase in guidance] == [], name
-        if name.startswith("skills/"):
+        assert f"{defaults['max_runs_total']}-run" not in guidance, name
+        # The schema may still name the removed `adaptive` block as rejected; its fields and commands are gone.
+        for removed in ("adaptive.", "hparam-adaptive", "agent_proposal", "round_size", "max_rounds"):
+            assert removed not in guidance, (name, removed)
+        if name in static_rule:
+            assert static_rule[name] in guidance
+        else:
             # The skill links to AGENTS.md for these rules instead of restating them.
             assert "(../../AGENTS.md#agent-stop-and-consult-policy)" in guidance
-            assert "Static profile/grid search requires an explicit request." not in guidance
-        else:
-            assert "Static profile/grid search requires an explicit request." in guidance
-            assert "Existing authored or frozen searches must not be rewritten." in guidance
+    for name in ("AGENTS.md", "doc/agent_contracts/hparam_workflow.md"):
+        guidance = " ".join((REPO_ROOT / name).read_text().split())
+        assert "`experiment-note`" in guidance
+        assert "cites the prior results" in guidance
     skill = (REPO_ROOT / "skills/hyperparameter_tuning/SKILL.md").read_text()
     assert "A concurrency cap does not fix epochs." in skill
     assert "not automatic parser defaults" in skill
@@ -175,25 +171,18 @@ def test_hparam_skill_links_a_result_to_proposal_example_and_preserves_uncertain
     assert "not a runnable recipe or an experiment result" in example.read_text()
 
 
-def test_hparam_skill_recipe_examples_include_terminal_proposal_domains():
+def test_hparam_skill_recipe_examples_use_explicit_configurations():
     defaults = hparam_search_defaults()
     examples = REPO_ROOT / "skills/hyperparameter_tuning/examples"
     for path in sorted(examples.glob("*.yaml")):
         recipe = yaml.safe_load(path.read_text())
-        adaptive = recipe["adaptive"]
-        assert adaptive["enabled"] is True
-        assert adaptive["suggest"]["strategy"] == "agent_proposal"
-        assert adaptive["replacement"] == {"enabled": False}
-        assert {key: adaptive[key] for key in defaults} == defaults
-        assert recipe["search"]["max_runs"] == adaptive["round_size"]
-        assert adaptive["objective_metric"] == recipe["evaluation_policy"]["selection_metric"]
-        assert adaptive["test_feedback_for_selection"] is True
-        assert recipe["evaluation_policy"]["test_after_fit"] is True
-        assert "profile" not in recipe["search"]
         search = recipe["search"]
-        envelopes = validate_parameter_envelopes(search["parameters"], adaptive["suggest"]["bounds"])
-        points = validate_configurations(search["configurations"], envelopes, location="search.configurations")
-        assert len(points) == search["max_runs"]
+        assert "adaptive" not in recipe
+        assert "profile" not in search
+        assert recipe["evaluation_policy"]["test_after_fit"] is True
+        assert search["max_runs"] == len(search["configurations"]) <= defaults["max_runs_total"]
+        assert "parameters" not in search
+        assert not hparam_search_issues(recipe, high_impact={}), path
 
 
 def test_user_decision_guidance_preserves_explicit_final_test_unlock():

@@ -39,7 +39,6 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
         step_id="tune",
         task="hparam_tune",
         status="unknown_scheduler",
-        adaptive=True,
     )
     before = _workspace_files(root)
 
@@ -76,8 +75,6 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
     (root / "events.jsonl").write_text("not-json\n")
     (root / "wandb").mkdir()
     (root / "wandb" / "runs.tsv").write_text("status\ncompleted\n")
-    (root / "adaptive").mkdir()
-    (root / "adaptive" / "workflow.json").write_text('{"completed": true}\n')
 
     assert experiments.experiment_status(root) == baseline
 
@@ -423,8 +420,8 @@ def test_experiment_status_cli_returns_one_for_non_mapping_plan_binding(tmp_path
     assert _workspace_files(root) == before
 
 
-@pytest.mark.parametrize("adaptive", [None, False, "invalid", ["invalid"]])
-def test_experiment_status_cli_returns_one_for_non_mapping_adaptive(tmp_path, capsys, adaptive):
+@pytest.mark.parametrize("adaptive", [{"enabled": True}, None])
+def test_experiment_status_cli_rejects_frozen_adaptive_block(tmp_path, capsys, adaptive):
     root = tmp_path / "experiment"
     _init_workspace(root)
     plan_dir, _canonical = _add_plan(root, step_id="train", task="hparam_tune")
@@ -442,7 +439,7 @@ def test_experiment_status_cli_returns_one_for_non_mapping_adaptive(tmp_path, ca
     assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "adaptive must be a mapping" in captured.err
+    assert "Unknown recipe field for task=hparam_tune: adaptive" in captured.err
     assert "Traceback" not in captured.err
 
 

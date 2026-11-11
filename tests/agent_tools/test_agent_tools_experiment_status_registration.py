@@ -309,20 +309,6 @@ def test_experiment_status_allows_later_ordinary_plan_from_new_recipe(tmp_path):
     assert len(snapshot["decision"]["other_legal_actions"]) == 2
 
 
-def test_experiment_status_allows_controller_owned_recipe_path(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="train", task="hparam_tune", adaptive=True)
-    plan_path = plan_dir / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    plan["recipe"]["_recipe_path"] = str(root / "controller-recipe.yaml")
-    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
-
-    snapshot = experiments.experiment_status(root)
-
-    assert snapshot["summary"]["state"] == "blocked"
-
-
 def test_experiment_status_rejects_blocked_artifacts_beside_pass_plan(tmp_path):
     root = tmp_path / "experiment"
     recipe = write_finetune_recipe(root)
@@ -511,7 +497,7 @@ def test_experiment_status_rejects_unknown_frozen_internal_recipe_field(tmp_path
 
 @pytest.mark.parametrize(
     ("layer", "field", "value"),
-    [("_base_recipe", "adaptive", {}), ("_local_recipe", "unknown", True)],
+    [("_base_recipe", "search", {}), ("_local_recipe", "unknown", True)],
 )
 def test_experiment_status_rejects_layered_hparam_structure_drift(tmp_path, layer, field, value):
     root = tmp_path / "experiment"

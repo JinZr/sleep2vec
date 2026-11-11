@@ -135,13 +135,10 @@ see [selection and test access](../agent_contracts/external_test_locking.md#sele
 Direct finetune cannot select checkpoints on test; the supported route is a
 [one-configuration hparam plan](../agent_contracts/external_test_locking.md#test-selected-runtime-requirements).
 
-New tuning requests default to terminal-only agent proposals: design the bounded
-domain in `search.parameters` and exact opening points in `search.configurations`,
-initialize, launch the authorized batch, then use the
-[proposal handshake](../agent_contracts/hparam_workflow.md#proposal-handshake) after
-complete results. Inputs bind all committed terminal rounds, prior proposal
-rationales and available checkpoint trajectories. Existing authored plans retain
-their chosen workflow. Explicit static searches follow
+New tuning requests use static plans: author either exact points in
+`search.configurations` or a `search.parameters` grid, and plan each further
+round as a new plan within the total budget after an
+`experiment-note` that cites the prior results. Searches follow
 [search-space authorization](../agent_contracts/hparam_workflow.md#search-space),
 [registration preflight](../agent_contracts/hparam_workflow.md#registration-preflight),
 [launch and queue](../agent_contracts/hparam_workflow.md#launch-and-queue), then
@@ -270,14 +267,7 @@ carry those choices into launch and recovery.
    append meaningful [research notes](../agent_contracts/experiment_workspace.md#research-log),
    then follow [finalization](../agent_contracts/experiment_workspace.md#finalization).
 
-Adaptive recipes enter through
-[`hparam-adaptive-init`](../agent_contracts/hparam_workflow.md#initialization-readiness)
-and follow the [proposal handshake](../agent_contracts/hparam_workflow.md#proposal-handshake).
-An exact committed agent-proposal execute is safe to retry after a lost client
-receipt only when successful completion is recorded; incomplete, conflicting,
-or uncommitted launch evidence remains fail closed, and monitors never gain
-launch authority. Older replays also require ordered successful completion for
-every later committed proposal round.
+Monitors never gain launch authority.
 Recurring follow-up starts from the workspace's
 [short heartbeat guidance](../agent_contracts/experiment_workspace.md#short-heartbeat-maintenance).
 

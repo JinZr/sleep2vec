@@ -1,8 +1,8 @@
 # Hparam Workflow Contract
 
-This contract owns the ordinary and adaptive `hparam_tune` protocols: search
-space, registration preflight, launch and queue, execution snapshot, selection,
-and adaptive rounds. Authored and effective recipe inputs, consultation, and
+This contract owns the `hparam_tune` protocol: search space, registration
+preflight, launch and queue, execution snapshot, selection, and further rounds.
+Authored and effective recipe inputs, consultation, and
 task routing belong to [task_recipe.md](task_recipe.md); accepted fields belong
 to the [task recipe schema](../../recipes/schemas/task_recipe.schema.md).
 Workspace publication and finalization belong to
@@ -14,9 +14,6 @@ scheduler evidence belong to [run_manifest.md](run_manifest.md).
 - [Search space](#search-space), [registration preflight](#registration-preflight), and [launch/queue](#launch-and-queue)
 - [Execution snapshot and launch revalidation](#execution-snapshot-and-launch-revalidation)
 - [Selection and selected-candidate consumers](#selection-and-selected-candidate-consumers)
-- [Adaptive workflow](#adaptive-workflow): [initialization readiness](#initialization-readiness),
-  [frozen round identity](#frozen-round-identity), [strategy/budget](#strategy-and-budget),
-  and [proposal handshake](#proposal-handshake)
 
 ## Ordinary hparam workflow
 
@@ -34,24 +31,18 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   no leading zero, sign or whitespace aliases; numeric dictionary keys remain
   literal strings.
 - An explicit search requires positive `search.max_runs` and uses `method: grid`.
-  Static searches and derived proposal rounds select exactly one of:
+  It declares exactly one of these mutually exclusive shapes:
   - `search.parameters`: a per-key candidate mapping expanded by Cartesian
     product, with axes in lexicographic full-key order and each candidate
     value list in its authored order;
   - `search.configurations`: complete joint configuration points expanded
     in their authored list order, one run per point. Mapping key order does
     not affect a point's run name or parameter summary.
-- Both shapes use the same key rules. Static searches apply `[:max_runs]` prefix
-  truncation after expansion. Reordering parameter mapping keys does not change
-  run ids or the selected grid prefix. An enabled `agent_proposal` source may
-  combine both fields: `parameters` freezes the full domain, while `configurations`
-  supplies the exact ordered initial points. Each point covers exactly the domain
-  keys, satisfies its envelopes and is unique. Its count must fit `search.max_runs`,
-  `adaptive.round_size` and `adaptive.max_runs_total`; these points are never
-  silently truncated. Both fields remain frozen in round 000. A concrete source
-  `hparam_search_space` decision updates the domain and revalidates the same points.
-  Derived proposal rounds use the accepted proposal's own search and run count;
-  source search-space and search-budget decisions are not reapplied to them.
+- Both shapes use the same key rules and apply `[:max_runs]` prefix truncation
+  after expansion. Reordering
+  parameter mapping keys does not change run ids or the selected grid prefix. A
+  concrete `hparam_search_space` decision replaces the authored search shape,
+  including any configurations.
 - For `sleep2vec`, `sleep2vec2`, `sleep2expert`, and `sex_age_baseline`,
   managed finetune runtime fields and explicit search keys include
   `lr_scheduler`, `lr_decay_floor`, `lr_decay_shape`, `lr_decay_ratio`,
@@ -141,78 +132,57 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   metric, split, and budget. This is an inventory of registered profile axes,
   not a claim that arbitrary or unknown config fields were searched; only axes
   with more than one candidate are reported as searched.
-- The first profile version does not support adaptive tuning. Existing
-  explicit searches and historical frozen plans are unchanged; profile
-  expansion is not retroactively required by registered-plan readers.
-- Adaptive source recipes must declare `search.parameters`, which supplies the
-  envelope or neighborhood source. Only enabled `agent_proposal` sources may also
-  declare initial `search.configurations`; `best_neighborhood` keeps its parameter
-  grid. Initial points do not narrow the domain: later proposals may choose values
-  within its numeric bounds or unused categorical choices.
-- Agent-proposal YAML axes accept scalar choices, homogeneous complete mapping
-  choices, or homogeneous list choices. A mapping/list choice may contain nested
-  JSON values, including `null`. Runtime axes accept numeric, boolean or string
-  candidates; top-level `null` and mixed categorical types remain unsupported.
-  A composite choice is
-  atomic: proposals must select a declared whole value. Mapping key order does not
-  affect identity; list order and nested boolean/integer/float types do. YAML
-  parameter paths must not overlap: a whole block and one of its descendants
-  cannot be separate search axes. Overrides replace the whole addressed value,
-  so replacing `finetune.tuning`
-  removes source `groups` overrides absent from the selected block. Every generated
-  config still passes the canonical variant loader; the domain does not authorize
-  arbitrary new fields inside a block or bypass config semantics.
+- Existing explicit searches and historical frozen plans are unchanged;
+  profile expansion is not retroactively required by registered-plan readers.
+- A `yaml:/...` value may be a scalar or a complete mapping or list block. An
+  override replaces the whole addressed value, so replacing `finetune.tuning`
+  removes source `groups` overrides absent from the selected block. Every
+  generated config still passes the canonical variant loader; a block value does
+  not authorize arbitrary new fields inside it or bypass config semantics.
 
-Frozen parameter envelopes define permitted values, not a guarantee that every
-value or cross-axis combination is executable. Initialization validates the
-concrete opening points; each later complete proposal passes canonical config
-and runtime preflight before acceptance, publication or launch. Coupled axes may
-have valid paired points and invalid cross-pairs, so neither the full Cartesian
-product nor each choice applied alone to the source config defines their validity.
-An unused invalid choice can remain in the domain, but selecting it fails preflight
-without accepting or launching that proposal. The agent can correct an unaccepted
-submission within the same issued domain and budget.
+Planning validates the concrete points through canonical config and runtime
+preflight before publication or launch. Coupled axes may have valid paired
+points and invalid cross-pairs, so author a `parameters` grid only when its whole
+Cartesian product is valid; otherwise use explicit `configurations`.
 
-For a new recipe with no authored search, an ordinary tuning request defaults
-to terminal-only `adaptive.suggest.strategy: agent_proposal`. Static profile/grid
-search requires an explicit request. Existing authored or frozen searches must
-not be rewritten. The agent authors the frozen `search.parameters` domain and
-numeric `adaptive.suggest.bounds` after reviewing the effective source config,
-available prior results, useful fixed/search axes and boundary evidence; there
-is no automatic profile-to-adaptive compiler. A source value is not by itself a
-reason to freeze a technical axis, and a concurrency cap does not fix epochs.
-See the [proposal reasoning workflow](../../skills/hyperparameter_tuning/SKILL.md#result-to-proposal-reasoning).
+An ordinary tuning request uses a static `hparam_tune` plan. Existing authored
+or frozen searches must not be rewritten. The agent authors either explicit
+`search.configurations` (complete, unique points) or a `search.parameters` grid
+after reviewing the effective source config, available prior results, useful
+fixed/search axes and whether the incumbent sits at the edge of the searched
+values; no compiler chooses the points. A
+source value is not by itself a reason to freeze a technical axis, and a
+concurrency cap does not fix epochs. See the
+[result-to-proposal reasoning](../../skills/hyperparameter_tuning/SKILL.md#result-to-proposal-reasoning).
 
-If the user did not specify a total budget, use the default search budget, round
-size and round limit in
-[`hparam_search_defaults`](../../agent_policies/consultation_policy.yaml); a
-smaller authorized concurrency, GPU or total-run cap lowers `round_size` and
-`max_rounds` as that section derives. These are agent authoring defaults,
-not parser fallbacks: write the explicit objective, budget, strategy and
-`replacement: {enabled: false}` before consultation. Prefer explicit initial
-`search.configurations` to spend the opening batch on informative comparisons
-while keeping a wider frozen domain. Without configurations, keep round 000's
-full Cartesian product within the round size. Templates are starting examples
-whose axes, bounds and first points must be adjusted to the actual experiment.
+If the user did not specify a total budget, use the default search budget in
+[`hparam_search_defaults`](../../agent_policies/consultation_policy.yaml) across
+all rounds. It is an agent authoring default, not a parser fallback: write each
+plan's explicit `search.max_runs` before consultation. Prefer explicit
+`search.configurations` to spend each round on informative comparisons.
+Templates are starting examples whose points must be adjusted to the actual
+experiment.
 
-An explicit static request may use the supported `finetune_balanced` profile
-above, or an authored grid. Do not convert existing static plans into adaptive
-workflows. Without `inputs.pretrained_backbone_path`, the profile's adaptation
+A further round is a new ordinary plan with a fresh `--output-dir`; the frozen
+plans of earlier rounds are never rewritten. Keep it in the same experiment and
+step, so `hparam-select` ranks every round of the step together under one
+selection policy. Author its own configurations or grid and keep the
+cumulative run count within the total budget. Record the evidence for the round first with an `experiment-note` entry
+that cites the prior results it relies on.
+
+An explicit request may use the supported `finetune_balanced` profile above.
+Without `inputs.pretrained_backbone_path`, the profile's adaptation
 stays fixed at the source `finetune.tuning` block, and a source whose effective
 group table freezes the encoder is rejected rather than searched; whether the
 encoder trains is read from that table, not from the preset's name.
 `inputs.ckpt_path` is final-evaluation-only, not a tuning backbone.
 
 The tuning request alone does not authorize publication or launch. Publication
-may carry the authorized scope through doctor and the appropriate planner or
-adaptive initializer. Once launch is explicitly authorized, continue through
-initial launch checks, terminal monitoring, proposals and authorized next rounds
-for adaptive work, or the plan/queue sequence for static work, then selection,
-final report and finalization without asking again about technical levels or
-execute. This does not authorize test unlock, changed label/split/checkpoint/data,
-expansion beyond the authorized budget or frozen search domain, or changes to an
-existing adaptive protocol. Report only the best observed candidate within the
-frozen domain, metric, split and budget, never a global optimum.
+may carry the authorized scope through doctor and `plan`; launch follows the
+plan/queue sequence once it is explicitly authorized. This does not authorize
+test unlock, changed label/split/checkpoint/data, or expansion beyond the
+authorized total budget. Report only the best observed candidate among the
+searched configurations, metric, split and budget, never a global optimum.
 
 ### Full-model weights-only initialization
 
@@ -241,13 +211,13 @@ semantic compatibility; the runtime load performs that check.
 
 ### Registration preflight
 
-New ordinary hparam plans and adaptive rounds are fully materialized in a
+New hparam plans are fully materialized in a
 temporary directory on the final destination filesystem. The staged frozen
 bundle is recompiled and validated with the same reader used after publication;
 each final candidate config is then checked with the recipe variant's canonical
 `load_finetune_config` and `validate_model_config` in the planner's current Python
 and code environment. This applies equally to profile expansions, explicit
-configurations, parameter grids, and accepted agent proposals after all YAML
+configurations, and parameter grids after all YAML
 overrides. Consultation checks captured input bytes; registration independently
 checks the exact frozen candidate bytes. Launch, including dry-run, repeats the
 frozen config check for prospective `planned`/`pending` runs before submission;
@@ -327,7 +297,7 @@ The optional `execution` block configures the managed launcher.
   request across all actually planned allocations if active together. This
   deterministic plan report uses the frozen run count and does not query live
   node capacity; live fixed-node feasibility remains a `doctor` diagnostic.
-  Neither report changes scheduler resources or `adaptive.round_size`, and
+  Neither report changes scheduler resources, and
   Slurm launch still submits every frozen leaf job for scheduler queuing.
   Slurm recipes reject `gpu_pool`, `max_concurrent`, `conda_env`, locally
   authored `runtime.devices`, unknown scheduler fields, and arbitrary sbatch
@@ -496,252 +466,3 @@ and [final report acceptance](experiment_workspace.md#finalization) have one
 workspace owner, including mixed/all-failed cases and historical completed-read
 compatibility. Final test authorization belongs to
 [external_test_locking.md](external_test_locking.md).
-
-## Adaptive workflow
-
-The optional `adaptive` block defines append-only rounds bounded by
-`adaptive.max_runs_total`.
-
-An authored recipe with `adaptive.enabled=true` must enter through
-`hparam-adaptive-init`. The generic `plan` command rejects it before workspace
-mutation; only the adaptive workflow owner may materialize round plans.
-
-### Initialization readiness
-
-Round 000 has a final readiness boundary after canonical plan registration.
-The owner validates the initial registry, reconciles `plan_created`, and writes
-the matching README. It then atomically creates root-matching
-`adaptive/workflow.json` as an independent regular file, binding the validated
-registry and README hashes to
-the no-clobber marker commit, and records `adaptive_init` afterward. Consumers
-require the exact ordered events as well as the marker; launch, queue, and
-monitor cannot treat partial initialization as runnable. Only internal
-planning/initialization inspection may explicitly bypass this readiness check.
-
-Existing recovery is narrow: a complete unregistered round is reusable only
-when deterministic regeneration yields an identical tree. Under the round
-publication lock, initialization rereads canonical state and may repair only a
-missing or malformed initial registry; a valid registry with different frozen
-rows, an incomplete round, partial canonical state, or a differing visible
-tree is rejected rather than repaired in place.
-
-After readiness, verify the initial plan and launch dry-run before the
-authorized initial execute. For takeover and predecessor obligations, use the
-single [workspace continuation flow](experiment_workspace.md#takeover-and-continue-execution);
-the exact next-round protocol is [below](#proposal-handshake).
-
-### Frozen round identity
-
-- Initialization resolves `execution.python`, `execution.runtime_commit`,
-  `adaptive.objective_metric`, and `adaptive.objective_mode` for round 000. The
-  Python, objective, route, and scientific contract are workflow-wide frozen;
-  round 000's commit is baseline provenance. The frozen route includes the
-  scheduler type and, for Slurm, `partition`, `nodelist`, and
-  `direct_controller`; scheduler resource limits such as CPU, memory, walltime,
-  and nice remain operational inputs.
-- Later rounds re-read the mutable source recipe, reject conflicting frozen
-  Python, route, objective, or scientific values, and may plan from a newer
-  runtime commit. Other operational execution fields, including concurrency,
-  GPU allocation, and `env`, remain source-controlled subject to normal
-  preflight. Each round plan remains immutable.
-- The source recipe and every suggestion pass read-only preflight before digest,
-  suggestion, or event artifacts are written. Earlier round plans, configs,
-  logs, and checkpoints are not rewritten.
-
-Each run records its planned/baseline and actual commit through the canonical
-manifest. Mixed commits across rounds are provenance only, not an A/B arm or
-scientific search variable. A later runtime does not rewrite prior plans or
-snapshots. Adaptive commands append experiment events and create registry,
-digest, suggestion, and round artifacts; they do not make those artifacts
-alternate lifecycle owners.
-
-### Strategy and budget
-
-Control flags must be YAML booleans; run, round, and poll budgets must be positive
-YAML integers; replacement grace and margin must be finite and non-negative.
-Test or external objectives require explicit
-`adaptive.test_feedback_for_selection=true`; a `test_*` objective also needs
-`test_after_fit=true`.
-
-When `selection_split=test`, adaptive `test_*` objectives, including one distinct
-from the selection metric, reduce complete `checkpoint_test_results` by the
-frozen objective mode and bind the selected checkpoint path/epoch. Only
-canonically `completed` or `finished` runs are eligible for checkpoint-objective
-ranking and incumbency. Validation/run-level objectives such as `val_*` and
-`best_model_score` retain top-level evidence. A running test-checkpoint objective
-cannot trigger metric-based retirement, while independent log failures can.
-
-`adaptive.suggest.strategy` defaults to `agent_proposal`; the only other value
-is explicit `best_neighborhood`. An enabled proposal workflow requires a
-non-blank string `adaptive.objective_metric` and non-empty
-`adaptive.objective_mode`, `adaptive.round_size`, `adaptive.max_rounds`, and
-`adaptive.max_runs_total`. Missing, null, or blank required values return
-`NEEDS_USER_INPUT` (exit 2) before workspace mutation; a non-string objective metric fails the
-recipe contract.
-
-`agent_proposal` is terminal-only, so `adaptive.replacement` must be omitted or
-exactly `{enabled: false}`. Optional `adaptive.suggest.bounds` may authorize a
-closed interval for numeric search parameters:
-
-- keys must be a subset of `search.parameters`;
-- integer-valued grids require integer endpoints;
-- grids containing a float accept finite integer or float endpoints;
-- categorical or mixed grids do not accept bounds.
-
-Without explicit bounds, numeric parameters use their original minimum and
-maximum, and categorical proposals remain within the original choices. A
-disabled adaptive block starts no suggestion protocol. Active-round replacement
-and automatic neighborhood suggestions require explicit `best_neighborhood`.
-Each confirmed replacement start grants one retirement credit. A durable Slurm
-`stopping` request reserves one credit in plan order but does not release
-capacity; only scheduler-confirmed `stopped` may precede a capacity-dependent
-replacement launch.
-
-### Proposal handshake
-
-Agent proposals use two phases.
-
-1. A proposal-free `hparam-adaptive-step` monitors and digests the current
-   round. It returns `waiting_for_round_terminal` while a run is active;
-   otherwise it writes an immutable
-   `adaptive/proposal_inputs/round_NNN--<id12>.json` snapshot.
-2. An external agent writes only the exact
-   `adaptive/proposal_submissions/round_NNN--<id12>.json` path named by that
-   snapshot. It must not create or replace proposal inputs or tool lifecycle
-   state. `hparam-adaptive-step --proposal <path>` previews the proposal; adding
-   `--execute` applies it through normal preflight, registration, and launch.
-
-Proposal-input schema v2 requires `input.source_config_sha256`. The request id
-binds those exact config bytes with complete digest rows, source recipe, frozen
-execution identity, remaining budget, and parameter envelopes. The tool records
-an `agent_proposal_requested` issuance containing the request id, source and
-target rounds, exact paths, and complete snapshot-file hash. If a crash leaves
-the exact snapshot without its issuance, retry appends the missing event. One
-matching event is idempotent; duplicate or conflicting records fail. Input v1
-must be regenerated, while proposal submissions remain schema v1.
-
-New inputs include `digest_rows` for **all committed terminal rounds** of this
-workflow, ordered by round and frozen plan order. The tool rebuilds them from
-registered plans, the canonical manifest and runtime artifacts; previously
-written digest CSVs are not historical authority. Uncommitted attempts and
-other workspace steps are excluded. Each row retains its `round`, `step_id`
-and `run_id`. Run IDs increase within the workflow's frozen step, so
-`evidence_run_ids` can cite any included round without a new identifier format.
-`is_incumbent` is `"True"` for the best successful run across this history
-(earlier round/plan order breaks equal-score ties), and `"False"` otherwise.
-No failed run is marked incumbent, even if it retains forensic metrics.
-Named validation metrics are filled from `monitor` / `best_model_score` only
-for canonical `completed` or `finished` runs. Other rows retain these original
-diagnostic fields without gaining a fallback score for ranking or suggestions.
-
-Rows from proposed rounds include the accepted `proposal_rationale`,
-`proposal_path` and `proposal_sha256`. The submission, its issued input and
-ordered acceptance/execute evidence are verified before that rationale becomes
-bound history. Use it to compare the previous prediction with the actual result;
-consult relevant `RESEARCH_LOG.md` entries for additional research context.
-
-For a successful test-selected checkpoint objective, `checkpoint_path`, `epoch`
-and scalar `test_*` metrics belong to the same selected checkpoint.
-`monitor_checkpoint_path` identifies retained monitor/best-model evidence.
-`checkpoint_test_results` contains the complete validated trajectory, ordered
-by epoch and path, as `{checkpoint_path, epoch, metrics}` records. It is a JSON
-array in proposal inputs and compact JSON in digest CSV cells. Undefined
-non-finite auxiliary metrics become `null`; the objective must still be finite
-at every required checkpoint. Incomplete/failed results do not gain a trajectory.
-`stop_reason` comes from the canonical run manifest. Config and log locators
-remain available for targeted diagnosis; four log-tail lines and a best score
-alone do not establish overfitting, undertraining or optimization instability.
-
-`training_history` adds already-synced W&B observations when the canonical run
-has a `wandb_run_id` and its workspace `wandb/history/<id>.csv` exists. The
-existing `experiment-sync-wandb` owns identity matching and history acquisition; digest and
-proposal issuance only read that saved file, including for SSH training runs.
-They do not contact W&B, sync data, or search runtime directories for substitutes.
-An absent binding or file produces an empty field. An available file produces
-an object in proposal inputs and compact JSON in digest CSV cells, containing:
-
-- `source_path`, `source_sha256`, and `wandb_run_id` for the exact imported bytes.
-- Sparse `observations` of `train_loss_epoch`, `val_loss`, and the frozen monitor
-  and objective when their names start with `val_`. Each point retains its
-  numeric logged coordinate keys (`epoch`, `trainer/epoch`, `current_epoch`,
-  `_step`, `trainer/global_step`) when present. Missing/non-finite metric cells
-  are omitted; points are not interpolated, joined across rows or averaged.
-- `learning_rate_ranges` with the observed `min` and `max` of each `lr-*` column.
-  These are ranges across imported samples, not learning-rate trajectories.
-  Consult the cited source for ordering or step-level detail when needed.
-
-The import may be sampled or sparse. `_step` is a W&B logging index, not an
-optimizer step. Logged coordinates are observations, not proof of actual
-completed epochs/steps, and current training manifests do not record the
-Lightning early-stopping cause. Step training losses, test/external metric
-values and unrelated metrics are not copied into `training_history`.
-The existing checkpoint-test contract above remains the source of authorized
-test trajectories. W&B observations never overwrite canonical objective scores,
-checkpoint identities, the incumbent or lifecycle state. History-byte changes
-invalidate an outstanding proposal's reconstructed snapshot; obtain fresh input
-through the existing handshake after any intended evidence refresh.
-
-Phase two requires one matching issuance and exact snapshot bytes before it
-trusts bounds or budget. It reconstructs the complete input from current recipe,
-workflow, all committed rounds, manifest/registry, and runtime evidence, then repeats that
-validation after candidate preflight and before lifecycle mutation. Config-byte
-or canonical-state drift in any historical round therefore fails. If refreshed base and local layers
-offset one another without changing the effective snapshot, the candidate is
-rebuilt and preflighted from that refreshed pair.
-
-Execute copies validated source-config bytes to the next round's
-`source_config.yaml` and initially materializes from the validated in-memory
-proposal without re-reading the mutable config. Once an accepted suggestion is
-published, its exact candidate bytes remain authoritative while an unregistered
-round is recovered, even if the mutable source runtime commit advances. Recovery
-rebuilds and compares every other candidate field before reusing that commit.
-Validation resolves the specific issued snapshot rather than `_latest_digest`,
-so later digest refreshes do not invalidate otherwise unchanged evidence. Failed
-uncommitted launch attempts are never reused; a later request may bind the same
-terminal source round to a higher fresh target round.
-
-After a target round is canonically committed, repeating the exact same
-`hparam-adaptive-step --proposal <path> --execute` is idempotent. The retry
-returns the already-published suggestion only when the immutable input and
-proposal, acceptance artifact and event, suggestion hash, registered plan, and
-`launch_round` evidence all agree, and the original command wrote its successful
-completion event after launch and replacement handling finished. It does not
-stage, register, emit, or launch again. A preview remains subject to the live
-round binding, while an incomplete target registry or any uncommitted,
-conflicting, or uncertain launch state continues to fail closed.
-Acceptance, launch, and completion events must occur in that order. Replaying
-an older proposal also requires every later committed agent-proposal round to
-have the same ordered completion evidence and no canonical `launch_failed` row.
-Replay of an already executed historical proposal uses its original bound input;
-it does not rebuild or extend that input with newer history. An unaccepted old
-input must satisfy the current complete-evidence contract and cannot be patched
-or silently reissued under an existing target-round issuance. Updating a runtime
-does not migrate pending proposal inputs.
-
-A proposal changes only the search space and submits exactly one of:
-
-- `parameters`: the complete per-key candidate mapping, budgeted by Cartesian
-  product;
-- `configurations`: complete joint points, budgeted by point count, with every
-  point covering exactly the snapshot keys, satisfying all envelopes, and
-  remaining unique.
-
-The JSON submission also requires the existing `schema_version: 1`, the exact
-issued `request_id` and `target_round`, a non-empty `evidence_run_ids` list and
-a non-empty `rationale` string. Optional `proposer` records `agent` and `model`.
-Use the rationale to connect observations, competing explanations and the purpose
-of each candidate; see the [worked example](../../skills/hyperparameter_tuning/examples/result_to_proposal.md).
-
-The submission must cite evidence run IDs from the issued snapshot and fit both
-`round_size` and the remaining total-run budget. Use joint configurations for
-specific paired settings; per-key values instead authorize their Cartesian
-product. During phase two, do not regenerate a digest, choose a latest digest,
-or invoke `hparam-suggest`. Changed config bytes or canonical workflow evidence
-require a fresh issued snapshot, not editing the old input or reusing an
-uncommitted target round.
-
-Snapshots do not encode expansion mode, so either shape may answer any
-snapshot. Task, variant, data, objective, budget, execution identity,
-replacement policy, commands, and run state remain tool-owned. Direct
-`hparam-suggest` and `hparam-adaptive-loop` do not support `agent_proposal`; the
-external agent drives the handshake through `hparam-adaptive-step`.

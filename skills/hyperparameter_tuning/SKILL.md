@@ -2,9 +2,10 @@
 
 ## When to use
 
-Use for managed `hparam_tune` planning, launch/monitor/select/evaluate, or
-append-only adaptive tuning. Test-selected tuning is supported with explicit
-test access; this skill does not select a scientific split for the user.
+Use for managed `hparam_tune` planning, launch/monitor/select/evaluate, and for
+choosing a further round's points from completed results. Test-selected tuning
+is supported with explicit test access; this skill does not select a scientific
+split for the user.
 
 On takeover, first read [Takeover and continue execution](../../doc/agent_contracts/experiment_workspace.md#takeover-and-continue-execution).
 It owns evidence-to-action decisions, rolling runtime sync and short heartbeat
@@ -12,14 +13,14 @@ maintenance. Do not infer lifecycle from history.
 
 ## Required inputs
 
-Use the authorized experiment/step, base recipe, search domain or explicitly
-requested static profile/grid, budget, selection metric/mode/split, test/final-evaluation policy and
-execution identity. Read the relevant detailed owners before preparing work:
+Use the authorized experiment/step, base recipe, search configurations or grid
+or explicitly requested `finetune_balanced` profile, budget, selection
+metric/mode/split, test/final-evaluation policy and execution identity. Read the
+relevant detailed owners before preparing work:
 
-- [Search space](../../doc/agent_contracts/hparam_workflow.md#search-space) for the default adaptive workflow, frozen domains, initial joint points and explicitly requested static `finetune_balanced` searches.
+- [Search space](../../doc/agent_contracts/hparam_workflow.md#search-space) for grids, exact joint points, further rounds and explicitly requested `finetune_balanced` searches.
 - [Test-access policy](../../doc/agent_contracts/external_test_locking.md#selection-and-test-access-policy) for selection split, test-after-fit and unlock requirements.
 - [Launch and queue](../../doc/agent_contracts/hparam_workflow.md#launch-and-queue) for local/SSH identity, direct/Slurm resources and capacity.
-- [Adaptive workflow](../../doc/agent_contracts/hparam_workflow.md#adaptive-workflow) when enabled; it owns initialization, frozen Python/route/scientific identity, per-round commit provenance, strategy and budget.
 
 ## Interaction stages
 
@@ -34,9 +35,8 @@ not the existence of a questions directory. `experiment-status --run-dir <root>`
 reads recorded state; `context` is diagnostic-only. Monitor commands refresh
 and **write** observations, although they never launch pending work.
 
-`plan` and `hparam-adaptive-init` create managed state; they are not merely
-information-gathering commands. Use them only at the appropriate preparation
-stage below.
+`plan` creates managed state; it is not merely an information-gathering command.
+Use it only at the appropriate preparation stage below.
 
 ## Decision checklist
 
@@ -53,80 +53,71 @@ scope. The [decision contract](../../doc/agent_contracts/user_decisions.md) owns
 doctor-directory reuse; the decision file does not authorize a later stage.
 
 The [stop-and-consult policy](../../AGENTS.md#agent-stop-and-consult-policy) owns
-the terminal-only `agent_proposal` default for a new recipe with no authored
-search, the protection of existing searches, and the default search budget in
+the static-plan rule for a tuning request, the protection of frozen plans, and
+the default search budget in
 [`hparam_search_defaults`](../../agent_policies/consultation_policy.yaml).
-Explain at the outset that the agent will use completed results to choose later
-rounds; do not preplan the whole budget and call it adaptive.
-A concurrency cap does not fix epochs. Author these fields, the explicit
-objective and `replacement: {enabled: false}` in the recipe; they are
-not automatic parser defaults.
+Explain at the outset that completed results will choose later rounds; do not
+spend the whole budget in the first plan by default.
+A concurrency cap does not fix epochs. Author the points or grid and
+`search.max_runs` in the recipe; they are not automatic parser defaults.
 
-Before initialization, inspect the effective base/runtime config and available
-prior experiments. Choose a bounded domain and first-round points using:
+Before the first plan, inspect the effective base/runtime config and available
+prior experiments. Choose the searched axes and first-round points using:
 
 - The strongest comparable result, missing evidence, and whether its best point
-  touches a parameter bound or the final checkpoint. Boundary evidence motivates
-  a hypothesis; it does not prove that expanding the bound will improve results.
+  sits at the edge of the searched values or the final checkpoint. Edge evidence
+  motivates a hypothesis; it does not prove that searching further will improve
+  results.
 - The important technical axes to search or hold fixed, with an evidence or
   budget reason for each fixed choice. Do not freeze a setting merely because it
   appears in the source config. Include only parameters consumed by the task and
   variant; coupled settings must produce valid complete candidate configs.
-- What the initial points can distinguish within the compute authority. Prefer
-  explicit `search.configurations` for the opening batch, alongside the complete
-  frozen domain in `search.parameters`. Every point must cover every domain key;
-  its values must lie within the envelopes, and the point count must fit all
-  initial budgets. Without configurations, keep the full initial Cartesian product
-  within round size. Numeric bounds and categorical choices can leave useful
-  alternatives for later rounds without spending initial runs on them.
-- For coupled YAML settings, declare complete mapping or list choices under a
-  `yaml:/...` key, such as the whole LayerMix or adaptation block. Each choice
-  replaces that value completely; a proposal selects an authorized block rather
+- What the points can distinguish within the compute authority. Declare either
+  explicit `search.configurations` (complete, unique joint points) or a
+  `search.parameters` grid expanded by Cartesian product, never both, and fit the
+  run count within `search.max_runs`.
+- For coupled YAML settings, declare complete mapping or list values under a
+  `yaml:/...` key, such as the whole LayerMix or adaptation block. Each value
+  replaces that block completely; a point selects an authorized block rather
   than editing arbitrary fields inside it. Use the source variant's valid config
   semantics, including pretrained-backbone requirements for frozen adaptation.
-  Runtime values remain scalar. There is no automatic profile-to-adaptive compiler.
+  Runtime values remain scalar.
 
-Before freezing, consider plausible opening outcomes: continued improvement at a
-boundary, or deterioration away from an earlier best point. Explain which useful
-follow-up comparisons the domain permits and which it deliberately excludes.
-More axes or wider bounds are not inherently better; allocate room to hypotheses
+Before freezing, consider plausible opening outcomes: continued improvement at
+the edge of the searched values, or deterioration away from an earlier best point.
+Explain which useful follow-up comparisons the first round enables and which it
+deliberately leaves out. More axes or wider ranges are not inherently better; allocate room to hypotheses
 that merit the remaining fits. Distinguish a measured cost limit from a provisional
 compute judgment when throughput is unknown. Use the
-[initial-domain example](examples/initial_search_domain.md) for this reasoning;
+[initial-search example](examples/initial_search_domain.md) for this reasoning;
 it does not prescribe numerical ranges.
 
 The templates are starting examples to adjust to the actual base config, runtime
-and evidence. Do not modify active frozen workflows to accommodate a newly
-noticed search limitation.
+and evidence. Do not modify frozen plans to accommodate a newly noticed search
+limitation.
 
 ## Result-to-proposal reasoning
 
-After each round is terminal and required results are complete, read the issued
-proposal input and its cited config, manifest, diagnostic and log evidence. Compare
-all available completed rounds with the incumbent and revisit earlier rationale
-and `RESEARCH_LOG.md`; the previous round's winner is not automatically the
-workflow's best result. The issued rows identify the global incumbent and carry
-accepted prior proposal rationale; inspect `checkpoint_test_results` trajectories,
+After a round is terminal and its required results are complete, read the
+canonical results and the configs, manifests, diagnostics and logs they cite.
+Compare every completed round of the step with the incumbent and revisit earlier
+rationale and `RESEARCH_LOG.md`; the previous round's winner is not automatically
+the best result. Inspect `checkpoint_test_results` trajectories,
 `monitor_checkpoint_path` and `stop_reason` when present. Keep validation-monitor
 and test-objective checkpoint identities distinct, and use test feedback only
-under its frozen authorization. Use the exact evidence identities and submission format
-in the [proposal handshake](../../doc/agent_contracts/hparam_workflow.md#proposal-handshake).
+under its frozen authorization.
 
-Use `training_history.observations` when present to compare the logged training
-loss and validation trajectory, not just each run's best score. Its source path
-and hash identify the already-synced W&B history; an empty field means these
-observations are unavailable. Sparse or sampled points do not locate the actual
-training endpoint. `_step` is a W&B log index; only an explicit
-`trainer/global_step` is trainer-step evidence. `learning_rate_ranges` reports
-observed extrema, not schedule order. Read the cited history for a needed detail
-within the frozen split policy; do not infer an early-stopping cause or silently
-sync new evidence while applying an already-issued proposal.
-If an absent curve would change the next decision, the existing
-`experiment-wandb-sync` can refresh authorized workspace evidence before
-requesting a proposal input. Missing optional history does not itself block a
-proposal; explain what can and cannot be concluded from the available evidence.
+Use already-synced W&B history when present to compare the logged training loss
+and validation trajectory, not just each run's best score. Sparse or sampled
+points do not locate the actual training endpoint. `_step` is a W&B log index;
+only an explicit `trainer/global_step` is trainer-step evidence. Learning-rate
+extrema are not schedule order. Do not infer an early-stopping cause. If an absent
+curve would change the next decision, `experiment-wandb-sync` can refresh
+authorized workspace evidence. Missing optional history does not itself block a
+round; explain what can and cannot be concluded from the available evidence.
 
-Write a concise, useful `rationale` using the existing free-text field:
+Before planning the next round, append an `experiment-note` that cites the prior
+results it relies on and gives this reasoning:
 
 1. Separate observations from explanations. Identify the compared configurations,
    metric differences, training/checkpoint evidence and failure causes. A scalar
@@ -145,17 +136,17 @@ Write a concise, useful `rationale` using the existing free-text field:
    joint points. Avoid repeats unless they answer an explicit reproducibility or
    unresolved-failure question within the existing contract and authority.
 4. Say what result would change the current interpretation and why these points
-   merit the remaining runs. Stay within the issued domain and budget; if an
-   important alternative is outside them, report the concrete limitation instead
-   of silently changing the workflow. On the next result, check this expectation
+   merit the remaining runs. Stay within the total budget; if an important
+   alternative would exceed it or change an authorized decision, report the concrete limitation instead
+   of silently changing the search. On the next result, check this expectation
    and append meaningful observations or revised interpretations with
    `experiment-note`, rather than copying unchanged monitoring history.
 
 Use [the worked result-to-proposal example](examples/result_to_proposal.md) for the
-level of reasoning expected. Tool validation establishes identity, completeness
-and allowed values; a non-empty rationale does not by itself establish scientific
+level of reasoning expected. Plan validation establishes identity, completeness
+and allowed values; a well-written note does not by itself establish scientific
 quality. Report only the best observed candidate, with uncertainty and any
-explicit test-feedback selection clearly identified.
+test-feedback selection clearly identified.
 
 ## Stop-and-consult gates
 
@@ -177,47 +168,32 @@ after its spawn boundary records A while the checkout advances to B, and a later
 process records B. That SHA is point-in-time provenance, not a guarantee that
 checkout code bytes remain fixed for the whole job.
 
-For explicitly static tuning, follow doctor → `plan` → `hparam-launch` dry-run →
-authorized `hparam-run-queue --execute` → terminal monitoring → `hparam-select`
-→ report/finalization. Use variant-local runtime commands generated by the planner, not hand-written
-training scripts. Stop via `hparam-stop --run-id <id> --reason <text>` under the
-existing [direct/Slurm evidence contract](../../doc/agent_contracts/run_manifest.md).
+Each round follows doctor → `plan` with a fresh `--output-dir` → `hparam-launch`
+dry-run → authorized `hparam-run-queue --execute` → terminal monitoring. After
+the last round, `hparam-select` → report/finalization. Use variant-local runtime
+commands generated by the planner, not hand-written training scripts. Stop via
+`hparam-stop --run-id <id> --reason <text>` under the existing
+[direct/Slurm evidence contract](../../doc/agent_contracts/run_manifest.md).
 
-For the default adaptive workflow, complete doctor, `hparam-adaptive-init`,
-initial launch dry-run and the authorized initial launch, then terminal monitoring
-and the next-round proposals. Adaptive recipes do not enter through generic `plan`.
-Follow the exact [proposal handshake](../../doc/agent_contracts/hparam_workflow.md#proposal-handshake):
-the tool issues the input, the external agent writes only its named submission,
-and the tool preflights/registers/launches. `hparam-adaptive-loop` is only for
-explicit `best_neighborhood`, not an LLM driver for `agent_proposal`.
-If an execute receipt is lost, a heartbeat may repeat only the exact same
-proposal execute. The command returns the existing suggestion when canonical
-committed evidence includes successful execute completion; incomplete,
-unresolved, or conflicting state does not authorize a new launch. Monitors
-remain non-launching. An older execute is not a successful replay while any
-later committed proposal lacks ordered completion evidence or retains a
-canonical launch failure.
-Later rounds may use a newer commit while Python, route, objective, and the
-scientific contract remain frozen. Treat mixed commits as recorded provenance,
-not an experimental arm, and never rewrite earlier plan or snapshot bytes.
+A further round keeps the experiment and step, and never rewrites an earlier
+plan or snapshot. It may record a newer runtime commit; treat mixed
+commits as recorded provenance, not an experimental arm.
 
 ## Expected artifacts
 
-Use the [workspace layout](../../doc/agent_contracts/experiment_workspace.md),
-[canonical run evidence](../../doc/agent_contracts/run_manifest.md), and
-[adaptive readiness](../../doc/agent_contracts/hparam_workflow.md#initialization-readiness)
-as the artifact owners. Hparam execution snapshots are frozen during
-registration preflight, not first execute. Output existence alone is not
-completion evidence.
+Use the [workspace layout](../../doc/agent_contracts/experiment_workspace.md) and
+[canonical run evidence](../../doc/agent_contracts/run_manifest.md) as the
+artifact owners. Hparam execution snapshots are frozen during registration
+preflight, not first execute. Output existence alone is not completion evidence.
 
 ## Validation gates
 
 Read [registration preflight](../../doc/agent_contracts/hparam_workflow.md#registration-preflight)
 and [launch revalidation](../../doc/agent_contracts/hparam_workflow.md#execution-snapshot-and-launch-revalidation).
 All candidate sources validate final config bytes through the canonical variant
-owner. The frozen domain permits values; it does not certify every cross-axis
-combination. Choose jointly valid points and correct rejected, unaccepted
-submissions within the issued domain. Planner-local config and target CLI checks are distinct evidence, not
+owner. Plan validation does not certify every cross-axis combination before the
+config loader sees it. Choose jointly valid points and correct a rejected plan
+with a fresh plan. Planner-local config and target CLI checks are distinct evidence, not
 proof of model construction, checkpoint compatibility, forward/backward or GPU
 execution. `execution.runtime_commit` is planned/baseline provenance; launch
 first-fills the canonical actual `runtime_commit` from the HEAD observed between
@@ -233,8 +209,8 @@ replace the live eligible-execute checks.
 After terminal runs, follow [selection and selected-candidate consumers](../../doc/agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers)
 and [finalization](../../doc/agent_contracts/experiment_workspace.md#finalization).
 Use final external evaluation only under the explicit unlock. Report the best
-observed candidate within the frozen domain, metric, split and budget, not a
-global optimum.
+observed candidate among the searched configurations, metric, split and budget,
+not a global optimum.
 
 For skill maintenance, use the [fixed reasoning cases and review rubric](evaluations/rubric.md)
 to inspect whether changed guidance affects decisions; these are concept-planning
@@ -243,10 +219,10 @@ cases, not an experiment launcher or a numerical-answer test.
 ## Common failure modes
 
 For missing decisions, slow checks, submission uncertainty, incomplete
-checkpoint tests, frozen-artifact drift or proposal rejection, use the
+checkpoint tests or frozen-artifact drift, use the
 [contract question router](../../doc/agent_contracts/README.md).
-Recreate incompatible plans or request fresh proposal inputs only through the
-existing contracts and authority; do not patch frozen artifacts in place.
+Recreate incompatible plans only through the existing contracts and authority;
+do not patch frozen artifacts in place.
 
 ## Relevant owners and index pages
 

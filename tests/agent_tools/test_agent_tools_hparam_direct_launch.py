@@ -327,36 +327,6 @@ def test_hparam_launch_preserves_first_commit_when_second_start_raises(tmp_path:
     assert rows["run-001"]["target"] == "local"
 
 
-def test_hparam_launch_artifact_reconciliation_never_starts_pending_runs_and_deduplicates_events(
-    tmp_path: Path, monkeypatch
-):
-    _write_runtime_rows(
-        tmp_path,
-        [{"run_id": "run-000", "status": "launched"}, {"run_id": "run-001", "status": "pending"}],
-    )
-    real_append = hparam_runtime.append_event
-
-    def append_then_raise(*args, **kwargs):
-        real_append(*args, **kwargs)
-        raise RuntimeError("event report failed")
-
-    monkeypatch.setattr(hparam_runtime, "append_event", append_then_raise)
-    monkeypatch.setattr(
-        managed_scheduler,
-        "start_process",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("artifact reconciliation must not start a process")),
-    )
-
-    hparam_runtime.reconcile_hparam_launch_artifacts(tmp_path, {("train-model", "run-000")})
-    hparam_runtime.reconcile_hparam_launch_artifacts(tmp_path, {("train-model", "run-000")})
-
-    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_status.tsv")}
-    assert rows["run-000"]["status"] == "launched"
-    assert rows["run-001"]["status"] == "pending"
-    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert [event["event_type"] for event in events].count("run_launched") == 1
-
-
 def test_hparam_launch_does_not_start_after_canonical_owner_commits_terminal_status(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     real_merge = merge_run_manifest

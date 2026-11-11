@@ -118,18 +118,6 @@ def test_experiment_finalize_does_not_downgrade_managed_hparam_evidence_to_legac
     assert not (root / "reports" / "final.md").exists()
 
 
-def test_experiment_finalize_preserves_controller_verified_finalization(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed", adaptive=True)
-    report = tmp_path / "controller-report.md"
-    report.write_text("# Controller-verified report\n")
-
-    target = experiments.finalize_experiment(root, report)
-
-    assert target.read_text() == report.read_text()
-
-
 def test_experiment_status_terminal_and_completed_contract(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)

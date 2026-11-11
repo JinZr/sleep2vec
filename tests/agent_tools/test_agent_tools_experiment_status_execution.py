@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
-from test_agent_tools_experiment_status import _add_plan, _init_workspace, _sha256, _workspace_files
+from test_agent_tools_experiment_status import _add_plan, _init_workspace, _workspace_files
 from test_agent_tools_experiment_status import _stub_execution_target  # noqa: F401
 import yaml
 
@@ -50,7 +49,7 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
     assert first["runs"][0]["process"]["pid"] is None
     assert first["runs"][0]["evidence"]["checkpoint_count"] == "50"
     assert first["decision"]["recommended_next"]["id"] == "experiment-monitor"
-    assert first["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "launch", "resubmit"]
+    assert first["decision"]["blocked_actions"] == ["finalize", "launch", "resubmit"]
 
 
 def test_experiment_status_snapshot_is_independent_of_input_order():
@@ -125,7 +124,7 @@ def test_experiment_status_uncertain_states_block_planned_launch_and_recommend_o
     assert snapshot["summary"]["state"] == "blocked"
     assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
     assert snapshot["decision"]["other_legal_actions"] == []
-    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "launch", "resubmit"]
+    assert snapshot["decision"]["blocked_actions"] == ["finalize", "launch", "resubmit"]
 
 
 @pytest.mark.parametrize("status", ["queued", "launched", "running", "stopping"])
@@ -153,7 +152,7 @@ def test_experiment_status_preserves_active_blockers_with_uncertain_runs(tmp_pat
 
     assert snapshot["summary"]["state"] == "blocked"
     assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
-    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize", "launch", "resubmit"]
+    assert snapshot["decision"]["blocked_actions"] == ["finalize", "launch", "resubmit"]
     assert blockers_by_step == {"active": ["active_runs"], "uncertain": ["unknown_scheduler"]}
 
 
@@ -199,42 +198,6 @@ def test_experiment_status_launch_actions_and_manual_choice(tmp_path):
     assert multiple["decision"]["other_legal_actions"][0]["argv"] == ["bash", str(generic_plan / "run.sh")]
 
 
-def test_experiment_status_does_not_infer_adaptive_launch(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train", task="hparam_tune", adaptive=True)
-
-    snapshot = experiments.experiment_status(root)
-
-    assert snapshot["summary"]["state"] == "blocked"
-    assert snapshot["decision"]["recommended_next"] is None
-    assert snapshot["blockers"][0]["code"] == "adaptive_phase_deferred"
-    assert "v1" not in snapshot["blockers"][0]["message"]
-
-
-def test_experiment_status_rejects_coherent_adaptive_recipe_downgrade(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune", adaptive=True)
-    plan_path = plan_dir / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    plan["recipe"].pop("adaptive")
-    plan["recipe"]["_local_recipe"].pop("adaptive")
-    resolved_path = plan_dir / "recipe.resolved.yaml"
-    resolved = yaml.safe_load(resolved_path.read_text())
-    resolved.pop("adaptive")
-    resolved["_local_recipe"].pop("adaptive")
-    resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
-    plan["resolved_recipe_sha256"] = _sha256(resolved_path)
-    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
-    before = _workspace_files(root)
-
-    with pytest.raises(ValueError, match="controller differs from its frozen recipe"):
-        experiments.experiment_status(root)
-
-    assert _workspace_files(root) == before
-
-
 def test_experiment_status_rejects_missing_step_controller_without_writing(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -249,22 +212,6 @@ def test_experiment_status_rejects_missing_step_controller_without_writing(tmp_p
         experiments.experiment_status(root)
 
     assert _workspace_files(root) == before
-
-
-def test_experiment_status_scopes_deferred_plans_away_from_ordinary_launch(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    ordinary, _row = _add_plan(root, step_id="ordinary")
-    _add_plan(root, step_id="adaptive", task="hparam_tune", status="completed", adaptive=True)
-
-    snapshot = experiments.experiment_status(root)
-
-    assert snapshot["summary"]["state"] == "ready_to_launch"
-    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(ordinary / "run.sh")]
-    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize"]
-    assert {(blocker["code"], blocker["step_id"]) for blocker in snapshot["blockers"]} == {
-        ("adaptive_phase_deferred", "adaptive"),
-    }
 
 
 def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tmp_path):
@@ -309,41 +256,22 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
         experiments.experiment_status(root)
 
 
-def test_experiment_status_keeps_multiple_ordinary_candidates_with_deferred_plan(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    first, _row = _add_plan(root, step_id="first")
-    second, _row = _add_plan(root, step_id="second")
-    _add_plan(root, step_id="adaptive", task="hparam_tune", status="completed", adaptive=True)
-
-    snapshot = experiments.experiment_status(root)
-
-    assert snapshot["summary"]["state"] == "ready_to_launch"
-    assert snapshot["decision"]["manual_choice_required"] is True
-    assert snapshot["decision"]["recommended_next"] is None
-    assert [action["argv"] for action in snapshot["decision"]["other_legal_actions"]] == [
-        ["bash", str(first / "run.sh")],
-        ["bash", str(second / "run.sh")],
-    ]
-    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize"]
-
-
 @pytest.mark.parametrize(
-    ("status", "state"),
-    [("running", "in_progress"), ("unknown_scheduler", "blocked")],
+    ("status", "state", "code"),
+    [("running", "in_progress", "active_runs"), ("unknown_scheduler", "blocked", "unknown_scheduler")],
 )
-def test_experiment_status_prioritizes_active_deferred_plan_over_ordinary_launch(tmp_path, status, state):
+def test_experiment_status_prioritizes_active_hparam_plan_over_ordinary_launch(tmp_path, status, state, code):
     root = tmp_path / "experiment"
     _init_workspace(root)
     _add_plan(root, step_id="ordinary")
-    _add_plan(root, step_id="adaptive", task="hparam_tune", status=status, adaptive=True)
+    _add_plan(root, step_id="tune", task="hparam_tune", status=status)
 
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == state
     assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
     assert snapshot["decision"]["other_legal_actions"] == []
-    assert "adaptive_phase_deferred" in {blocker["code"] for blocker in snapshot["blockers"]}
+    assert code in {blocker["code"] for blocker in snapshot["blockers"]}
 
 
 def test_experiment_status_attributes_blockers_by_full_managed_run_key(tmp_path):
@@ -359,37 +287,3 @@ def test_experiment_status_attributes_blockers_by_full_managed_run_key(tmp_path)
     assert blockers_by_step["first"] == ["unknown_scheduler"]
     assert blockers_by_step["second"] == ["unknown_scheduler"]
     assert blockers_by_step["terminal"] == []
-
-
-def test_experiment_status_defers_terminal_adaptive_finalization(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", status="completed", task="hparam_tune", adaptive=True)
-
-    snapshot = experiments.experiment_status(root)
-
-    assert snapshot["summary"]["state"] == "blocked"
-    assert snapshot["decision"]["recommended_next"] is None
-    assert snapshot["decision"]["other_legal_actions"] == []
-    assert snapshot["decision"]["blocked_actions"] == ["adaptive_advance", "finalize"]
-    assert snapshot["blockers"][0]["code"] == "adaptive_phase_deferred"
-
-    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
-    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
-    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
-    with pytest.raises(ValueError, match="cannot be verified for adaptive plans") as exc_info:
-        experiments.experiment_status(root)
-    assert "v1" not in str(exc_info.value)
-
-
-def test_experiment_status_rejects_completed_mixed_ordinary_and_deferred_plans(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="ordinary", status="completed")
-    _add_plan(root, step_id="adaptive", task="hparam_tune", status="completed", adaptive=True)
-    manifest = yaml.safe_load((root / "experiment.yaml").read_text())
-    manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
-    (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
-
-    with pytest.raises(ValueError, match="cannot be verified for adaptive plans"):
-        experiments.experiment_status(root)

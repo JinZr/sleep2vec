@@ -2,19 +2,17 @@
 
 Mixed bridge: the generic hparam gates plus the multilabel coupling inherited
 from ``decision_paths``. Owns what a well-formed search declaration is --
-axes, budget, objective, and the agent-proposal strategy -- before any plan is
-materialized. Materialization itself belongs to ``plan_hparam``.
+axes, budget, and objective -- before any plan is materialized. Materialization
+itself belongs to ``plan_hparam``.
 """
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 import re
 from typing import Any
 
 from . import plan_hparam
-from .adaptive_proposals import validate_configurations, validate_parameter_envelopes
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import (
     finetune_init_checkpoint_issue,
@@ -25,8 +23,6 @@ from .decision_paths import (
 )
 from .models import REPO_ROOT, ConfigSummaryInput, is_full_git_object_id
 from .plan_rendering import FINETUNE_SCHEDULER_FIELDS
-
-DEFAULT_ADAPTIVE_SUGGEST_STRATEGY = "agent_proposal"
 
 _HPARAM_EXECUTION_FIELDS = {
     "target",
@@ -65,33 +61,6 @@ _HPARAM_EVALUATION_FIELDS = {
     "final_test_unlocked",
     "require_manual_unlock_for_final_test",
 }
-_HPARAM_ADAPTIVE_FIELDS = {
-    "enabled",
-    "max_rounds",
-    "max_runs_total",
-    "objective_metric",
-    "objective_mode",
-    "poll_seconds",
-    "replacement",
-    "round_size",
-    "suggest",
-    "test_feedback_for_selection",
-}
-_HPARAM_ADAPTIVE_REPLACEMENT_FIELDS = {
-    "allow_running_stop",
-    "enabled",
-    "grace_epochs",
-    "grace_minutes",
-    "kill_margin",
-}
-_HPARAM_ADAPTIVE_SUGGEST_FIELDS = {"bounds", "strategy"}
-_HPARAM_AGENT_PROPOSAL_REQUIRED_FIELDS = (
-    "objective_metric",
-    "objective_mode",
-    "round_size",
-    "max_rounds",
-    "max_runs_total",
-)
 _HPARAM_INPUT_FIELDS = {
     "init_checkpoint_path",
     "ckpt_path",
@@ -153,161 +122,6 @@ def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[De
                     )
                 )
 
-    if "adaptive" not in recipe:
-        return issues
-    adaptive = recipe["adaptive"]
-    if not isinstance(adaptive, dict):
-        issues.append(_contract_issue("adaptive", "adaptive must be a mapping.", adaptive, source_layer))
-        return issues
-    for field in sorted(set(adaptive) - _HPARAM_ADAPTIVE_FIELDS - {"max_trials_total"}):
-        issues.append(
-            _contract_issue(
-                f"adaptive.{field}",
-                f"Unknown adaptive field: {field}.",
-                adaptive[field],
-                source_layer,
-            )
-        )
-    for section, allowed_fields in {
-        "replacement": _HPARAM_ADAPTIVE_REPLACEMENT_FIELDS,
-        "suggest": _HPARAM_ADAPTIVE_SUGGEST_FIELDS,
-    }.items():
-        if section not in adaptive:
-            continue
-        value = adaptive[section]
-        if not isinstance(value, dict):
-            issues.append(
-                _contract_issue(f"adaptive.{section}", f"adaptive.{section} must be a mapping.", value, source_layer)
-            )
-            continue
-        for field in sorted(set(value) - allowed_fields):
-            issues.append(
-                _contract_issue(
-                    f"adaptive.{section}.{field}",
-                    f"Unknown adaptive {section} field: {field}.",
-                    value[field],
-                    source_layer,
-                )
-            )
-    suggest_value = adaptive.get("suggest")
-    suggest = suggest_value if isinstance(suggest_value, dict) else {}
-    strategy = suggest.get("strategy", DEFAULT_ADAPTIVE_SUGGEST_STRATEGY)
-    if not isinstance(strategy, str) or strategy not in {"best_neighborhood", "agent_proposal"}:
-        issues.append(
-            _contract_issue(
-                "adaptive.suggest.strategy",
-                "adaptive.suggest.strategy must be best_neighborhood or agent_proposal.",
-                strategy,
-                source_layer,
-            )
-        )
-    if "bounds" in suggest and strategy != "agent_proposal":
-        issues.append(
-            _contract_issue(
-                "adaptive.suggest.bounds",
-                "adaptive.suggest.bounds is supported only with strategy=agent_proposal.",
-                suggest["bounds"],
-                source_layer,
-            )
-        )
-    # A disabled adaptive block never starts the suggestion protocol.
-    if strategy == "agent_proposal" and adaptive.get("enabled") is True:
-        for field in _HPARAM_AGENT_PROPOSAL_REQUIRED_FIELDS:
-            value = adaptive.get(field)
-            if field == "objective_metric" and field in adaptive and value is not None and not isinstance(value, str):
-                issues.append(
-                    _contract_issue(
-                        "adaptive.objective_metric",
-                        (
-                            "adaptive.objective_metric must be a non-blank string when "
-                            "adaptive.suggest.strategy=agent_proposal."
-                        ),
-                        value,
-                        source_layer,
-                    )
-                )
-                continue
-            if (
-                field in adaptive
-                and value is not None
-                and value != ""
-                and (field != "objective_metric" or value.strip())
-            ):
-                continue
-            field_path = f"adaptive.{field}"
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.NEEDS_USER_INPUT,
-                    field_path,
-                    f"{field_path} must be explicit when adaptive.suggest.strategy=agent_proposal.",
-                    f"What should {field_path} be for this agent-proposal workflow?",
-                    {
-                        "value": value,
-                        "source_layer": source_layer,
-                        "preflight_before_workspace": True,
-                    },
-                )
-            )
-        replacement = adaptive.get("replacement")
-        if replacement is not None and not (
-            isinstance(replacement, dict) and set(replacement) == {"enabled"} and replacement.get("enabled") is False
-        ):
-            issues.append(
-                _contract_issue(
-                    "adaptive.replacement",
-                    "strategy=agent_proposal requires adaptive.replacement to be omitted or exactly {enabled: false}.",
-                    replacement,
-                    source_layer,
-                )
-            )
-    return issues
-
-
-def uses_agent_proposals(recipe: dict) -> bool:
-    adaptive_value = recipe.get("adaptive")
-    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
-    suggest_value = adaptive.get("suggest")
-    suggest = suggest_value if isinstance(suggest_value, dict) else {}
-    return (
-        adaptive.get("enabled") is True
-        and suggest.get("strategy", DEFAULT_ADAPTIVE_SUGGEST_STRATEGY) == "agent_proposal"
-    )
-
-
-def _agent_proposal_search_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
-    search_value = recipe.get("search")
-    search = search_value if isinstance(search_value, dict) else {}
-    parameters = search.get("parameters")
-    if not isinstance(parameters, dict) or not parameters:
-        return []
-    adaptive = recipe["adaptive"]
-    suggest_value = adaptive.get("suggest")
-    suggest = suggest_value if isinstance(suggest_value, dict) else {}
-    try:
-        envelopes = validate_parameter_envelopes(parameters, suggest.get("bounds"))
-    except ValueError as exc:
-        return [_contract_issue("adaptive.suggest.bounds", str(exc), suggest.get("bounds"), source_layer)]
-    if "configurations" not in search:
-        return []
-    try:
-        points = validate_configurations(search["configurations"], envelopes, location="search.configurations")
-    except ValueError as exc:
-        return [_contract_issue("search.configurations", str(exc), search["configurations"], source_layer)]
-    issues = []
-    for field, budget in (
-        ("search.max_runs", search.get("max_runs")),
-        ("adaptive.round_size", adaptive.get("round_size")),
-        ("adaptive.max_runs_total", adaptive.get("max_runs_total")),
-    ):
-        if type(budget) is int and len(points) > budget:
-            issues.append(
-                _contract_issue(
-                    "search.configurations",
-                    f"Initial configuration count {len(points)} exceeds {field} {budget}; points cannot be truncated.",
-                    search["configurations"],
-                    source_layer,
-                )
-            )
     return issues
 
 
@@ -430,32 +244,22 @@ def hparam_search_issues(recipe: dict, *, high_impact: dict[str, dict[str, Any]]
             )
         )
     configurations = search.get("configurations")
-    if "configurations" in search and "parameters" in search and not uses_agent_proposals(recipe):
+    if "configurations" in search and "parameters" in search:
         issues.append(
             DecisionIssue(
                 DecisionStatus.FAIL,
                 "hparam_search_space",
-                (
-                    "search.parameters and search.configurations are mutually exclusive outside "
-                    "enabled agent_proposal workflows."
-                ),
+                "search.parameters and search.configurations are mutually exclusive.",
                 None,
                 {"parameters": search.get("parameters"), "configurations": configurations},
             )
         )
     elif "configurations" in search:
         issues.extend(_hparam_search_configurations_issues(configurations))
-        if "parameters" in search:
-            if not search["parameters"]:
-                issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
-            else:
-                issues.extend(_hparam_search_parameter_issues(search["parameters"]))
     elif not search.get("parameters") and not profile_mode:
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
     elif "parameters" in search:
         issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
-    if uses_agent_proposals(recipe):
-        issues.extend(_agent_proposal_search_issues(recipe, source_layer="effective"))
     return issues
 
 
@@ -494,8 +298,6 @@ def _hparam_evaluation_issues(
     search = search_value if isinstance(search_value, dict) else {}
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
-    adaptive_value = recipe.get("adaptive")
-    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
     local_recipe_value = recipe.get("_local_recipe")
     local_recipe = local_recipe_value if isinstance(local_recipe_value, dict) else recipe
     local_evaluation_value = local_recipe.get("evaluation_policy")
@@ -536,7 +338,7 @@ def _hparam_evaluation_issues(
             search.get("method") == "grid"
             and type(max_runs) is int
             and max_runs > 0
-            and (not ("configurations" in search and "parameters" in search) or uses_agent_proposals(recipe))
+            and not ("configurations" in search and "parameters" in search)
             and (
                 isinstance(configurations, list)
                 and bool(configurations)
@@ -633,17 +435,6 @@ def _hparam_evaluation_issues(
                 {"evaluation_policy": evaluation},
             )
         )
-    objective_metric = str(adaptive.get("objective_metric") or "test_auroc")
-    if adaptive.get("enabled") is True and objective_metric.startswith("test_") and test_after_fit is False:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "test_after_fit",
-                "A test-metric adaptive objective requires test_after_fit=true so trials produce objective evidence.",
-                "Should test_after_fit be true for this adaptive test objective?",
-                {"objective_metric": objective_metric, "evaluation_policy": evaluation},
-            )
-        )
     if evaluation.get("final_eval_split") == "test" and "require_manual_unlock_for_final_test" not in evaluation:
         issues.append(
             needs_issue("final_eval_unlock", "Final test evaluation requires manual unlock policy.", high_impact)
@@ -664,8 +455,6 @@ def hparam_tune_issues(
     execution = execution_value if isinstance(execution_value, dict) else {}
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
-    adaptive_value = recipe.get("adaptive")
-    adaptive = adaptive_value if isinstance(adaptive_value, dict) else {}
     local_recipe_value = recipe.get("_local_recipe")
     local_recipe = local_recipe_value if isinstance(local_recipe_value, dict) else recipe
     local_runtime_value = local_recipe.get("runtime")
@@ -682,8 +471,6 @@ def hparam_tune_issues(
             variant=str(recipe.get("variant") or ""),
         )
     )
-    if not (profile_mode and adaptive.get("enabled") is True):
-        issues.extend(_hparam_adaptive_issues(adaptive))
     issues.extend(_hparam_search_budget_issues(search, profile_mode=profile_mode, high_impact=high_impact))
     issues.extend(_hparam_evaluation_issues(recipe, decisions, high_impact))
     return issues
@@ -906,106 +693,6 @@ def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionI
                 {"path_validation": execution.get("path_validation")},
             )
         )
-    return issues
-
-
-def _hparam_adaptive_issues(adaptive: dict[str, Any]) -> list[DecisionIssue]:
-    issues: list[DecisionIssue] = []
-    if not adaptive:
-        return issues
-    if "max_trials_total" in adaptive:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "adaptive.max_trials_total",
-                "adaptive.max_trials_total is no longer supported; use adaptive.max_runs_total.",
-                None,
-                {"max_trials_total": adaptive.get("max_trials_total")},
-            )
-        )
-    for field in ("enabled", "test_feedback_for_selection"):
-        if field in adaptive and type(adaptive[field]) is not bool:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    f"adaptive.{field}",
-                    f"adaptive.{field} must be a boolean.",
-                    None,
-                    {field: adaptive.get(field)},
-                )
-            )
-    replacement_value = adaptive.get("replacement")
-    replacement = replacement_value if isinstance(replacement_value, dict) else {}
-    for field in ("enabled", "allow_running_stop"):
-        if field in replacement and type(replacement[field]) is not bool:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    f"adaptive.replacement.{field}",
-                    f"adaptive.replacement.{field} must be a boolean.",
-                    None,
-                    {field: replacement.get(field)},
-                )
-            )
-    for field in ("grace_epochs", "grace_minutes", "kill_margin"):
-        value = replacement.get(field)
-        if field in replacement and (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            or value < 0
-        ):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    f"adaptive.replacement.{field}",
-                    f"adaptive.replacement.{field} must be a finite non-negative number.",
-                    None,
-                    {field: value},
-                )
-            )
-    if adaptive.get("enabled") is not True:
-        return issues
-    objective = str(adaptive.get("objective_metric") or "test_auroc")
-    if (objective.startswith("test_") or objective.startswith("external_")) and adaptive.get(
-        "test_feedback_for_selection"
-    ) is not True:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "adaptive.test_feedback_for_selection",
-                (
-                    "adaptive.test_feedback_for_selection=true is required when adaptive objective "
-                    "uses test/external metrics."
-                ),
-                None,
-                {"objective_metric": objective},
-            )
-        )
-    objective_mode = adaptive.get("objective_mode", "max")
-    if not isinstance(objective_mode, str) or objective_mode not in {"max", "min"}:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "adaptive.objective_mode",
-                "adaptive.objective_mode must be max or min.",
-                None,
-                {"objective_mode": adaptive.get("objective_mode")},
-            )
-        )
-    for adaptive_field in ("max_rounds", "max_runs_total", "round_size", "poll_seconds"):
-        if adaptive_field not in adaptive:
-            continue
-        if type(adaptive[adaptive_field]) is not int or adaptive[adaptive_field] <= 0:
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    f"adaptive.{adaptive_field}",
-                    f"adaptive.{adaptive_field} must be a positive integer.",
-                    None,
-                    {adaptive_field: adaptive.get(adaptive_field)},
-                )
-            )
     return issues
 
 

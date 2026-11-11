@@ -1,8 +1,7 @@
 """Launch, queue, monitor, and stop for a registered hyper-parameter plan's runs.
 
 Layer 0 leaf. Dispatches through ``managed_scheduler`` for capacity and process
-lifecycle, and reconciles launch artifacts so a launch interrupted between
-spawning a process and recording it is repaired rather than double-launched.
+lifecycle.
 """
 
 from __future__ import annotations
@@ -10,11 +9,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import dataclasses
 import functools
-import json
 import math
 from pathlib import Path
 import time
-from typing import Any
 
 from . import (
     execution_snapshot,
@@ -56,7 +53,7 @@ def read_hparam_plan_under_run_lock(run_dir: Path) -> plan_contract.HparamPlan:
     scripts replace run_manifest.tsv under the run lock, so the full read holds
     it. The caller must not already hold that lock: it is not reentrant.
     """
-    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False, require_adaptive_commit=False)
+    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False)
     workspace = experiment_root(plan["recipe"])
     assert workspace is not None  # read_hparam_plan rejects a plan without experiment.root.
     with experiment_workspace.managed_run_lock(workspace):
@@ -96,7 +93,7 @@ def launch_hparam_runs(
         run_dir = run_dir.resolve()
     # Only the frozen workspace binding is needed to lock; a concurrent lock holder may replace run_manifest.tsv
     # and events.jsonl, so _launch_hparam_runs repeats the full workspace-state validation under the lock.
-    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False, require_adaptive_commit=False)
+    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
@@ -140,7 +137,7 @@ def run_hparam_queue(
 
     # Only the frozen workspace binding is needed to lock; launched run scripts and concurrent monitors replace
     # run_manifest.tsv under the run lock, so every workspace-state read below holds it.
-    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False, require_adaptive_commit=False)
+    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     workspace = experiment_root(recipe)
@@ -206,68 +203,6 @@ def run_hparam_queue(
             step_id, run_id = missing_pid[0]
             raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
         time.sleep(poll_seconds)
-
-
-def reconcile_hparam_launch_artifacts(plan_dir: str | Path, started_keys: set[tuple[str, str]]) -> list[dict[str, Any]]:
-    run_dir = Path(plan_dir).expanduser()
-    if not run_dir.is_absolute():
-        run_dir = run_dir.resolve()
-    # Only the frozen workspace binding is needed to lock; processes started by the interrupted launch replace
-    # run_manifest.tsv under the run lock, so the workspace-state reads below hold it.
-    plan = artifacts.read_hparam_plan(run_dir, require_workspace_state=False, require_adaptive_commit=False)
-    recipe_value = plan.get("recipe")
-    recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    workspace = experiment_root(recipe)
-    if workspace is None:
-        raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    exp_io.validate_managed_output_paths(
-        workspace,
-        [
-            workspace / "events.jsonl",
-            workspace / "reports" / "status.md",
-            run_dir / "launch_manifest.tsv",
-            run_dir / "run_status.tsv",
-            run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME,
-        ],
-    )
-    with experiment_workspace.managed_run_lock(workspace):
-        plan = artifacts.read_hparam_plan(run_dir)
-        canonical_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
-    expected_keys = {validated_run_key(run) for run in plan["runs"]}
-    if not started_keys.issubset(expected_keys):
-        raise ValueError("Interrupted launch evidence is outside the current hparam plan.")
-    rows = [canonical_by_key[validated_run_key(run)] for run in plan["runs"]]
-    write_rows(run_dir / "launch_manifest.tsv", rows)
-    write_rows(run_dir / "run_status.tsv", rows)
-    events_path = workspace / "events.jsonl"
-
-    def launched_event_keys() -> set[tuple[str, str]]:
-        if not events_path.exists():
-            return set()
-        keys = set()
-        for line in events_path.read_text().splitlines():
-            event = json.loads(line)
-            if event.get("event_type") == "run_launched":
-                keys.add((str(event.get("step_id") or ""), str(event.get("run_id") or "")))
-        return keys
-
-    launched_events = launched_event_keys()
-    for key in sorted(started_keys - launched_events):
-        event = {"step_id": key[0], "run_id": key[1], "gpus": canonical_by_key[key].get("gpus", "")}
-        if scheduler_type(canonical_by_key[key]) == "slurm":
-            event["scheduler_job_id"] = canonical_by_key[key]["scheduler_job_id"]
-        try:
-            append_event(
-                workspace,
-                "run_launched",
-                event,
-            )
-        except Exception:
-            if key not in launched_event_keys():
-                raise
-    with experiment_workspace.managed_run_lock(workspace):
-        write_status_report(workspace)
-    return rows
 
 
 def _launch_hparam_runs(
@@ -390,7 +325,7 @@ def monitor_hparam_runs(
     root = Path(run_dir)
     # Only the frozen workspace binding is needed to lock; launches, stops and launched run scripts replace
     # run_manifest.tsv under the run lock, so the workspace-state reads below hold it while observation does not.
-    plan = artifacts.read_hparam_plan(root, require_workspace_state=False, require_adaptive_commit=False)
+    plan = artifacts.read_hparam_plan(root, require_workspace_state=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     status_path = root / "run_status.tsv"
@@ -497,7 +432,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     root = Path(run_dir)
     # Only the frozen workspace binding is needed to lock; a concurrent lock holder may replace run_manifest.tsv
     # and events.jsonl, so the full workspace-state validation runs under the lock.
-    plan = artifacts.read_hparam_plan(root, require_workspace_state=False, require_adaptive_commit=False)
+    plan = artifacts.read_hparam_plan(root, require_workspace_state=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
     manifest_path = root / "launch_manifest.tsv"

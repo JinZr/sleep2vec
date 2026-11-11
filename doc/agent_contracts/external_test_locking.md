@@ -41,9 +41,6 @@ remain separately owned.
 Direct `finetune` plans cannot use `selection_split=test` because they do not
 own all-checkpoint test ranking. Represent a fixed configuration as
 `task=hparam_tune` with one configuration and `max_runs: 1`.
-Adaptive test/external feedback also needs the explicit authorization in
-[adaptive strategy](hparam_workflow.md#strategy-and-budget); tuning access alone
-does not select an adaptive protocol.
 
 ## Final external-test boundary
 

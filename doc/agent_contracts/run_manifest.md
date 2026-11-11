@@ -4,8 +4,8 @@
 
 This contract owns identity, state reduction, evidence, and atomic commits.
 Command choice, status advice, and finalization belong to
-[the workspace contract](experiment_workspace.md); hparam selection and adaptive
-protocols belong to [the hparam workflow contract](hparam_workflow.md).
+[the workspace contract](experiment_workspace.md); hparam selection belongs to
+[the hparam workflow contract](hparam_workflow.md).
 
 ## Contents
 
@@ -105,14 +105,12 @@ observed evidence, and none of them restores run status.
 | File | Location | Written by | Lifecycle role |
 | --- | --- | --- | --- |
 | `run_manifest.tsv` | `<experiment.root>/` | Canonical [atomic commit](#atomic-commit) from plan registration, launch, monitor and stop | Only mutable lifecycle and execution-identity owner; one row per run |
-| `launch_manifest.tsv`, `run_status.tsv` | Plan directory; adaptive `adaptive/rounds/round_NNN/` | Rewritten from the rows of each successful canonical commit | Projections; never read to restore state |
-| `run_registry.tsv` | `<workflow>/adaptive/` | `hparam-adaptive-init` (round 000), then each registered proposal round | Append-only registration record of adaptive runs and their rounds; one row per run |
-| `incumbents.tsv` | `<workflow>/adaptive/` | `hparam-digest` and `hparam-adaptive-step`, once per digested round | Derived history of each round's best successful run; feeds the optional replacement margin only |
+| `launch_manifest.tsv`, `run_status.tsv` | Plan directory | Rewritten from the rows of each successful canonical commit | Projections; never read to restore state |
 | `metrics_manifest.tsv`, `wandb/runs.tsv` | `<experiment.root>/` | `experiment-wandb-sync` | Observed W&B evidence; metrics are many rows per run |
 | `checkpoint_manifest.tsv` | `<experiment.root>/` | `experiment-index-checkpoints` | Observed checkpoint evidence; many rows per run; read by `experiment-rank` |
 | `experiment_manifest.tsv` | `<experiment.root>/` | `experiment-init`; `experiment-wandb-sync` fills W&B fields | Optional one-row index that must match `experiment.yaml` |
 | `external_eval_manifest.tsv`, `logits_export_manifest.tsv` | `--run-dir` of the command | `hparam-external-eval`, `hparam-export-logits` | Generated alongside the evaluation or export script; not run state |
-| `trial_status.tsv`, `adaptive/trial_registry.tsv` | Historical trees | None | Removed formats; managed commands refuse a tree that contains them |
+| `trial_status.tsv` | Historical trees | None | Removed format; managed commands refuse a tree that contains it |
 
 ## Runtime artifact evidence
 
@@ -190,7 +188,7 @@ Mutation-facing evidence must first resolve to a canonical managed row. Any supp
 
 - W&B evidence with an experiment id must match the workspace. Evidence without it may match only one unique runtime version.
 - Distinct W&B run ids resolving to the same managed run are ambiguous and fail before canonical state or managed metrics are written.
-- Workspace metrics, checkpoints, rankings, adaptive registries, and candidate tables prove scope through the validated workspace plus managed key.
+- Workspace metrics, checkpoints, rankings, and candidate tables prove scope through the validated workspace plus managed key.
 - Candidate and ranking tables are completely validated before other-step or earlier-plan rows are filtered.
 - Checkpoint evidence must exist as an independent regular direct child of the matched frozen checkpoint directory, revalidated on the run's execution host before indexing or ranking.
 - Launch/status projections never contribute evidence.
@@ -458,8 +456,5 @@ Every hparam mutation first validates workspace ownership, step registration, fr
 
 Selected-candidate consumers obey the canonical ownership checks here and the
 [selection/postprocessing contract](hparam_workflow.md#selection-and-selected-candidate-consumers).
-
-Adaptive lifecycle entrypoints also require the independent workflow readiness
-marker and ordered evidence in [initialization readiness](hparam_workflow.md#initialization-readiness).
 
 `collect-runs` requires a valid canonical table, distinguishes a header-only current table from missing/corrupt input, and cannot write to or alias the canonical manifest. Optional non-managed summaries may remain best-effort evidence.

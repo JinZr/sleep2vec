@@ -1,4 +1,4 @@
-"""The ``agent_tools`` command-line surface: 40 subcommands over the kernel.
+"""The ``agent_tools`` command-line surface: 34 subcommands over the kernel.
 
 Mixed bridge -- it forwards the domain commands (``config-summary``,
 ``index-summary``, ``preset-summary``, and the four hparam post-processing
@@ -26,14 +26,6 @@ from typing import Any
 
 import yaml
 
-from .adaptive_hparam import (
-    AdaptivePreflightError,
-    adaptive_loop,
-    adaptive_step,
-    digest_hparam_run,
-    init_adaptive_workflow,
-    suggest_next_round,
-)
 from .configs import config_summary
 from .domain.index_csv import index_summary
 from .domain.presets import preset_summary
@@ -156,7 +148,6 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_launch_commands(sub)
     _add_experiment_commands(sub)
     _add_selection_commands(sub)
-    _add_adaptive_commands(sub)
     return parser
 
 
@@ -629,60 +620,6 @@ def _add_selection_commands(sub: argparse._SubParsersAction) -> None:
     checkpoint_scan.add_argument("--top-k", type=int, help="Number of top-ranked checkpoints to report.")
     checkpoint_scan.set_defaults(func=_cmd_hparam_checkpoint_scan)
 
-    digest = _command(sub, "hparam-digest", "Publish a digest of a completed hyper-parameter round.")
-    digest.add_argument("--run-dir", required=True, help="Run directory holding the completed round.")
-    digest.set_defaults(func=_cmd_hparam_digest)
-
-
-def _add_adaptive_commands(sub: argparse._SubParsersAction) -> None:
-    """Register the adaptive hyper-parameter search commands."""
-    suggest = _command(
-        sub,
-        "hparam-suggest",
-        "Suggest a round for explicit best_neighborhood workflows. Does not launch or drive agent_proposal.",
-    )
-    suggest.add_argument("--workflow-dir", required=True, help="Adaptive workflow root holding the round digests.")
-    suggest.set_defaults(func=_cmd_hparam_suggest)
-
-    adaptive_init = _command(
-        sub,
-        "hparam-adaptive-init",
-        "Initialize an adaptive workflow without launching; agent_proposal is the default tuning strategy.",
-    )
-    adaptive_init.add_argument("--recipe", required=True, help="Path to the adaptive hparam recipe YAML.")
-    adaptive_init.add_argument("--output-dir", required=True, help="Directory to create the workflow root in.")
-    adaptive_init.set_defaults(func=_cmd_hparam_adaptive_init)
-
-    adaptive_step_cmd = _command(
-        sub,
-        "hparam-adaptive-step",
-        "Issue complete-history agent inputs or preview a proposal. Launches a round only with --execute.",
-    )
-    adaptive_step_cmd.add_argument("--workflow-dir", required=True, help="Adaptive workflow root to advance.")
-    adaptive_step_cmd.add_argument(
-        "--proposal",
-        help="Issued-path proposal JSON to preview; omit to request agent inputs after terminal results.",
-    )
-    adaptive_step_cmd.add_argument(
-        "--execute",
-        action="store_true",
-        help="Register and launch the round; an exact committed proposal may be retried safely.",
-    )
-    adaptive_step_cmd.set_defaults(func=_cmd_hparam_adaptive_step)
-
-    adaptive_loop_cmd = _command(
-        sub,
-        "hparam-adaptive-loop",
-        "Loop an explicit best_neighborhood workflow; agent_proposal is unsupported. Dry run unless --execute.",
-    )
-    adaptive_loop_cmd.add_argument("--workflow-dir", required=True, help="Adaptive workflow root to advance.")
-    adaptive_loop_cmd.add_argument(
-        "--execute",
-        action="store_true",
-        help="Register and launch each round; enables state changes.",
-    )
-    adaptive_loop_cmd.set_defaults(func=_cmd_hparam_adaptive_loop)
-
 
 def _emit(payload: Any, *, as_json: bool) -> None:
     if as_json:
@@ -1067,45 +1004,6 @@ def _cmd_hparam_ensemble(args: argparse.Namespace) -> int:
 def _cmd_hparam_checkpoint_scan(args: argparse.Namespace) -> int:
     ranking = scan_hparam_checkpoints(args.run_dir, args.metric, args.mode, top_k=args.top_k)
     print(f"Wrote {ranking}")
-    return 0
-
-
-def _cmd_hparam_digest(args: argparse.Namespace) -> int:
-    digest = digest_hparam_run(args.run_dir)
-    print(f"Wrote {digest}")
-    return 0
-
-
-def _cmd_hparam_suggest(args: argparse.Namespace) -> int:
-    suggestion = suggest_next_round(args.workflow_dir)
-    print(f"Wrote {suggestion}")
-    return 0
-
-
-def _cmd_hparam_adaptive_init(args: argparse.Namespace) -> int:
-    try:
-        root = init_adaptive_workflow(args.recipe, args.output_dir)
-    except AdaptivePreflightError as exc:
-        print(report_text(exc.report))
-        return exc.report.exit_code
-    print(f"Wrote {root}")
-    return 0
-
-
-def _cmd_hparam_adaptive_step(args: argparse.Namespace) -> int:
-    result = adaptive_step(args.workflow_dir, proposal_path=args.proposal, execute=args.execute)
-    if result is None:
-        print("waiting_for_round_terminal")
-    elif args.proposal and not args.execute:
-        print(f"Validated {result}")
-    else:
-        print(f"Wrote {result}")
-    return 0
-
-
-def _cmd_hparam_adaptive_loop(args: argparse.Namespace) -> int:
-    result = adaptive_loop(args.workflow_dir, execute=args.execute)
-    print(f"Wrote {result}")
     return 0
 
 

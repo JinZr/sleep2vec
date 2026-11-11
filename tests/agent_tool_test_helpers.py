@@ -356,7 +356,7 @@ def write_finetune_recipe(tmp_path: Path, *, include_label: bool = True, variant
 
 
 def hparam_search_defaults() -> dict[str, int]:
-    """The consultation policy's default hparam search size, keyed by its adaptive recipe fields."""
+    """The consultation policy's default hparam search size, keyed by its policy field names."""
     from agent_tools.recipes import load_consultation_policy
 
     return {key: entry["value"] for key, entry in load_consultation_policy()["hparam_search_defaults"].items()}

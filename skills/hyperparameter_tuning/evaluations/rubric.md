@@ -21,8 +21,8 @@ score. A different defensible allocation can be equally good.
 | Evidence sensitivity | The rising and declining cases have the same best score, best checkpoint and configured horizon. Does the explanation respond to the different logged trajectories? Longer training is an unresolved possibility in the first; the second supplies evidence of deterioration after the best observed point. Candidates may overlap if the tradeoff is explained. |
 | Honest uncertainty | Does missing history remain missing? Does the agent avoid turning `_step=900` into trainer steps, a final logged point into the actual training endpoint, or an empty stop reason into early stopping? LR extrema do not establish schedule order. |
 | Learning across rounds | Does the agent retain `run-000` in the historical-incumbent case and revise the prior higher-LR/longer-horizon explanations? A latest-round winner is not the workflow winner. |
-| Joint effects and boundaries | In the small-gain case, does the agent keep the LR/dropout explanation joint, avoid claiming significance without repeats, and stay within the frozen bounds? It may propose a separating comparison or another justified allocation. |
-| Useful next decision | Are complete candidate points within the domain and remaining budget, linked to cited evidence and a meaningful possible revision? It must not invent an unfrozen seed axis. Repeats require a stated question and a permitted form; repeating the same seed alone does not estimate independent-seed variability. |
+| Joint effects and boundaries | In the small-gain case, does the agent keep the LR/dropout explanation joint, avoid claiming significance without repeats, and stay within the authorized ranges? It may propose a separating comparison or another justified allocation. |
+| Useful next decision | Are complete candidate points within the authorized ranges and remaining budget, linked to cited evidence and a meaningful possible revision? It must not invent an unfrozen seed axis. Repeats require a stated question and a permitted form; repeating the same seed alone does not estimate independent-seed variability. |
 
 Report disagreements and unchanged behavior as well as improvements. A handful
 of synthetic cases can expose a reasoning failure or show that a workflow is
@@ -31,6 +31,6 @@ significance, or general superiority of one skill revision. If both versions
 already reason well, say so. Code CI checks evidence transport and invariants;
 these case reviews assess the resulting explanations and decisions separately.
 
-For the separate decision of choosing a new domain before initialization, use
+For the separate decision of choosing a new search before the first plan, use
 the [UKB initialization case and review](initialization/review.md). Its
 evidence cut withholds the original search choices and all subsequent outcomes.

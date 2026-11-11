@@ -1427,7 +1427,11 @@ def test_read_run_manifest_rejects_aliased_canonical_table(tmp_path: Path, alias
 
 @pytest.mark.parametrize(
     ("phase", "controller", "match"),
-    [("invalid", "unassigned", "step.phase"), ("train", "pipeline", "invalid plan_controller: pipeline")],
+    [
+        ("invalid", "unassigned", "step.phase"),
+        ("train", "pipeline", "invalid plan_controller: pipeline"),
+        ("train", "adaptive", "invalid plan_controller: adaptive"),
+    ],
 )
 def test_read_step_manifest_rejects_invalid_phase_or_controller(
     tmp_path: Path, phase: str, controller: str, match: str
@@ -3089,8 +3093,7 @@ def test_step_manifest_merge_rejects_metadata_drift():
         merge_step_manifest(existing, {"step": {"phase": "analyze"}})
 
 
-@pytest.mark.parametrize("controller", ["ordinary", "adaptive"])
-def test_step_manifest_plan_controller_binds_once(controller: str):
+def test_step_manifest_plan_controller_binds_once():
     existing = {
         "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
         "experiment_id": "experiment",
@@ -3101,18 +3104,16 @@ def test_step_manifest_plan_controller_binds_once(controller: str):
     incoming = {
         "step": existing["step"],
         "experiment_id": "experiment",
-        "plan_controller": controller,
+        "plan_controller": "ordinary",
         "recipe_path": "/workspace/recipe.yaml",
         "plans": ["/workspace/plan"],
     }
 
     bound = merge_step_manifest(existing, incoming)
 
-    assert bound["plan_controller"] == controller
-    conflicting = ({"ordinary", "adaptive"} - {controller}).pop()
-    for replacement in ("unassigned", conflicting):
-        with pytest.raises(ValueError, match="plan_controller differs"):
-            merge_step_manifest(bound, {**incoming, "plan_controller": replacement})
+    assert bound["plan_controller"] == "ordinary"
+    with pytest.raises(ValueError, match="plan_controller differs"):
+        merge_step_manifest(bound, {**incoming, "plan_controller": "unassigned"})
 
 
 @pytest.mark.parametrize("field", ["recipe_path", "plans"])
