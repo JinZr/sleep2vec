@@ -259,11 +259,8 @@ class HparamTuneAdapter(TaskAdapter):
             not isinstance(payload.get(field), str) or not payload[field] for field in fields
         ):
             return "Doctor runtime unavailable: incomplete diagnostic output"
-        target = str(execution.get("target") or "local")
-        if execution.get("host"):
-            target += f":{execution['host']}"
         return (
-            f"Doctor runtime: transport={target}, host={payload['host']}, python={payload['python']}, "
+            f"Doctor runtime: host={payload['host']}, python={payload['python']}, "
             f"python_version={payload['python_version']}, "
             f"pytorch-lightning={payload['pytorch_lightning_version']}"
         )

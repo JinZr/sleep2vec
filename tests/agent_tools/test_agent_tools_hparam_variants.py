@@ -35,8 +35,6 @@ _SIGNAL_CHANNELS = (
 
 def _snapshot(module: str) -> dict:
     return {
-        "target": "local",
-        "host": "",
         "python": "/target/python",
         "python_version": "3.10.0",
         "python_command": "python",
@@ -231,7 +229,6 @@ def test_hparam_preflight_card_uses_variant_config_provenance(
         )
 
     assert "- Scheduler: `direct`" in card
-    assert "- Control transport: `local`" in card
     assert "- Target CLI preflight host: `runtime-host`" in card
     assert "- Target CLI Python: `/target/python` (version `3.10.0`; frozen command: `python`)" in card
     assert f"| {variant} | {module} | {loader} | {architecture} | {channels} | run-000 |" in card

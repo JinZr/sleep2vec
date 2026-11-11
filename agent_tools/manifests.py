@@ -8,8 +8,8 @@ supplied text verbatim, so callers own its newline behavior. The
 ``read_rows(require_managed_identity=True)``. ``experiment_workspace`` separately
 enforces those fields when parsing run manifests and validating mapping rows.
 
-Local filesystem only. Reads and writes that must honour locking, remote hosts,
-or managed path validation belong to ``experiment_io``.
+Reads and writes that must honour locking or managed path validation belong
+to ``experiment_io``.
 """
 
 from __future__ import annotations

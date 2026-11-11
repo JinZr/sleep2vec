@@ -344,9 +344,9 @@ def test_plan_identity_read_is_optional_and_manifest_only(tmp_path, monkeypatch,
     read = plans.exp_io.read_managed_output_texts_at
     calls = []
 
-    def counted(root, paths, *, remote=None):
-        calls.append((root, paths, remote))
-        return read(root, paths, remote=remote)
+    def counted(root, paths):
+        calls.append((root, paths))
+        return read(root, paths)
 
     monkeypatch.setattr(plans.exp_io, "read_managed_output_texts_at", counted)
 
@@ -354,7 +354,7 @@ def test_plan_identity_read_is_optional_and_manifest_only(tmp_path, monkeypatch,
 
     assert report.exit_code == 0
     assert cfg is not None
-    assert calls == [(root, [root / "experiment.yaml"], None)]
+    assert calls == [(root, [root / "experiment.yaml"])]
     assert csv_reads == {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
@@ -643,8 +643,8 @@ def test_final_workspace_check_rejects_identity_changed_after_early_read(
     reads = []
     ensure_calls = []
 
-    def changed_after_read(root, paths, *, remote=None):
-        result = read(root, paths, remote=remote)
+    def changed_after_read(root, paths):
+        result = read(root, paths)
         assert paths == [manifest_path]
         reads.append(result[str(manifest_path)])
         write_yaml(manifest_path, changed_manifest)
@@ -774,14 +774,8 @@ def test_doctor_preserves_decision_output_and_blocked_probe_boundary(
     base = yaml.safe_load(base_path.read_text())
     if state == "warn":
         payload = yaml.safe_load(recipe_path.read_text())
-        payload["execution"] = {
-            "target": "ssh",
-            "host": "test-runtime",
-            "path_validation": "defer",
-            "python": "/test/python",
-            "runtime_commit": "a" * 40,
-            "workdir": "/test/runtime",
-        }
+        # Explicit GPU oversubscription is a non-blocking warning.
+        payload["execution"] = {"gpu_pool": [0], "gpus_per_run": 1, "max_concurrent": 2}
         write_yaml(recipe_path, payload)
     elif state == "needs":
         base["inputs"].pop("label_name")
@@ -952,7 +946,7 @@ def test_reuse_keeps_runtime_relative_paths_and_requested_splits(tmp_path, csv_r
             config["finetune"][kind][field] = Path(value).name
     write_yaml(config_path, config)
     recipe = yaml.safe_load(recipe_path.read_text())
-    recipe["execution"] = {"target": "local", "workdir": str(tmp_path)}
+    recipe["execution"] = {"workdir": str(tmp_path)}
     write_yaml(recipe_path, recipe)
     index = tmp_path / "index.csv"
     index.write_text(index.read_text() + "z.npz,test,60,unloaded-test-key,1,55,0\n")

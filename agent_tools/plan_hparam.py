@@ -19,7 +19,6 @@ from itertools import product
 import json
 from pathlib import Path
 import re
-import subprocess
 import sys
 from tempfile import NamedTemporaryFile
 from typing import Any, Sequence, TypedDict, overload
@@ -34,15 +33,12 @@ from . import (
     plan_rendering as rendering,
     python_programs,
     slurm,
-    transport,
 )
 from .decision_models import DecisionIssue, DecisionStatus
 from .decision_paths import (
     inference_checkpoint_averaging_issue,
     multilabel_sidecar_issue,
-    path_context,
     path_issues,
-    path_validation,
     survival_sidecar_issue,
     validate_input_path,
 )
@@ -163,8 +159,8 @@ def final_test_checkpoint_issues(
             if config_issue.status == DecisionStatus.FAIL:
                 return issues
         try:
-            config_bytes = _read_final_eval_config_bytes(recipe, final_config)
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            config_bytes = _read_final_eval_config_bytes(final_config)
+        except (OSError, ValueError) as exc:
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
@@ -281,31 +277,7 @@ def validate_hparam_run_configs(recipe: dict, run_configs: list[tuple[dict[str, 
         validated_configs.add(config_bytes)
 
 
-def _read_final_eval_config_bytes(recipe: dict, config_path: Any) -> bytes:
-    context = path_context(recipe, config_path)
-    validation = path_validation(recipe, context)
-    if context == "remote":
-        if validation == "remote":
-            validation = "ssh"
-        if validation != "ssh":
-            raise ValueError(
-                "remote final_eval_config_path requires execution.path_validation=ssh; "
-                f"{validation} cannot capture exact bytes"
-            )
-        execution_value = recipe.get("execution")
-        execution = execution_value if isinstance(execution_value, dict) else {}
-        host = execution.get("host")
-        if not host:
-            raise ValueError("execution.host is required to freeze a remote final_eval_config_path")
-        result = transport.run_ssh(str(host), f"cat -- {transport.sh(config_path)}", text=False)
-        if result.returncode != 0:
-            stderr = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else str(result.stderr)
-            raise ValueError(f"remote config read failed on {host}: {stderr.strip() or 'unknown SSH error'}")
-        if not isinstance(result.stdout, bytes):
-            raise ValueError("remote config read did not return exact bytes")
-        return result.stdout
-    if context != "local":
-        raise ValueError(f"unsupported final_eval_config_path context: {context}")
+def _read_final_eval_config_bytes(config_path: Any) -> bytes:
     resolved = resolve_repo_path(config_path)
     if resolved is None or not resolved.is_file():
         raise ValueError(f"config is not a readable local file: {config_path}")
@@ -314,8 +286,8 @@ def _read_final_eval_config_bytes(recipe: dict, config_path: Any) -> bytes:
 
 def _final_eval_config_drift_issue(recipe: dict, snapshot: BoundFinalEvalConfigSnapshot) -> DecisionIssue | None:
     try:
-        current_bytes = _read_final_eval_config_bytes(recipe, snapshot["source_path"])
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        current_bytes = _read_final_eval_config_bytes(snapshot["source_path"])
+    except (OSError, ValueError) as exc:
         return DecisionIssue(
             DecisionStatus.FAIL,
             "final_eval_config_path",
@@ -856,10 +828,9 @@ def freeze_hparam_execution(recipe: dict[str, JsonValue]) -> dict[str, JsonValue
     recipe = copy.deepcopy(recipe)
     execution_value = recipe.get("execution")
     execution = dict(execution_value) if isinstance(execution_value, dict) else {}
-    manager_runtime = (
-        str(execution.get("target", "local") or "local") == "local"
-        and execution.get("workdir") in (None, "", str(REPO_ROOT))
-        and execution.get("conda_env") in (None, "")
+    manager_runtime = execution.get("workdir") in (None, "", str(REPO_ROOT)) and execution.get("conda_env") in (
+        None,
+        "",
     )
     if execution.get("python") in (None, "", "ASK_USER"):
         if not manager_runtime:
@@ -1185,9 +1156,6 @@ def render_hparam_preflight_card(
         route = (variant, str(snapshot["module"]), loader, architecture_text, channel_signature)
         routes.setdefault(route, []).append(str(run["run_id"]))
 
-    target = str(snapshot["target"])
-    if snapshot.get("host"):
-        target += f":{snapshot['host']}"
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
     scheduler_value = execution.get("scheduler")
@@ -1217,7 +1185,6 @@ def render_hparam_preflight_card(
         "## Hparam Registration Preflight Provenance",
         "",
         *topology_lines,
-        f"- Control transport: `{target}`",
         f"- Target CLI preflight host: `{snapshot['runtime_hostname']}`",
         f"- Target CLI Python: `{snapshot['python']}` (version `{snapshot['python_version']}`; "
         f"frozen command: `{snapshot['python_command']}`)",
@@ -1264,10 +1231,7 @@ def validate_hparam_output_paths(
     paths.append(
         plan_output_path(plan_dir, declared_artifacts.get("results_csv_path"), "results/agent_hparam_results.csv")
     )
-    execution_value = recipe.get("execution")
-    execution = execution_value if isinstance(execution_value, dict) else {}
-    remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
-    exp_io.validate_managed_output_paths(Path("/"), paths, remote=remote)
+    exp_io.validate_managed_output_paths(Path("/"), paths)
 
 
 def hparam_manifest_rows(plan: Mapping[str, Any]) -> list[dict[str, Any]]:

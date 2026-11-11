@@ -72,7 +72,7 @@ def launch_hparam_runs(
     Validates frozen inputs and serializes the pass with the workspace run lock.
     dry_run=True previews scheduling without starting processes or submitting
     jobs, but still writes launch/status projections and may merge manifest
-    rows; it is not a read-only operation. Execution can observe local/remote
+    rows; it is not a read-only operation. Execution can observe local
     runs, launch eligible work within capacity and record lifecycle evidence.
 
     fail_on_missing_pid_blocker makes an unresolved process-identity blocker an
@@ -180,18 +180,6 @@ def run_hparam_queue(
         if missing_pid:
             step_id, run_id = missing_pid[0]
             raise RuntimeError(f"Hparam queue cannot advance because {step_id} / {run_id} has status missing_pid.")
-        unbound_unknown_remote = sorted(
-            key
-            for key in expected_keys
-            if rows_by_key[key].get("status") == "unknown_remote"
-            and any(rows_by_key[key].get(field) in (None, "") for field in PROCESS_IDENTITY_FIELDS)
-        )
-        if unbound_unknown_remote:
-            step_id, run_id = unbound_unknown_remote[0]
-            raise RuntimeError(
-                f"Hparam queue cannot advance because {step_id} / {run_id} has status "
-                "unknown_remote without complete process identity; launch outcome is uncertain."
-            )
 
         launch_hparam_runs(run_dir, dry_run=False, fail_on_missing_pid_blocker=True)
         with experiment_workspace.managed_run_lock(workspace):
@@ -311,7 +299,7 @@ def monitor_hparam_runs(
 ) -> Path:
     """Observe a registered hparam plan, commit status updates and return run_status.tsv.
 
-    Reads local/remote execution evidence and merges observations into the
+    Reads local execution evidence and merges observations into the
     canonical run manifest, refreshing projections/reports and recording status
     transitions. Never starts pending runs. health requests additional health
     evidence from the observers.
@@ -364,9 +352,7 @@ def monitor_hparam_runs(
                 rows.append(prior)
                 continue
             if scheduler_type(prior) == "slurm":
-                execution: dict[str, JsonValue] = {"target": prior["target"]}
-                if prior["target"] == "ssh":
-                    execution["host"] = prior["host"]
+                execution: dict[str, JsonValue] = {}
                 if scheduler_direct_controller(prior):
                     execution["scheduler"] = {"direct_controller": True}
                 rows.append(
@@ -509,12 +495,8 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                         f"{', '.join(sorted(missing_execution_identity))}"
                     )
 
-                target = previous.get("target")
-                host = previous.get("host")
-                if target not in {"local", "ssh"}:
-                    raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
-                if target == "ssh" and (not isinstance(host, str) or not host.strip()):
-                    raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
+                if previous.get("target") != "local":
+                    raise ValueError(f"Canonical run target must be local for run_id: {run_id}")
                 populated_process_fields = {
                     field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")
                 }
@@ -523,12 +505,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                     raise ValueError(
                         f"Canonical run has partial process identity for {run_id}; missing: {missing_process_fields}"
                     )
-                remote_host = str(host) if target == "ssh" else None
-                exp_io.validate_managed_output_paths(
-                    workspace,
-                    [previous["pid_path"]],
-                    remote=remote_host,
-                )
+                exp_io.validate_managed_output_paths(workspace, [previous["pid_path"]])
                 if populated_process_fields:
                     process_identity = evidence.read_process_identity(previous.get("pid_path"), previous)
                 else:

@@ -59,19 +59,14 @@ class PresetPrepareAdapter(TaskAdapter):
         execution = execution_value if isinstance(execution_value, dict) else {}
         # Bind only new effective recipes, never registered-plan reconstruction.
         if not {"python", "runtime_commit"}.intersection(execution):
-            manager_runtime = (
-                execution.get("target") in (None, "", "local")
-                and execution.get("workdir") in (None, "", str(REPO_ROOT))
-                and execution.get("path_context") != "remote"
-            )
-            if not manager_runtime:
+            if execution.get("workdir") not in (None, "", str(REPO_ROOT)):
                 issues.append(
                     DecisionIssue(
                         DecisionStatus.FAIL,
                         "execution",
                         "Preset runtime identity cannot be inferred for this execution context. Provide "
                         "execution.python, execution.runtime_commit, and execution.workdir together for the "
-                        "intended local runtime. This plan is not an SSH launcher; plan on the execution host.",
+                        "intended local runtime.",
                         None,
                         {"execution": execution, "preflight_before_workspace": True},
                     )

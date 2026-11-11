@@ -56,30 +56,21 @@ merged through their reducers. Missing files may be created only by their
 designated first producer; blank, malformed, incomplete, or conflicting
 metadata is never repaired by overwriting it.
 
-`events.jsonl` is modified only through the canonical managed append owner. All
-supported local and SSH writers execute on the workspace-owning host and share
-the descriptor-anchored `.events.jsonl.cas.lock`; under that lock, the final
+`events.jsonl` is modified only through the canonical managed append owner.
+`agent_tools` runs on the workspace-owning host; every writer shares the
+descriptor-anchored `.events.jsonl.cas.lock`; under that lock, the final
 public root, parent, and prior-content check binds the namespace for the
 immediately following atomic rename. Raw shell appends and concurrent lockless
-workspace renames or alias changes are unsupported. An SSH transport failure
-has an unknown commit outcome and must not be blindly retried.
-
-Managed SSH I/O also requires a complete operation result, not just a zero
-transport exit code: some endpoints hide failed child exit codes. Missing or
-malformed write results leave the commit outcome uncertain and do not authorize
-another write. A positively reported compare-and-swap conflict retains the
-existing bounded fresh-read retry; it is not a transport-failure retry.
+workspace renames or alias changes are unsupported.
 
 `experiment_manifest.tsv` is optional for plan-created workspaces. When present, it contains exactly one row whose experiment id and root match `experiment.yaml`.
 
-Local recipe roots are based at the repository root; local experiment CLI roots
-are based at the caller's current working directory. Both are expanded and
-resolved once. Local repository-owned management locators are persisted as
+Recipe roots are based at the repository root; experiment CLI roots are based
+at the caller's current working directory. Both are expanded and
+resolved once. Repository-owned management locators are persisted as
 absolute paths, including recipe, plan, run, config, script, artifact, report,
-runtime/checkpoint, and event paths.
-
-SSH roots and locators remain exact remote strings. User-authored semantic data
-and checkpoint paths are not normalized by this management rule.
+runtime/checkpoint, and event paths. User-authored semantic data and checkpoint
+paths are not normalized by this management rule.
 
 A new plan must be contained by its experiment root and registered in its step manifest. A non-empty unmanaged root is rejected rather than adopted, and a completed experiment cannot accept another plan. Historical workspaces are not migrated or renamed.
 
@@ -162,7 +153,7 @@ manual wrappers remain historical and are not repaired or adopted by this flow.
 
 | Identity | Meaning |
 | --- | --- |
-| Manager/controller host and Python | Where planning or a control command executes; status advice names its `control_host`. Planner-local final-config validation describes this runtime. |
+| Manager/controller host and Python | Where planning or a control command executes: the host that owns the workspace. Planner-local final-config validation describes this runtime. |
 | Frozen execution host/workdir/Python and planned commit | Target route whose owner-specific identity and CLI gates are verified for launch; the actual launch-boundary HEAD observation is recorded separately and is not a checkout pin. Diagnostic package metadata is not model-execution proof or a new environment policy. |
 | Slurm allocation node | Where the scheduler actually runs the workload; compute hostname may differ from the submission host. |
 
@@ -176,13 +167,10 @@ The default rolling-latest model uses one existing checkout. A heartbeat or
 agent first inspects the trusted upstream without mutation:
 
 ```bash
-python -m agent_tools runtime-sync --workdir <checkout> [--host <host>] [--python <target-python>]
+python -m agent_tools runtime-sync --workdir <checkout>
 ```
 
-With `--host`, the manager sends a self-contained sync program through the
-selected target Python. The target checkout may therefore predate the
-`runtime-sync` subcommand; it does not need to import its own `agent_tools`
-before the fast-forward.
+Run it on the host that owns the checkout.
 
 Add `--execute` only within the current update authority. Execute fetches
 `origin/main` and updates the same clean checkout by fast-forward only. It never
@@ -203,10 +191,9 @@ records both values. They are point-in-time provenance: code imported or read
 after the lock is released is not guaranteed to remain entirely at A or B.
 Mixed commits are not a scientific variable.
 
-Local direct launch waits for the embedded launcher to return a definitive
-pre-spawn failure or committed PID receipt; it does not apply the SSH transport
-timeout while that launcher waits for the runtime lock. An SSH timeout remains
-outcome-unknown evidence and is reconciled without automatic relaunch.
+Direct launch waits for the embedded launcher to return a definitive
+pre-spawn failure or committed PID receipt, including while that launcher waits
+for the runtime lock.
 
 Commit drift does not authorize mutation of registered recipes, plans, configs,
 scripts, or `execution_snapshot.json`. `execution.runtime_commit` remains the
@@ -323,12 +310,10 @@ Append one entry with:
 ```bash
 python -m agent_tools experiment-note \
   --run-dir <experiment.root> \
-  --entry <entry.yaml> \
-  [--remote <host>]
+  --entry <entry.yaml>
 ```
 
-`--entry` must name an existing local YAML file, including when the managed
-workspace is remote. Inline YAML/text and stdin (`-`) are not accepted. The CLI
+`--entry` must name an existing local YAML file. Inline YAML/text and stdin (`-`) are not accepted. The CLI
 validates this boundary before reading the experiment workspace.
 
 The entry YAML is a closed mapping:
@@ -367,7 +352,7 @@ marker. Repeating the same id and normalized content is a successful no-op;
 reusing the id for different content fails. Corrections append a new entry and
 list the old ids in `supersedes`; existing entries are never rewritten.
 Malformed preambles, markers, digests, aliases, or lock targets fail before
-append. Local and SSH writers use compare-and-swap and retry conflicts without
+append. Writers use compare-and-swap and retry conflicts without
 dropping a competing entry.
 
 Fresh CLI- and plan-created workspaces receive the preamble. A valid historical
@@ -427,9 +412,8 @@ owner as publication. Agreement between edited canonical rows and scripts is
 insufficient if they differ from that recipe-derived contract.
 
 Step output projects registered `plan_controller`; run output projects canonical
-execution transport/host and recorded Slurm node separately. Advisory argv
-arrays name `control_host` only as the control command's invocation host; see
-the [identity legend](#execution-identity-legend). Suggestions do not authorize
+execution target and recorded Slurm node separately. Advisory argv arrays run on
+the workspace-owning host; see the [identity legend](#execution-identity-legend). Suggestions do not authorize
 launch or mutation.
 
 A registered directory containing `questions.json`, `questions.md` and
@@ -447,15 +431,15 @@ finalization; completed metadata cannot prove the declared work was absent or
 finished. The direct finalizer independently rejects unmaterialized steps.
 A canonical `stopped` row without non-empty `stop_reason` blocks finalize advice
 and makes completed metadata corrupt; the finalizer enforces the same boundary.
-Valid blockers return success; corrupt control state or local/SSH read failure
-returns non-zero.
+Valid blockers return success; corrupt control state or read failure returns
+non-zero.
 
 ## Mutation and runtime identity
 
 Every mutation other than fresh initialization requires a parseable,
 root-matching workspace owner. Managed output targets are preflighted before
 mutation: existing targets must be independent regular files under valid
-directory ancestry. Local and SSH uncertainty fails closed.
+directory ancestry. Uncertainty fails closed.
 
 Ordinary output-path validation uses metadata without opening files. When
 observed inode identities collide, validation holds descriptors for all paths

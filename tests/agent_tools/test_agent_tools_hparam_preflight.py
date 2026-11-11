@@ -83,8 +83,6 @@ def _snapshot(execution: dict, runs: list[dict]) -> dict:
         planned_argv.append({"run_id": run["run_id"], "args": tokens[module_index + 1 :]})
     module = modules.pop()
     return {
-        "target": str(execution.get("target", "local") or "local"),
-        "host": str(execution.get("host") or ""),
         "workdir": str(execution.get("workdir") or REPO_ROOT),
         "conda_env": str(execution.get("conda_env") or ""),
         "python_command": execution["python"],
@@ -123,26 +121,14 @@ def _preflight_card(text: str) -> str:
     return text[text.index(_PREFLIGHT_CARD_HEADING) :].strip()
 
 
-@pytest.mark.parametrize(
-    ("execution", "expected_remote"),
-    [
-        ({"target": "local"}, None),
-        ({"target": "ssh", "host": "frozen-host"}, "frozen-host"),
-    ],
-)
-def test_hparam_output_inventory_routes_to_execution_host(
-    tmp_path: Path,
-    monkeypatch,
-    execution: dict,
-    expected_remote: str | None,
-):
+def test_hparam_output_inventory_validates_every_planned_output(tmp_path: Path, monkeypatch):
     plan_dir = tmp_path / "plan"
     results_path = tmp_path / "shared-results.csv"
     run_000_runtime = tmp_path / "runtime" / "run-000"
     run_001_runtime = tmp_path / "runtime" / "run-001"
     plan = {
         "recipe": {
-            "execution": execution,
+            "execution": {},
             "artifacts": {"results_csv_path": str(results_path)},
         },
         "runs": [
@@ -160,8 +146,8 @@ def test_hparam_output_inventory_routes_to_execution_host(
     }
     observed = []
 
-    def validate(root, paths, *, remote=None):
-        observed.append((Path(root), [Path(path) for path in paths], remote))
+    def validate(root, paths):
+        observed.append((Path(root), [Path(path) for path in paths]))
 
     monkeypatch.setattr(plan_hparam.exp_io, "validate_managed_output_paths", validate)
 
@@ -175,7 +161,7 @@ def test_hparam_output_inventory_routes_to_execution_host(
         run_001_runtime / "checkpoints",
         results_path,
     ]
-    assert observed == [(Path("/"), expected, expected_remote)]
+    assert observed == [(Path("/"), expected)]
 
 
 def test_hparam_output_inventory_rejects_duplicate_run_paths(tmp_path: Path):
@@ -280,43 +266,30 @@ def test_hparam_plan_rejects_workdir_ancestor_symlink_before_registration(tmp_pa
     assert _staging_dirs(workspace, plan_dir) == []
 
 
-@pytest.mark.parametrize(
-    "remote_error",
-    [
-        RuntimeError("SSH output path validation failed on frozen-host: transport failed"),
-        ValueError("Managed output paths must be independent regular files: /remote/alias"),
-    ],
-)
-def test_hparam_plan_fails_closed_on_remote_output_preflight(
-    tmp_path: Path,
-    monkeypatch,
-    remote_error: Exception,
-):
+def test_hparam_plan_fails_closed_on_output_preflight(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
-    payload = yaml.safe_load(recipe.read_text())
-    payload["execution"].update({"target": "ssh", "host": "frozen-host"})
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    output_error = ValueError("Managed output paths must be independent regular files: /runtime/alias")
     before = _workspace_files(workspace)
     real_validate = plan_hparam.exp_io.validate_managed_output_paths
 
-    def validate(root, paths, *, remote=None):
-        if remote is not None:
-            assert remote == "frozen-host"
-            raise remote_error
+    def validate(root, paths):
+        # validate_hparam_output_paths is the only caller that anchors its inventory at the filesystem root.
+        if Path(root) == Path("/"):
+            raise output_error
         return real_validate(root, paths)
 
     monkeypatch.setattr(plan_hparam.exp_io, "validate_managed_output_paths", validate)
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",
-        lambda *_args, **_kwargs: pytest.fail("remote topology must fail before target inspection"),
+        lambda *_args, **_kwargs: pytest.fail("output preflight must fail before target inspection"),
     )
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
 
     assert report.exit_code == 1
-    assert str(remote_error) in report.blocking_issues()[0].message
+    assert str(output_error) in report.blocking_issues()[0].message
     assert _workspace_files(workspace) == before
     assert read_run_manifest(workspace) == []
     assert not plan_dir.exists()

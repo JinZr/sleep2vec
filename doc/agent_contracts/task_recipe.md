@@ -279,18 +279,17 @@ job. Use an absolute Python path for independence from the launcher's PATH; an
 explicit executable name remains PATH-resolved. Route-specific launch gates are
 defined below: direct preset scripts do not acquire the hparam managed-scheduler
 module-origin or live-argv contract.
-`execution.target` and `execution.host` on other non-hparam tasks remain
-path-validation context; they do not provide a generic SSH launcher. Ordinary
+Agent tools run on the host that owns the experiment files, so recipes carry no
+execution target, host, or remote path context. Ordinary
 Slurm inference uses the managed exception below; the direct-script identity
 and lifecycle rules above remain unchanged.
 
 New `preset_prepare` recipes without Python/commit identity freeze the planning
 interpreter (`sys.executable`), manager Git HEAD, and `REPO_ROOT` workdir before
 command generation; that HEAD is planned/baseline provenance rather than a
-permanent checkout pin. This default applies only to local/default-local
-execution at the exact manager checkout with no remote path context. A separate
-workdir or remote path context requires a complete explicit local identity; SSH
-is not a preset launcher. An unavailable manager commit fails before workspace
+permanent checkout pin. This default applies only at the exact manager
+checkout. A separate workdir requires a complete explicit local identity. An
+unavailable manager commit fails before workspace
 creation. Partial authored identities are rejected, not filled with defaults.
 Historical registered preset plans without identity retain their original
 commands and are never rebound or migrated by readers.
@@ -299,7 +298,7 @@ commands and are never rebound or migrated by readers.
 
 New effective `preset_prepare` recipes freeze `execution.scheduler.type: direct`
 and an explicit script terminal-status owner. Plan and launch on the execution
-host; this does not add recipe-driven SSH execution. The registered plan keeps
+host. The registered plan keeps
 its variant-local preset command and frozen planned runtime identity. Its top-level
 `run.sh` delegates to `preset-launch --plan-dir <plan>`: both default to dry-run,
 and execution requires `--execute`. Do not launch the worker `launch.sh`
@@ -342,9 +341,8 @@ Ordinary `infer` plans may declare `execution.scheduler.type:
 slurm`. They reuse the existing single-node Slurm resource fields and protected
 environment rules in [Launch and queue](hparam_workflow.md#launch-and-queue), with explicit
 `execution.workdir`, `execution.python`, and a full 40-character planned/baseline
-`execution.runtime_commit`, frozen in lowercase. Submission may use `target: local`
-or `target: ssh`;
-`scheduler.direct_controller` independently selects controller routing. Paths
+`execution.runtime_commit`, frozen in lowercase. Slurm client commands run on the
+host where agent tools run; `scheduler.direct_controller` selects controller routing. Paths
 must already be available on the execution host; planning does not upload a
 runtime or input bundle.
 

@@ -1,78 +1,36 @@
-"""Shared local and SSH command construction and remote probe conventions.
+"""Shared local shell command construction and execution.
 
-Layer 0 leaf. Provides quoting, shared ``ssh`` argv construction and timeout, and the
-two sentinel return codes -- ``REMOTE_MISSING_RETURN_CODE`` and
-``REMOTE_CONFLICT_RETURN_CODE`` -- that let a remote probe report "absent" and
-"changed under me" without either being confused with a transport failure.
-Remote Python bodies come from ``python_programs``; this module never embeds
-program source inline.
-
-``managed_scheduler`` also constructs launch-time SSH commands in
-``_slurm_execution_identity`` and ``_direct_launch_command``, with its own
-launch timeout handling.
+Layer 0 leaf. Provides shell quoting, the bounded local ``bash -lc`` runner and
+its default timeout, and the ``python3 -c`` command line for an embedded program.
+Program bodies come from ``python_programs``; this module never embeds program
+source inline.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 import shlex
 import subprocess
 from typing import Any
 
 from . import python_programs
 
-SSH_TIMEOUT_SECONDS = 10
-REMOTE_MISSING_RETURN_CODE = 44
-REMOTE_CONFLICT_RETURN_CODE = 45
+COMMAND_TIMEOUT_SECONDS = 10
 
 
 def sh(value: Any) -> str:
     return shlex.quote(str(value))
 
 
-def _ssh_argv(host: str, command: str) -> list[str]:
-    return ["ssh", str(host), command]
-
-
-def run_ssh(
-    host: str,
-    command: str,
-    *,
-    input: str | bytes | None = None,
-    text: bool | None = None,
-    check: bool | None = None,
-    capture_output: bool = True,
-    timeout: float | None = SSH_TIMEOUT_SECONDS,
-) -> subprocess.CompletedProcess:
-    """Remote execution primitive. kwargs are forwarded conditionally so that
-    subprocess.run receives exactly the keys each call site passed before the
-    consolidation (None means "do not pass the key"). TimeoutExpired is never
-    swallowed here."""
-    kwargs: dict[str, Any] = {}
-    if capture_output:
-        kwargs["capture_output"] = True
-    if input is not None:
-        kwargs["input"] = input
-    if text is not None:
-        kwargs["text"] = text
-    if check is not None:
-        kwargs["check"] = check
-    if timeout is not None:
-        kwargs["timeout"] = timeout
-    return subprocess.run(_ssh_argv(host, command), **kwargs)
-
-
 def run_shell(
-    host: str | None,
     command: str,
     *,
-    timeout: float | None = SSH_TIMEOUT_SECONDS,
+    timeout: float | None = COMMAND_TIMEOUT_SECONDS,
     swallow_timeout: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Dispatching primitive: host -> ssh, None -> local bash -lc.
+    """Run one command through local ``bash -lc``.
     swallow_timeout=True reproduces the evidence-probe semantics: a timeout is
     reported as returncode 124 instead of raising."""
-    argv = _ssh_argv(host, command) if host else ["bash", "-lc", command]
+    argv = ["bash", "-lc", command]
     try:
         return subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -81,14 +39,5 @@ def run_shell(
         return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout}s")
 
 
-def remote_python_command(script: str, *args: Any) -> str:
-    return " ".join([f"python3 -c {sh(script)}", *(sh(arg) for arg in args)])
-
-
-def remote_python_program_command(name: str, *args: Any) -> str:
-    return remote_python_command(python_programs.source(name), *args)
-
-
-def remote_write_command(path: Any) -> str:
-    target = Path(str(path))
-    return f"mkdir -p {sh(target.parent)} && cat > {sh(target)}"
+def python_program_command(name: str, *args: Any) -> str:
+    return " ".join([f"python3 -c {sh(python_programs.source(name))}", *(sh(arg) for arg in args)])

@@ -1,32 +1,16 @@
 import errno
-import json
 import os
 from pathlib import Path
 import stat
-import sys
 
 import pytest
 
-from agent_tools import experiment_io, python_programs
+from agent_tools import experiment_io
 
 
-@pytest.fixture(params=["local", "embedded-remote"])
-def validate_outputs(request, monkeypatch):
-    source = compile(
-        python_programs.source("experiment_io.validate_managed_output_paths"),
-        "experiment_io.validate_managed_output_paths",
-        "exec",
-    )
-
-    def validate(root, paths):
-        if request.param == "local":
-            experiment_io.validate_managed_output_paths(root, paths)
-        else:
-            with monkeypatch.context() as patch:
-                patch.setattr(sys, "argv", ["validate", json.dumps([str(root), *map(str, paths)])])
-                exec(source, {"__name__": "__main__"})
-
-    return validate
+@pytest.fixture
+def validate_outputs():
+    return experiment_io.validate_managed_output_paths
 
 
 @pytest.fixture

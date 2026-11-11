@@ -87,7 +87,7 @@ def select_hparam_candidates(
     Requires an active experiment and terminal runs across the current step's
     registered plans. metric/mode may be omitted or match the frozen policy;
     selection_split always comes from that policy. Reads successful-run evidence
-    locally or remotely.
+    locally.
 
     Writes ranking/audit tables, canonical selection fields, the selection report
     and its hash bindings, and a deduplicated selection event. Reentry validates
@@ -225,19 +225,10 @@ def _preflight_hparam_selection(
             )
         )
     for _registered_root, registered_plan in current_registered:
-        registered_recipe_value = registered_plan.get("recipe")
-        registered_recipe = registered_recipe_value if isinstance(registered_recipe_value, dict) else {}
-        execution_value = registered_recipe.get("execution")
-        execution = execution_value if isinstance(execution_value, dict) else {}
         for run in registered_plan["runs"]:
             key = managed_run_key(run)
             step_runs.append(run)
-            evidence_run = {**run, **(canonical_by_key.get(key) or {})}
-            # A registered plan's frozen execution target remains authoritative before lifecycle rows fill it.
-            for field in ("target", "host"):
-                if evidence_run.get(field) in (None, ""):
-                    evidence_run[field] = execution.get(field, "")
-            evidence_runs_by_key[key] = evidence_run
+            evidence_runs_by_key[key] = {**run, **(canonical_by_key.get(key) or {})}
     report_run_keys = existing_report_run_keys | {managed_run_key(run) for run in step_runs}
     # A non-hparam run may share the current step id, so ownership must be checked by the full managed key.
     misowned_selection = sorted(
@@ -341,19 +332,7 @@ def _rank_hparam_selection_candidates(
                 }
             )
             continue
-        # The execution target owns runtime evidence; never interpret a same-named manager-local tree for SSH runs.
-        observed_artifacts = evidence.runtime_artifacts(artifact_row)
-        if observed_artifacts is None:
-            if evidence.is_remote_row(artifact_row) and status in {"completed", "finished"}:
-                raise ValueError(
-                    f"Successful SSH hparam run has unavailable runtime artifacts: "
-                    f"{run['step_id']} / {run['run_id']}"
-                )
-            manifest_path = ""
-            manifest: dict[str, Any] = {}
-            checkpoint_names: list[str] = []
-        else:
-            manifest_path, manifest, checkpoint_names = observed_artifacts
+        manifest_path, manifest, checkpoint_names = evidence.runtime_artifacts(artifact_row)
         score = artifacts.metric_value(manifest, inputs.metric)
         ckpt = artifacts.fixed_checkpoint_path_from_names(
             manifest,
@@ -377,7 +356,7 @@ def _rank_hparam_selection_candidates(
         valid_score = not isinstance(score, bool) and artifacts.float_or_none(score) is not None
         if valid_score and ckpt:
             tracking.validate_checkpoint_evidence_rows([artifact_row], [row])
-            row["checkpoint_sha256"] = evidence.checkpoint_file_sha256(artifact_row, ckpt)
+            row["checkpoint_sha256"] = evidence.checkpoint_file_sha256(ckpt)
         if valid_score and not ckpt:
             checkpoint_errors.append(
                 f"Valid {inputs.metric} score lacks resolvable checkpoint evidence for "

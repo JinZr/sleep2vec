@@ -41,7 +41,7 @@ provenance, not a guarantee that checkout code bytes remain unchanged for the
 whole job.
 They may differ: that difference is recorded rolling provenance, not a lifecycle
 error or scientific variable. Shared execution identity otherwise consists of
-target, host, workdir, GPUs, log path, and command. Direct execution additionally
+target (always `local` once launched), workdir, GPUs, log path, and command. Direct execution additionally
 owns the PID path, launched PID, process-group id, and OS process-start token.
 Slurm execution instead freezes scheduler type, optional
 `scheduler_direct_controller` topology, submit token, sbatch path/hash,
@@ -91,10 +91,7 @@ Local log evidence reads only the needed suffix of seekable UTF-8 regular logs,
 expanding for long lines; other text encodings and stream inputs retain their
 text-read behavior. Encountered read errors still propagate. A tail is not a
 whole-file integrity check or an atomic snapshot of concurrent log writes.
-Slurm SSH health obtains the display tail and later path-mtime age in one
-remote operation, preserving their independent failures. An invalid paired
-response falls back once to the existing separate probes. Direct-process health
-keeps its probe order; no log evidence is cached across observations.
+Health keeps its probe order; no log evidence is cached across observations.
 
 ### Table index
 
@@ -145,7 +142,7 @@ such as zero-padded experiment versions remain unchanged.
 
 ## Status reducer
 
-The current vocabulary includes scheduled `planned`/`pending`, scheduler handoff `submitting`/`queued`, active `launched`/`running`/`stopping`/`unknown_remote`/`unknown_scheduler`/`missing_pid`, and terminal `completed`/`failed`/`finished`/`launch_failed`/`stopped`/`superseded` states.
+The current vocabulary includes scheduled `planned`/`pending`, scheduler handoff `submitting`/`queued`, active `launched`/`running`/`stopping`/`unknown_scheduler`/`missing_pid`, and terminal `completed`/`failed`/`finished`/`launch_failed`/`stopped`/`superseded` states.
 
 - An update without status preserves the existing status.
 - Terminal status is sticky, except incoming `failed` evidence may correct `completed` or `finished`.
@@ -174,7 +171,7 @@ Mutation-facing evidence must first resolve to a canonical managed row. Any supp
 
 - Workspace rankings and candidate tables prove scope through the validated workspace plus managed key.
 - Candidate and ranking tables are completely validated before other-step or earlier-plan rows are filtered.
-- Checkpoint evidence must exist as an independent regular direct child of the matched frozen checkpoint directory, revalidated on the run's execution host before selection or finalization.
+- Checkpoint evidence must exist as an independent regular direct child of the matched frozen checkpoint directory, revalidated before selection or finalization.
 - Launch/status projections never contribute evidence.
 
 Foreign, unmatched, incomplete, or drifting evidence fails or remains in raw inventory; it does not update canonical rows.
@@ -187,9 +184,7 @@ The workspace owner reads, reduces, and commits the complete canonical table.
 concurrent registration is retained by the commit but first observed next round;
 the snapshot never replaces the commit owner's fresh read or concurrency checks.
 
-- Local commits hold a stable lock from canonical read through same-directory temporary write, `fsync`, `os.replace`, and run-matrix projection.
-- SSH commits lock remotely, compare the expected digest, and conditionally replace a same-directory temporary file.
-- An SSH conflict causes a fresh read and merge, with at most three attempts. Exhausted conflicts fail without overwriting newer state.
+- Commits hold a stable lock from canonical read through same-directory temporary write, `fsync`, `os.replace`, and run-matrix projection; a digest conflict under that lock fails without overwriting newer state.
 - New keys must carry the owning experiment id.
 
 The owner returns the rows actually committed. Callers use those rows for projections, reports, and transition events. A later projection/report failure makes the command nonzero but does not roll back canonical state; the next command may regenerate derived artifacts.
@@ -224,24 +219,16 @@ If those canonical process fields are still blank after an unresolved launch, mo
 Only confirmed absence means no process identity. Other evidence is handled as
 follows:
 
-- Empty, malformed, non-positive, aliased, or invalid-encoding local identity
+- Empty, malformed, non-positive, aliased, or invalid-encoding identity
   content is corrupt and makes launchable scheduled state non-launchable
   `missing_pid`.
-- A local identity naming an already-dead leader before canonical process fields
+- An identity naming an already-dead leader before canonical process fields
   were bound also becomes `missing_pid`; monitoring does not bind it or infer a
   terminal result.
-- Equivalent unbound remote evidence remains `unknown_remote`.
-- A local path/read `OSError` while scheduled aborts before mutation. Remote
-  permission, type, decoding, transport, and timeout failures produce
-  recoverable `unknown_remote` monitoring evidence.
-- A launch-command timeout or SSH transport return code `255` is unresolved
-  rather than `launch_failed`. The attempted run remains active until identity
-  monitoring proves its state, preventing a duplicate launch after transport
-  uncertainty.
+- A path/read `OSError` while scheduled aborts before mutation.
 
 Stop propagates identity uncertainty before signal or mutation and rejects
-terminal rows before identity access. On SSH it verifies and signals atomically.
-It sends `SIGTERM` to the complete process group and commits `stopped` only
+terminal rows before identity access. It sends `SIGTERM` to the complete process group and commits `stopped` only
 after the group has exited.
 
 When monitoring proves corrupt, partial, mismatched, or reused managed process
@@ -255,7 +242,7 @@ the normal terminal-owner rule.
 
 Both hparam and ordinary infer use the same Slurm lifecycle owner.
 Ordinary inference freezes its model command in the plan and worker, but its
-initial canonical row contains no transport identity, submission command, job,
+initial canonical row contains no execution identity, submission command, job,
 or cluster. The planned log path and preflight snapshot are not launch evidence.
 The worker does not write canonical status or rely on an inner EXIT trap:
 `run-frozen-job` owns its allocation and terminal sidecars.
@@ -266,7 +253,7 @@ One Slurm-backed canonical run owns one frozen leaf `job.sbatch`. Before any
 submission, the launcher freezes the plan-level execution snapshot's raw
 SHA-256 across all canonical runs. After launch preflight, each run queries
 `scontrol show config` for exactly one non-empty valid `ClusterName`, then
-atomically commits that cluster, transport identity, and `submitting` before
+atomically commits that cluster, execution identity, and `submitting` before
 calling `sbatch --parsable` with the snapshot digest. A failed identity query
 does not submit or bind the cluster; hparam leaves that run's state unchanged.
 The ordinary inference facade records an unsubmitted guard failure as described
@@ -276,16 +263,16 @@ is valid only in `submitting` or
 job-id receipt retains the prebound cluster. Non-empty cluster bindings cannot
 be changed or cleared. Follow-up `squeue`, `scontrol`, and `scancel`
 commands route to the bound cluster. If submission times out, returns malformed
-output, or loses SSH after possible submission, the launcher searches the exact
+output, or is interrupted after possible submission, the launcher searches the exact
 frozen comment token on the prebound cluster and frozen controller route;
 zero or multiple matches remain unresolved and never
 authorize another submission.
 Bound-cluster routing uses `--clusters=<scheduler_cluster>` unless the canonical
-run freezes `scheduler_direct_controller: true`. Local control transport does
-not establish that topology; monitoring and stop preserve the frozen choice.
-All Slurm client subprocesses on either a local or SSH submission host remove
+run freezes `scheduler_direct_controller: true`. Monitoring and stop preserve
+the frozen choice. Slurm client commands run on the host where agent tools run.
+All Slurm client subprocesses remove
 inherited `SLURM_CLUSTERS`; `sbatch` additionally removes every `SBATCH_*`
-variable. The recorded submission command and transport share one renderer.
+variable. The recorded and executed submission commands share one renderer.
 `SLURM_CONF`, `PATH`, other environment, and the parent process remain unchanged.
 
 For a valid registered ordinary inference plan, an execute-time guard failure
@@ -306,34 +293,32 @@ plan. There is no automatic conflict-clearing or legacy-cluster recovery path.
 ### Sidecar reads and monitor-round reuse
 
 Slurm sidecar reads validate the managed path and read the same opened regular
-file in one local/SSH operation. Raw `..` components, symlinks in any traversed
+file in one operation. Raw `..` components, symlinks in any traversed
 directory or leaf, hardlinked files, and non-regular leaves are rejected. Only
-a missing open means absent evidence; read and UTF-8 failures remain errors.
-Remote reads require one complete response for every requested path, including
-explicit missing values; empty or partial command output is not absence. These
+a missing open means absent evidence; read and UTF-8 failures remain errors. These
 checks do not promote sidecar job or cluster values to canonical identity.
 
-One monitor round may share sidecar text within one managed owner and matching
-execution host, independently of scheduler job, cluster, or controller topology.
+One monitor round may share sidecar text within one managed owner, independently
+of scheduler job, cluster, or controller topology.
 Terminal files are read first; allocation reads include only runs with missing
 or empty terminal text, or a valid empty terminal mapping. Malformed or nonempty
 terminal data never causes allocation prefetch. Each run still parses and
 validates its own identity before scheduler queries. A future run's invalid file
 does not change the current run's error order: a failed batch is discarded and
 that phase uses exact per-file reads for the rest of the round. Conflicted runs
-and mismatched or overridden transports are excluded from prefetch. Missing or
+and runs without a launched local target are excluded from prefetch. Missing or
 empty snapshots last only this round; a sidecar published afterward is observed
 in the next successful round. Absence never establishes a terminal state.
 
 Within one `hparam-monitor` or `experiment-monitor` round, runs with complete
-canonical job, cluster, token, transport, and explicit controller topology may
+canonical job, cluster, token, launched target, and explicit controller topology may
 share a successful exact-ID `squeue` query on the same frozen route. Groups
 require at least two distinct job IDs. The first participating run queries only
 after its sidecar validation; every run still validates its own evidence before
 using the shared result. Only positive matches are reused. Missing IDs take the
 normal single-job query path; failed or ambiguous batches publish no partial
 results and disable sharing for that group for the rest of the round. Legacy
-identities, submission-cluster conflicts, and transport overrides are excluded.
+identities and submission-cluster conflicts are excluded.
 Each round starts fresh, and launch, stop, and submission reconciliation never
 consume these monitor snapshots. `scheduler_observed_at` remains the per-run
 observation processing time, not a promise of a separate scheduler sampling time.
@@ -385,10 +370,8 @@ observation; a scheduler failure overrides a zero wrapper exit code. The narrow
 accounting-disabled exception requires the exact bound job to be absent from
 `squeue`, explicitly invalid in `scontrol`, `sacct` to report that accounting
 storage is disabled, and the atomic sidecar to match the frozen job, token, and
-non-empty canonical cluster while transport and controller topology remain
-explicitly frozen and match the route used for every query. SSH transport
-failures remain `unknown_scheduler` even if partial output mentions disabled
-accounting. The exception records raw scheduler state `MISSING`, recovers
+non-empty canonical cluster while controller topology remains explicitly
+frozen and matches the route used for every query. The exception records raw scheduler state `MISSING`, recovers
 exit zero as `completed` and non-zero as `failed`, and never infers `stopped`.
 Other unavailable controller or accounting evidence, a vanished job, or an
 incomplete terminal evidence pair becomes active `unknown_scheduler` rather

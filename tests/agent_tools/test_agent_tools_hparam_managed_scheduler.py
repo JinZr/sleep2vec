@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 from agent_tool_test_helpers import FakeLauncher, run_cli
@@ -10,7 +9,6 @@ import pytest
 from test_agent_tools_hparam_runtime import (
     _RUNTIME_COMMIT,
     _hparam_recipe,
-    _process_identity,
     _read_table,
     _write_process_identity,
     _write_runtime_rows,
@@ -212,67 +210,6 @@ def test_hparam_run_queue_blocks_after_unsafe_process_identity(tmp_path: Path, m
     assert canonical["status"] == "missing_pid"
     assert "reused by a different process" in canonical["process_identity_error"]
     assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "missing_pid"
-
-
-def test_hparam_run_queue_fails_after_unbound_remote_launch_remains_unknown(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(
-        tmp_path,
-        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "launched"}],
-    )
-    observations = []
-    monkeypatch.setattr(
-        hparam_runtime.evidence,
-        "status_row",
-        lambda _root, observation, previous, **_kwargs: observations.append(observation)
-        or {**previous, **observation, "status": "unknown_remote"},
-    )
-    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_args, **_kwargs: pytest.fail("no launch"))
-    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("no sleep"))
-
-    with pytest.raises(RuntimeError, match="unknown_remote without complete process identity"):
-        hparam_runtime.run_hparam_queue(tmp_path, dry_run=False)
-
-    assert len(observations) == 1
-    row = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert row["status"] == "unknown_remote"
-    assert all(row.get(field, "") == "" for field in ("pid", "process_group_id", "process_start_token"))
-
-
-def test_hparam_run_queue_keeps_monitoring_bound_unknown_remote(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(
-        tmp_path,
-        [
-            {
-                "run_id": "run-000",
-                "target": "ssh",
-                "host": "unit-host",
-                "status": "unknown_remote",
-                **_process_identity(),
-            }
-        ],
-    )
-    observations = iter(["unknown_remote", "finished"])
-    monkeypatch.setattr(
-        hparam_runtime.evidence,
-        "status_row",
-        lambda _root, observation, previous, **_kwargs: {
-            **previous,
-            **observation,
-            "status": next(observations),
-        },
-    )
-    launch_calls = []
-    sleeps = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "launch_hparam_runs",
-        lambda *_args, **_kwargs: launch_calls.append(True) or tmp_path / "launch_manifest.tsv",
-    )
-    monkeypatch.setattr(hparam_runtime.time, "sleep", lambda seconds: sleeps.append(seconds))
-
-    assert hparam_runtime.run_hparam_queue(tmp_path, dry_run=False, poll_seconds=1) == tmp_path / "run_status.tsv"
-    assert launch_calls == [True]
-    assert sleeps == [1]
 
 
 def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Path, monkeypatch):
@@ -606,87 +543,36 @@ def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_g
     assert [row["status"] for row in rows] == ["launched", "launched", "launched", "pending"]
 
 
-@pytest.mark.parametrize(
-    ("different_field", "expected_gpus", "expected_statuses"),
-    [
-        ("host", ["0", "1"], ["launched", "launched"]),
-        ("workdir", ["1", ""], ["launched", "pending"]),
-        ("local_host", ["1", ""], ["launched", "pending"]),
-    ],
-)
-def test_hparam_launch_scopes_active_gpu_load_by_target_and_ssh_host(
-    tmp_path: Path,
-    monkeypatch,
-    different_field: str,
-    expected_gpus: list[str],
-    expected_statuses: list[str],
-):
+def test_hparam_launch_shares_active_gpu_load_across_local_workdirs(tmp_path: Path):
     first_execution = {
-        "target": "ssh",
-        "host": "host-a",
-        "workdir": str(tmp_path / "remote-a"),
+        "workdir": str(tmp_path / "runtime-a"),
         "python": sys.executable,
         "runtime_commit": _RUNTIME_COMMIT,
         "gpu_pool": [0, 1],
         "gpus_per_run": 1,
     }
-    if different_field == "local_host":
-        first_execution["target"] = "local"
-        first_execution["host"] = "local-label-a"
-    second_execution = dict(first_execution)
-    if different_field == "host":
-        second_execution["host"] = "host-b"
-    elif different_field == "workdir":
-        second_execution["workdir"] = str(tmp_path / "remote-b")
-    else:
-        second_execution["host"] = "local-label-b"
     first_recipe = _hparam_recipe(tmp_path, execution=first_execution)
     first_plan = tmp_path / "plan-1"
     assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
 
     second_payload = yaml.safe_load(first_recipe.read_text())
-    second_payload["execution"] = second_execution
+    second_payload["execution"] = {**first_execution, "workdir": str(tmp_path / "runtime-b")}
     second_payload["search"]["max_runs"] = 2
     second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6]
     second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
     second_plan = tmp_path / "plan-2"
     assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-
-    def validate_without_remote(root, paths, remote=None):
-        if remote is None:
-            return real_validate(root, paths)
-
-    def missing_remote_evidence(row, command):
-        assert row["target"] == "ssh"
-        assert row["host"] in {"host-a", "host-b"}
-        if command == run_evidence.transport.remote_python_program_command(
-            "run_evidence.read_pid_text", row["pid_path"]
-        ):
-            return subprocess.CompletedProcess(command, run_evidence.REMOTE_MISSING_RETURN_CODE, "", "")
-        if command == run_evidence.transport.remote_python_program_command(
-            "run_evidence.runtime_artifacts", row.get("runtime_dir", ""), row.get("checkpoint_dir", "")
-        ):
-            return subprocess.CompletedProcess(
-                command, 0, json.dumps({"run_manifest": "", "manifest": {}, "checkpoints": []}), ""
-            )
-        assert command == f"tail -n 8 {run_evidence.transport.sh(row['log_path'])}"
-        return subprocess.CompletedProcess(command, 1, "", "No such fixture log")
-
     launcher = FakeLauncher()
-    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
-    monkeypatch.setattr(run_evidence, "run_row_command", missing_remote_evidence)
 
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
     launcher.starts.clear()
     hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks())
 
     rows = _read_table(second_plan / "launch_manifest.tsv")
-    assert len(launcher.starts) == expected_statuses.count("launched")
-    assert [row["gpus"] for row in rows] == expected_gpus
-    assert [row["status"] for row in rows] == expected_statuses
-    if different_field in {"workdir", "local_host"}:
-        assert "CUDA_VISIBLE_DEVICES=1" in launcher.commands[0]
+    assert len(launcher.starts) == 1
+    assert [row["gpus"] for row in rows] == ["1", ""]
+    assert [row["status"] for row in rows] == ["launched", "pending"]
+    assert "CUDA_VISIBLE_DEVICES=1" in launcher.commands[0]
 
 
 @pytest.mark.parametrize("max_concurrent", [True, 1.0, 1.5, "1", 0])

@@ -100,7 +100,7 @@ def test_experiment_init_creates_manifest(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     rows = _read_table(tmp_path / "experiment_manifest.tsv")
     assert rows[0]["experiment_id"] == "unit"
-    assert rows[0]["remote_host"] == ""
+    assert "remote_host" not in rows[0]
     assert (tmp_path / "reports").exists()
     assert (tmp_path / "run_manifest.tsv").read_text() == "step_id\trun_id\n"
     assert (tmp_path / "RESEARCH_LOG.md").read_text().startswith("# Research Log\n")
@@ -145,12 +145,7 @@ def test_experiment_note_cli_reports_append_and_idempotent_retry(tmp_path: Path)
 
 
 @pytest.mark.parametrize("entry_kind", ["missing", "inline", "directory", "stdin"])
-@pytest.mark.parametrize("remote", [None, "unreachable-host"])
-def test_experiment_note_cli_rejects_non_file_entry_without_mutation(
-    tmp_path: Path,
-    entry_kind: str,
-    remote: str | None,
-):
+def test_experiment_note_cli_rejects_non_file_entry_without_mutation(tmp_path: Path, entry_kind: str):
     root = tmp_path / "workspace"
     experiments.init_experiment(root, _experiment_spec(tmp_path))
     before = _workspace_files(root)
@@ -160,11 +155,7 @@ def test_experiment_note_cli_rejects_non_file_entry_without_mutation(
         "directory": str(tmp_path),
         "stdin": "-",
     }[entry_kind]
-    args = ["experiment-note", "--run-dir", str(root), "--entry", entry]
-    if remote is not None:
-        args.extend(["--remote", remote])
-
-    result = _run(*args)
+    result = _run("experiment-note", "--run-dir", str(root), "--entry", entry)
 
     assert result.returncode == 1
     assert "--entry must be an existing local YAML file path" in result.stderr
@@ -510,8 +501,8 @@ def test_experiment_note_rejects_aliased_scoped_step_before_reading_it(tmp_path:
     assert (root / "RESEARCH_LOG.md").read_bytes() == before
 
 
-def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_path: Path, monkeypatch):
-    root = Path("/remote/workspace")
+def test_research_log_retries_conflict_and_preserves_competing_entry(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
     entry = json.loads(_research_entry(tmp_path, "obs-new").read_text())
     competing = dict(entry)
     competing.update({"id": "obs-competing", "title": "Competing observation"})
@@ -527,11 +518,10 @@ def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_
         "paths": [],
     }
 
-    def validate(_root, paths, *, remote=None):
+    def validate(_root, paths):
         state["paths"] = [Path(path) for path in paths]
-        assert remote == "unit-host"
 
-    def commit(_path, replacement, _expected_sha256, *, remote=None, **_kwargs):
+    def commit(_path, replacement, _expected_sha256, **_kwargs):
         state["attempts"] += 1
         if state["attempts"] == 1:
             state["text"] = competing_text
@@ -553,27 +543,25 @@ def test_remote_research_log_retries_conflict_and_preserves_competing_entry(tmp_
         entry,
         experiment_id="unit",
         managed_rows=[],
-        remote="unit-host",
     )
 
     assert appended is True
     assert state["attempts"] == 2
-    assert root / "RESEARCH_LOG.md.lock" in state["paths"]
-    assert root / ".RESEARCH_LOG.md.cas.lock" in state["paths"]
+    assert state["paths"] == [root / "RESEARCH_LOG.md", root / ".RESEARCH_LOG.md.cas.lock"]
     assert state["text"].count('id="obs-competing"') == 1
     assert state["text"].count('id="obs-new"') == 1
 
 
-def test_uncertain_remote_research_log_commit_is_idempotent_on_retry(tmp_path: Path, monkeypatch):
-    root = Path("/remote/workspace")
+def test_uncertain_research_log_commit_is_idempotent_on_retry(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
     entry = json.loads(_research_entry(tmp_path, "obs-timeout").read_text())
     state = {"text": experiment_workspace.RESEARCH_LOG_PREAMBLE, "raise_timeout": True}
 
-    def commit(_path, replacement, _expected_sha256, *, remote=None, **_kwargs):
+    def commit(_path, replacement, _expected_sha256, **_kwargs):
         state["text"] = replacement
         if state["raise_timeout"]:
             state["raise_timeout"] = False
-            raise RuntimeError("SSH response timed out after commit")
+            raise RuntimeError("Commit outcome unknown: response timed out")
         return True
 
     monkeypatch.setattr(experiment_workspace.exp_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
@@ -591,7 +579,6 @@ def test_uncertain_remote_research_log_commit_is_idempotent_on_retry(tmp_path: P
             entry,
             experiment_id="unit",
             managed_rows=[],
-            remote="unit-host",
         )
 
     _path, _entry_id, appended = experiment_workspace.append_research_log(
@@ -599,15 +586,14 @@ def test_uncertain_remote_research_log_commit_is_idempotent_on_retry(tmp_path: P
         entry,
         experiment_id="unit",
         managed_rows=[],
-        remote="unit-host",
     )
 
     assert appended is False
     assert state["text"].count('id="obs-timeout"') == 1
 
 
-def test_remote_research_log_fails_after_three_conflicts(tmp_path: Path, monkeypatch):
-    root = Path("/remote/workspace")
+def test_research_log_fails_after_three_conflicts(tmp_path: Path, monkeypatch):
+    root = tmp_path / "workspace"
     entry = json.loads(_research_entry(tmp_path, "obs-conflict").read_text())
     attempts = []
 
@@ -630,7 +616,6 @@ def test_remote_research_log_fails_after_three_conflicts(tmp_path: Path, monkeyp
             entry,
             experiment_id="unit",
             managed_rows=[],
-            remote="unit-host",
         )
 
     assert attempts == ["conflict", "conflict", "conflict"]
@@ -854,9 +839,9 @@ def test_experiment_commands_read_canonical_rows_only_under_run_lock(tmp_path: P
     if reader == "finalize_snapshot":
         # The harness races only the first manifest read, so skip the rows read that precedes the snapshot.
         rows = experiment_workspace.read_run_manifest(tmp_path)
-        monkeypatch.setattr(experiments, "_finalizable_rows", lambda _root, *, remote: rows)
+        monkeypatch.setattr(experiments, "_finalizable_rows", lambda _root: rows)
     readers = {
-        "status": lambda: experiments.experiment_status(tmp_path, remote=None)["runs"],
+        "status": lambda: experiments.experiment_status(tmp_path)["runs"],
         "finalize_snapshot": lambda: experiments.finalize_experiment(tmp_path, report),
     }
 
@@ -881,12 +866,12 @@ def test_experiment_finalize_records_preparation_before_manifest_conflict(tmp_pa
     before = manifest.read_bytes()
     real_commit = experiment_io.conditional_atomic_replace_text_at
 
-    def conflict_manifest(path, text, expected_sha256, *, remote=None, **kwargs):
+    def conflict_manifest(path, text, expected_sha256, **kwargs):
         if Path(path) == manifest:
             events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
             assert events[-1]["event_type"] == "experiment_finalization_prepared"
             return False
-        return real_commit(path, text, expected_sha256, remote=remote, **kwargs)
+        return real_commit(path, text, expected_sha256, **kwargs)
 
     monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", conflict_manifest)
 
@@ -963,36 +948,6 @@ def test_experiment_finalize_requires_stop_reason_before_writing(tmp_path: Path)
     target = experiments.finalize_experiment(tmp_path, report)
     assert target.read_text() == report.read_text()
     assert "status: completed" in (tmp_path / "experiment.yaml").read_text()
-
-
-def test_experiment_remote_finalize_checks_stop_reason_before_report_read_or_writes(monkeypatch):
-    root = Path("/remote/experiment")
-    calls = []
-
-    def managed_rows(candidate, *, remote):
-        calls.append((candidate, remote))
-        return [
-            {
-                "experiment_id": "unit",
-                "step_id": "train",
-                "run_id": "run-000",
-                "status": "stopped",
-                "stop_reason": "",
-            }
-        ]
-
-    def unexpected(*_args, **_kwargs):
-        raise AssertionError("remote finalize read the report or attempted a write")
-
-    monkeypatch.setattr(experiments, "_managed_rows", managed_rows)
-    monkeypatch.setattr(experiment_io, "read_text_at", unexpected)
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", unexpected)
-    monkeypatch.setattr(experiment_io, "append_event_at", unexpected)
-
-    with pytest.raises(ValueError, match="missing required stop_reason"):
-        experiments.finalize_experiment(root, "/remote/final.md", remote="baichuan3")
-
-    assert calls == [(root, "baichuan3")]
 
 
 def test_experiment_finalize_rejects_workspace_without_managed_runs(tmp_path: Path):
@@ -1084,31 +1039,6 @@ def test_experiment_mutation_rejects_experiment_manifest_alias_before_writing(tm
     assert _workspace_files(tmp_path) == before
 
 
-def test_experiment_remote_mutation_preflights_manifest_before_reading_workspace_identity(monkeypatch):
-    root = Path("/wujidata/remote_run")
-    reads = []
-
-    def _reject_alias(root_arg, paths, *, remote=None, exact_directory_entries=False):
-        assert root_arg == root
-        assert paths == [root / "experiment.yaml"]
-        assert remote == "baichuan3"
-        assert exact_directory_entries is False
-        raise ValueError("Managed file is missing or aliased")
-
-    monkeypatch.setattr(experiments.exp_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(experiments.exp_io, "read_managed_files_at", _reject_alias)
-    monkeypatch.setattr(
-        experiments.exp_io,
-        "read_text_at",
-        lambda *args, **kwargs: reads.append((args, kwargs)) or "",
-    )
-
-    with pytest.raises(ValueError, match="Managed file is missing or aliased"):
-        experiments.monitor_experiment(root, remote="baichuan3")
-
-    assert reads == []
-
-
 def test_experiment_monitor_preflights_canonical_outputs_before_observation(tmp_path: Path, monkeypatch):
     experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
     experiment_io.write_rows_at(
@@ -1129,79 +1059,3 @@ def test_experiment_monitor_preflights_canonical_outputs_before_observation(tmp_
 
     assert observation_calls == []
     assert _workspace_files(tmp_path) == before
-
-
-def test_experiment_init_remote_writes_remote_not_local(tmp_path: Path, monkeypatch):
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        if "mkdir -p" in command[-1] or "seen_inodes" in command[-1] or "append_mode" in command[-1]:
-            returncode, stdout = 0, "true\n"
-        else:
-            returncode = experiment_io.REMOTE_MISSING_RETURN_CODE
-            stdout = "null\n" if "print(json.dumps(text))" in command[-1] else "false\n"
-        if not kwargs.get("text"):
-            return subprocess.CompletedProcess(command, returncode, stdout.encode(), b"")
-        return subprocess.CompletedProcess(command, returncode, stdout, "")
-
-    monkeypatch.setattr("agent_tools.experiment_io.subprocess.run", fake_run)
-
-    experiments.init_experiment("/wujidata/remote_run", _experiment_spec(tmp_path), remote="baichuan3")
-
-    assert all(command[:2] == ["ssh", "baichuan3"] for command, _kwargs in calls)
-    assert any("mkdir -p" in command[-1] for command, _kwargs in calls)
-    write_targets = [command[-1] for command, _kwargs in calls if "cat >" in command[-1]]
-    assert any("/wujidata/remote_run/experiment.yaml" in target for target in write_targets)
-    assert any("/wujidata/remote_run/RESEARCH_LOG.md" in target for target in write_targets)
-    assert any("/wujidata/remote_run/README.md" in target for target in write_targets)
-    assert any("/wujidata/remote_run/experiment_manifest.tsv" in target for target in write_targets)
-    assert any(
-        "append_mode" in command[-1] and "/wujidata/remote_run/events.jsonl" in command[-1]
-        for command, _kwargs in calls
-    )
-    assert not (tmp_path / "reports").exists()
-
-
-def test_experiment_remote_read_failure_is_not_treated_as_missing(tmp_path: Path, monkeypatch):
-    calls = []
-
-    def fake_run(command, **kwargs):
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 255, "", "connection failed")
-
-    monkeypatch.setattr("agent_tools.experiment_io.subprocess.run", fake_run)
-
-    with pytest.raises(RuntimeError, match="SSH read failed"):
-        experiments.init_experiment("/wujidata/remote_run", _experiment_spec(tmp_path), remote="baichuan3")
-
-    assert len(calls) == 1
-    assert not any("mkdir -p" in command[-1] or "cat >" in command[-1] for command, _kwargs in calls)
-
-
-def test_experiment_remote_finalize_rejects_relative_report_before_ssh(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        "agent_tools.experiment_io.subprocess.run",
-        lambda command, **kwargs: calls.append((command, kwargs))
-        or subprocess.CompletedProcess(command, experiment_io.REMOTE_MISSING_RETURN_CODE, "", ""),
-    )
-
-    with pytest.raises(ValueError, match="Remote final report path must be absolute"):
-        experiments.finalize_experiment(
-            "/wujidata/remote_run",
-            "reports/final.md",
-            remote="baichuan3",
-        )
-
-    assert calls == []
-
-
-def test_remote_directory_probe_fails_closed(monkeypatch):
-    monkeypatch.setattr(
-        "agent_tools.experiment_io.subprocess.run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(command, 1, "", "permission denied"),
-    )
-
-    with pytest.raises(RuntimeError, match="SSH directory probe failed"):
-        experiment_io.remote_dir_nonempty(Path("/wujidata/remote_run"), "baichuan3")

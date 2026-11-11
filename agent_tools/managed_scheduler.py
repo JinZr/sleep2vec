@@ -60,7 +60,7 @@ from .manifests import utc_now
 from .models import REPO_ROOT, YAML_SAFE_LOADER, JsonValue, is_full_git_object_id
 
 ACTIVE_STATUSES = frozenset(
-    {"submitting", "queued", "launched", "running", "stopping", "unknown_remote", "unknown_scheduler", "missing_pid"}
+    {"submitting", "queued", "launched", "running", "stopping", "unknown_scheduler", "missing_pid"}
 )
 LAUNCH_TIMEOUT_SECONDS = 60
 RETRYABLE_PRE_SPAWN_EXIT_CODE = 75
@@ -176,7 +176,6 @@ class _LaunchIdentityExtras(TypedDict, total=False):
 
 class _LaunchIdentityFields(_LaunchIdentityExtras):
     target: str
-    host: Any
     workdir: Any
     gpus: str
     pid_path: str
@@ -255,7 +254,7 @@ def observe_run(
 
     Passes the row's observation fields to status_row and derives terminal-status
     ownership from prior metadata, using the supplied default only as fallback.
-    health enables additional probes. Reads local/remote evidence but does not
+    health enables additional probes. Reads local evidence but does not
     commit manifests, launch or stop runs; the caller persists the returned row.
     This entrypoint does not dispatch Slurm rows to observe_slurm_run. Unhandled
     observer errors propagate.
@@ -319,8 +318,6 @@ def capacity_state(
         raise ValueError("execution.max_concurrent must be a positive integer.")
     max_concurrent = raw_max_concurrent
     allow_gpu_oversubscription = bool(groups) and max_concurrent > len(groups)
-    target = str(execution.get("target", "local") or "local")
-    current_host = str(execution.get("host") or "") if target == "ssh" else ""
     group_values = [{str(item) for item in group} for group in groups]
     current_gpu_pool = set().union(*group_values) if group_values else set()
     other_active_gpu_sets: list[set[str]] = []
@@ -334,19 +331,9 @@ def capacity_state(
             or scheduler_type(row) == "slurm"
         ):
             continue
-        row_target = str(row.get("target") or "")
-        if not row_target:
+        if not row.get("target"):
             unknown_other_active += 1
             continue
-        if row_target != target:
-            continue
-        if target == "ssh":
-            row_host = str(row.get("host") or "")
-            if not row_host:
-                unknown_other_active += 1
-                continue
-            if row_host != current_host:
-                continue
         assigned = {part.strip() for part in str(row.get("gpus") or "").split(",") if part.strip()}
         if assigned and not assigned.intersection(current_gpu_pool):
             continue
@@ -399,15 +386,6 @@ def shares_capacity(
 ) -> bool:
     if scheduler_type(row) == "slurm":
         return False
-    row_target = str(row.get("target") or "")
-    target = str(execution.get("target", "local") or "local")
-    if row_target and row_target != target:
-        return False
-    if target == "ssh" and row_target:
-        row_host = str(row.get("host") or "")
-        current_host = str(execution.get("host") or "")
-        if row_host and row_host != current_host:
-            return False
     assigned = {part.strip() for part in str(row.get("gpus") or "").split(",") if part.strip()}
     current_gpu_pool = {str(item) for group in groups for item in group}
     return not assigned or bool(assigned.intersection(current_gpu_pool))
@@ -501,21 +479,14 @@ def _launch_managed_runs(
         if blockers:
             missing_pid_blocker = MissingPidCapacityError(*blockers[0])
 
-    target = str(execution.get("target", "local") or "local")
-    rows, launch_identity_by_key = _prepare_direct_launch_rows(
-        runs, execution, refreshed, target=target, hooks=options.hooks
-    )
+    rows, launch_identity_by_key = _prepare_direct_launch_rows(runs, execution, refreshed, hooks=options.hooks)
 
     launchable = [(index, row) for index, row in enumerate(rows) if row["status"] in LAUNCHABLE_STATUSES]
     output_path_fields: tuple[Literal["log_path", "pid_path"], ...] = ("log_path", "pid_path")
     run_output_paths = [
         Path(str(launch_identity_by_key[validated_run_key(row)][field])) for row in rows for field in output_path_fields
     ]
-    if target == "ssh":
-        if not options.dry_run:
-            exp_io.validate_managed_output_paths(workspace, run_output_paths, remote=str(execution["host"]))
-    else:
-        exp_io.validate_managed_output_paths(workspace, run_output_paths)
+    exp_io.validate_managed_output_paths(workspace, run_output_paths)
 
     execution_snapshot = None
     if not options.dry_run and missing_pid_blocker is None:
@@ -530,8 +501,7 @@ def _launch_managed_runs(
                 if row.get(field) not in (None, "")
             ]
             runtime_root = Path(str(execution.get("workdir") or REPO_ROOT))
-            remote_host = str(execution["host"]) if target == "ssh" else None
-            exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote_host)
+            exp_io.validate_managed_output_paths(runtime_root, runtime_roots)
             validated_snapshot = options.hooks.validated_snapshot or exec_snapshot.validated_execution_snapshot
             snapshot_result = validated_snapshot(
                 owner_dir,
@@ -542,9 +512,8 @@ def _launch_managed_runs(
             execution_snapshot = snapshot_result[0]
             if snapshot_result[1]:
                 exec_snapshot.write_execution_snapshot_file(snapshot_path, snapshot_result[0])
-    if target != "ssh":
-        for row in rows:
-            Path(str(row["run_dir"])).mkdir(parents=True, exist_ok=True)
+    for row in rows:
+        Path(str(row["run_dir"])).mkdir(parents=True, exist_ok=True)
 
     build_command = options.hooks.build_command or build_launch_command
     start = options.hooks.start_process or start_process
@@ -603,7 +572,6 @@ def _prepare_direct_launch_rows(
     execution: Mapping[str, JsonValue],
     refreshed: Mapping[RunKey, Mapping[str, JsonValue]],
     *,
-    target: str,
     hooks: SchedulerHooks,
 ) -> tuple[list[dict[str, JsonValue]], dict[RunKey, DirectLaunchIdentity]]:
     launch_identity_by_key: dict[RunKey, DirectLaunchIdentity] = {}
@@ -614,8 +582,7 @@ def _prepare_direct_launch_rows(
         script = Path(str(run["script"]))
         semantic_run_dir = Path(str(run.get("run_dir") or script.parent))
         launch_identity: DirectLaunchIdentity = {
-            "target": target,
-            "host": execution.get("host", ""),
+            "target": "local",
             "workdir": execution.get("workdir") or str(REPO_ROOT),
             "gpus": "",
             "log_path": str(semantic_run_dir / "stdout.log"),
@@ -725,7 +692,6 @@ def _refresh_external_capacity_runs(
                 row.get(field) not in (None, "")
                 for field in ("target", "workdir", "pid_path", "log_path", "command", "script")
             )
-            and (row.get("target") != "ssh" or row.get("host") not in (None, ""))
         ]
     external_observed = observe_runs(owner_dir, workspace_by_key, external_keys, dry_run=dry_run)
     external_status_changes = external_observed.changes
@@ -1007,7 +973,6 @@ def _launch_slurm_runs(
     ]
     execution_snapshot_sha256 = ""
     if launchable and not options.dry_run:
-        remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
         runtime_roots = [
             Path(str(run[field]))
             for run in launchable
@@ -1015,15 +980,15 @@ def _launch_slurm_runs(
             if run.get(field) not in (None, "")
         ]
         runtime_root = Path(str(execution.get("workdir") or REPO_ROOT))
-        exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote)
+        exp_io.validate_managed_output_paths(runtime_root, runtime_roots)
         frozen_paths = [
             Path(str(run[field]))
             for run in launchable
             for field in ("scheduler_script", "scheduler_result_path", "allocation_identity_path", "log_path")
         ]
-        exp_io.validate_managed_output_paths(owner_dir, frozen_paths, remote=remote)
+        exp_io.validate_managed_output_paths(owner_dir, frozen_paths)
         for run in launchable:
-            script_text = exp_io.read_text_at(str(run["scheduler_script"]), remote=remote)
+            script_text = exp_io.read_text_at(str(run["scheduler_script"]))
             if hashlib.sha256(script_text.encode()).hexdigest() != run["scheduler_script_sha256"]:
                 raise ValueError(f"Frozen Slurm script changed before submission: {run['scheduler_script']}")
         validated_snapshot = options.hooks.validated_snapshot or exec_snapshot.validated_execution_snapshot
@@ -1142,16 +1107,13 @@ def _launch_slurm_runs(
 def _slurm_execution_identity(
     execution: Mapping[str, JsonValue], run: Mapping[str, JsonValue], execution_snapshot_sha256: str | None = None
 ) -> SlurmLaunchIdentity:
-    target = str(execution.get("target", "local") or "local")
-    inner = slurm.submission_command(
+    command = slurm.submission_command(
         str(run["scheduler_script"]),
         str(run["scheduler_submit_token"]),
         execution_snapshot_sha256,
     )
-    command = f"ssh {transport.sh(execution['host'])} {transport.sh(inner)}" if target == "ssh" else inner
     identity: SlurmLaunchIdentity = {
-        "target": target,
-        "host": execution.get("host", ""),
+        "target": "local",
         "workdir": execution.get("workdir") or str(REPO_ROOT),
         "gpus": "",
         "pid_path": "",
@@ -1192,7 +1154,7 @@ def _reconcile_slurm_submission(
     row: Mapping[str, str],
     cause: BaseException,
 ) -> tuple[dict[str, JsonValue], RuntimeError | None]:
-    terminal = _read_slurm_json(owner_dir, execution, row["scheduler_result_path"])
+    terminal = _read_slurm_json(owner_dir, row["scheduler_result_path"])
     if terminal:
         observed = observe_slurm_run(owner_dir, execution, row)
         if observed.get("scheduler_job_id"):
@@ -1268,13 +1230,9 @@ def stop_slurm_run_locked(
     pending_stop = previous.get("stop_requested_at") not in (None, "")
     if pending_stop and previous.get("stop_reason") != reason:
         raise ValueError(f"Run already has a pending stop request with a different reason: {run_id}")
-    target = previous.get("target")
-    host = previous.get("host")
-    if target not in {"local", "ssh"}:
-        raise ValueError(f"Canonical run target must be local or ssh for run_id: {run_id}")
-    if target == "ssh" and (not isinstance(host, str) or not host.strip()):
-        raise ValueError(f"Canonical SSH run requires a non-empty host for run_id: {run_id}")
-    execution: dict[str, JsonValue] = {"target": target, "host": host}
+    if previous.get("target") != "local":
+        raise ValueError(f"Canonical run target must be local for run_id: {run_id}")
+    execution: dict[str, JsonValue] = {}
     if scheduler_direct_controller(previous):
         execution["scheduler"] = {"direct_controller": True}
     job_id = str(previous.get("scheduler_job_id") or "")
@@ -1317,58 +1275,44 @@ def stop_slurm_run_locked(
 
 
 class SlurmMonitorContext:
-    def __init__(self, rows: Iterable[Mapping[str, str]], *, owner_dir: str | Path, remote: str | None = None):
+    def __init__(self, rows: Iterable[Mapping[str, str]], *, owner_dir: str | Path):
         self.owner_dir = Path(owner_dir)
-        groups: dict[tuple[str, str, str, bool], set[str]] = {}
-        file_groups: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        groups: dict[tuple[str, bool], set[str]] = {}
+        file_group: list[tuple[str, str]] = []
         for row in rows:
-            if remote and not row.get("host"):
-                continue
             route = self._route(row)
             if route is not None:
                 groups.setdefault(route, set()).add(str(row["scheduler_job_id"]))
-            file_route = self._file_route(row)
             paths = (str(row.get("scheduler_result_path") or ""), str(row.get("allocation_identity_path") or ""))
-            if file_route is not None and all(paths):
-                file_groups.setdefault(file_route, []).append(paths)
+            if self._has_file_route(row) and all(paths):
+                file_group.append(paths)
         self.groups = {route: tuple(sorted(job_ids)) for route, job_ids in groups.items() if len(job_ids) > 1}
-        self.snapshots: dict[tuple[str, str, str, bool], dict[str, slurm.JobObservation] | None] = {}
-        self.file_groups = {route: paths for route, paths in file_groups.items() if len(paths) > 1}
-        self.file_snapshots: dict[tuple[str, str, str], dict[str, str | None] | None] = {}
+        self.snapshots: dict[tuple[str, bool], dict[str, slurm.JobObservation] | None] = {}
+        self.file_group = file_group if len(file_group) > 1 else []
+        self.file_snapshots: dict[str, dict[str, str | None] | None] = {}
 
     @staticmethod
-    def _file_route(row: Mapping[str, str]) -> tuple[str, str] | None:
-        target = row.get("target")
-        host = str(row.get("host") or "").strip() if target == "ssh" else ""
-        if (
-            row.get("scheduler_type") != "slurm"
-            or row.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH
-            or target not in {"local", "ssh"}
-            or (target == "ssh" and not host)
-            or not row.get("scheduler_submit_token")
-        ):
-            return None
-        return target, host
+    def _has_file_route(row: Mapping[str, str]) -> bool:
+        return (
+            row.get("scheduler_type") == "slurm"
+            and row.get("scheduler_raw_state") != SUBMISSION_CLUSTER_MISMATCH
+            and row.get("target") == "local"
+            and bool(row.get("scheduler_submit_token"))
+        )
 
-    def sidecar(
-        self, owner_dir: Path, execution: Mapping[str, JsonValue], row: Mapping[str, str], field: str
-    ) -> dict[str, JsonValue]:
+    def sidecar(self, owner_dir: Path, row: Mapping[str, str], field: str) -> dict[str, JsonValue]:
         path = str(row[field])
-        route = self._file_route(row)
-        group = self.file_groups.get(route, ()) if route is not None else ()
+        group = self.file_group if self._has_file_route(row) else []
         row_paths = (str(row.get("scheduler_result_path") or ""), str(row.get("allocation_identity_path") or ""))
-        target = execution.get("target", "local")
-        host = str(execution.get("host") or "").strip() if target == "ssh" else ""
-        if owner_dir != self.owner_dir or route != (target, host) or row_paths not in group:
-            return _read_slurm_json(owner_dir, execution, path)
-        key = (*route, field)
-        if key not in self.file_snapshots:
+        if owner_dir != self.owner_dir or row_paths not in group:
+            return _read_slurm_json(owner_dir, path)
+        if field not in self.file_snapshots:
             if field == "scheduler_result_path":
                 paths = [terminal for terminal, _allocation in group]
             else:
-                terminals = self.file_snapshots.get((*route, "scheduler_result_path"))
+                terminals = self.file_snapshots.get("scheduler_result_path")
                 if terminals is None:
-                    return _read_slurm_json(owner_dir, execution, path)
+                    return _read_slurm_json(owner_dir, path)
                 paths = []
                 for terminal, allocation in group:
                     try:
@@ -1380,33 +1324,30 @@ class SlurmMonitorContext:
                     if not has_runtime_commit:
                         paths.append(allocation)
             try:
-                self.file_snapshots[key] = exp_io.read_managed_output_texts_at(
-                    self.owner_dir, list(dict.fromkeys(paths)), remote=host if target == "ssh" else None
+                self.file_snapshots[field] = exp_io.read_managed_output_texts_at(
+                    self.owner_dir, list(dict.fromkeys(paths))
                 )
-            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+            except (OSError, RuntimeError, ValueError):
                 # Discard the whole batch; exact reads retain per-run errors and the phase is not retried.
-                self.file_snapshots[key] = None
-        snapshot = self.file_snapshots[key]
+                self.file_snapshots[field] = None
+        snapshot = self.file_snapshots[field]
         if snapshot is None:
-            return _read_slurm_json(owner_dir, execution, path)
+            return _read_slurm_json(owner_dir, path)
         # Missing text is a snapshot only for this round; the next context rechecks newly published sidecars.
         return _parse_slurm_json(snapshot[path], path)
 
     @staticmethod
-    def _route(row: Mapping[str, str]) -> tuple[str, str, str, bool] | None:
-        target = row.get("target")
-        host = str(row.get("host") or "").strip() if target == "ssh" else ""
+    def _route(row: Mapping[str, str]) -> tuple[str, bool] | None:
         topology = row.get("scheduler_direct_controller")
         if (
             row.get("scheduler_type") != "slurm"
             or row.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH
-            or target not in {"local", "ssh"}
-            or (target == "ssh" and not host)
+            or row.get("target") != "local"
             or topology not in {"true", "false"}
             or not all(row.get(field) for field in ("scheduler_job_id", "scheduler_cluster", "scheduler_submit_token"))
         ):
             return None
-        return target, host, str(row["scheduler_cluster"]), topology == "true"
+        return str(row["scheduler_cluster"]), topology == "true"
 
     def active_job(self, execution: Mapping[str, JsonValue], row: Mapping[str, str]) -> slurm.JobObservation | None:
         route = self._route(row)
@@ -1418,7 +1359,7 @@ class SlurmMonitorContext:
             return None
         if route not in self.snapshots:
             try:
-                matches = slurm.active_jobs(execution, job_id=job_ids, cluster=route[2])
+                matches = slurm.active_jobs(execution, job_id=job_ids, cluster=route[0])
                 snapshot = {item.job_id: item for item in matches}
                 if len(snapshot) != len(matches):
                     raise ValueError("A Slurm monitor batch returned duplicate job ids.")
@@ -1463,26 +1404,22 @@ def observe_slurm_run(
     job_id = canonical_job_id
     canonical_cluster = str(row.get("scheduler_cluster") or "")
     cluster = canonical_cluster
-    execution_target = str(execution.get("target", "local") or "local")
-    execution_host = str(execution.get("host") or "").strip()
     scheduler_value = execution.get("scheduler")
     execution_scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
     canonical_direct_controller = str(row.get("scheduler_direct_controller") or "") == "true"
     routing_identity_matches = (
-        execution_target == row.get("target")
-        and (execution_target != "ssh" or execution_host == str(row.get("host") or "").strip())
+        row.get("target") == "local"
         and (execution_scheduler.get("direct_controller") is True) == canonical_direct_controller
     )
     stop_requested = row.get("stop_requested_at") not in (None, "")
     terminal = (
-        monitor_context.sidecar(owner, execution, row, "scheduler_result_path")
+        monitor_context.sidecar(owner, row, "scheduler_result_path")
         if monitor_context is not None
-        else _read_slurm_json(owner, execution, row["scheduler_result_path"])
+        else _read_slurm_json(owner, row["scheduler_result_path"])
     )
     observation: dict[str, JsonValue] = {**row, "scheduler_observed_at": utc_now()}
     job_id, terminal_exit_code, terminal_identity = _observe_slurm_sidecars(
         owner=owner,
-        execution=execution,
         row=row,
         terminal=terminal,
         token=token,
@@ -1527,9 +1464,7 @@ def observe_slurm_run(
             except slurm.SlurmCommandError as exc:
                 accounting_error = str(exc)
                 accounting_output = f"{exc.stdout}\n{exc.stderr}".lower()
-                accounting_disabled = not (execution_target == "ssh" and exc.returncode == 255) and (
-                    "slurm accounting storage is disabled" in accounting_output
-                )
+                accounting_disabled = "slurm accounting storage is disabled" in accounting_output
             except (subprocess.TimeoutExpired, RuntimeError) as exc:
                 accounting_error = str(exc)
             from_accounting = active is not None
@@ -1539,7 +1474,6 @@ def observe_slurm_run(
                 and bool(canonical_cluster)
                 and bool(token)
                 and str(row.get("scheduler_direct_controller") or "") in {"false", "true"}
-                and (row.get("target") == "local" or (row.get("target") == "ssh" and row.get("host") not in (None, "")))
                 and routing_identity_matches
                 and terminal_identity is not None
                 and terminal_identity.cluster == canonical_cluster
@@ -1613,7 +1547,6 @@ def observe_slurm_run(
 def _observe_slurm_sidecars(
     *,
     owner: Path,
-    execution: Mapping[str, JsonValue],
     row: Mapping[str, str],
     terminal: Mapping[str, JsonValue],
     token: str,
@@ -1643,9 +1576,9 @@ def _observe_slurm_sidecars(
     # A terminal receipt owns lifecycle metadata; allocation only fills missing runtime provenance.
     if not runtime_commit:
         allocation = (
-            monitor_context.sidecar(owner, execution, row, "allocation_identity_path")
+            monitor_context.sidecar(owner, row, "allocation_identity_path")
             if monitor_context is not None
-            else _read_slurm_json(owner, execution, row["allocation_identity_path"])
+            else _read_slurm_json(owner, row["allocation_identity_path"])
         )
         if allocation:
             allocation_identity = slurm.sidecar_identity(allocation, token, expected_job_id=job_id or None)
@@ -1731,9 +1664,8 @@ def _slurm_sidecar_runtime_commit(payload: Mapping[str, Any]) -> str:
     return value
 
 
-def _read_slurm_json(owner_dir: Path, execution: Mapping[str, JsonValue], path: str | Path) -> dict[str, JsonValue]:
-    remote = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
-    text = exp_io.read_managed_output_texts_at(owner_dir, [path], remote=remote)[str(path)]
+def _read_slurm_json(owner_dir: Path, path: str | Path) -> dict[str, JsonValue]:
+    text = exp_io.read_managed_output_texts_at(owner_dir, [path])[str(path)]
     return _parse_slurm_json(text, path)
 
 
@@ -1752,15 +1684,11 @@ def _parse_slurm_json(text: str | None, path: str | Path) -> dict[str, JsonValue
 def _slurm_artifact_observation(
     row: dict[str, JsonValue], *, health: bool = False, health_error: str = ""
 ) -> dict[str, JsonValue]:
-    observed_artifacts = evidence.runtime_artifacts(row)
-    if observed_artifacts is not None:
-        run_manifest, _manifest, checkpoints = observed_artifacts
-        row.update({"run_manifest": run_manifest, "checkpoints": ";".join(checkpoints)})
+    run_manifest, _manifest, checkpoints = evidence.runtime_artifacts(row)
+    row.update({"run_manifest": run_manifest, "checkpoints": ";".join(checkpoints)})
+    row["log_tail"] = evidence.log_tail(row.get("log_path"))
     if health:
-        row["log_tail"], log_age = evidence.log_tail_and_age(row.get("log_path"), row)
-    else:
-        row["log_tail"] = evidence.log_tail(row.get("log_path"), row)
-    if health:
+        log_age = evidence.log_age_seconds(row.get("log_path"))
         status = str(row.get("status") or "")
         if health_error or status in {"submitting", "unknown_scheduler"}:
             health_status = "health_unknown"
@@ -1895,10 +1823,6 @@ def build_launch_command(
     if env:
         env_prefix = " ".join(f"{key}={_sh(value)}" for key, value in sorted(env.items()))
         run_command = f"env {env_prefix} {run_command}"
-    if execution.get("target", "local") == "ssh":
-        mkdir = f"mkdir -p {_sh(_parent_path(log_path))} {_sh(_parent_path(pid_path))}"
-        inner = f"{mkdir} && cd {_sh(workdir)} && {run_command}"
-        return f"ssh {_sh(execution['host'])} {_sh(inner)}"
     return f"cd {_sh(workdir)} && {run_command}"
 
 
@@ -1908,31 +1832,10 @@ def start_process(
     *,
     retry_pre_spawn_failure: bool = True,
 ) -> str:
-    remote = execution.get("target", "local") == "ssh"
-    try:
-        result = subprocess.run(
-            ["bash", "-lc", command],
-            text=True,
-            capture_output=True,
-            timeout=LAUNCH_TIMEOUT_SECONDS if remote else None,
-        )
-    except subprocess.TimeoutExpired:
-        if not remote:
-            raise
-        # A detached child may already exist when the transport times out; monitoring must reconcile it.
-        return "launched"
-    if remote and result.returncode == 255:
-        # SSH may disconnect after starting the detached child; monitoring must reconcile its identity.
-        return "launched"
+    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
     if retry_pre_spawn_failure and result.returncode == RETRYABLE_PRE_SPAWN_EXIT_CODE:
         return "pending"
     return "launched" if result.returncode == 0 else "launch_failed"
-
-
-def _parent_path(path: str | Path) -> str:
-    text = str(path)
-    parent = text.rsplit("/", 1)[0] if "/" in text else "."
-    return parent or "/"
 
 
 _sh = transport.sh

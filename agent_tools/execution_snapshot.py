@@ -2,7 +2,7 @@
 
 Layer 0 leaf. The execution snapshot (``execution_snapshot.json``) is the
 evidence a managed plan freezes about the runtime its runs execute in: the
-execution target, the interpreter and its version, the planned and observed
+working directory, the interpreter and its version, the planned and observed
 checkout commits, the one runtime module and its origin, and the CLI options the
 planned arguments need and that module accepts. This module owns that shape, the
 target probe that produces it, the check that a frozen snapshot still matches
@@ -43,8 +43,6 @@ class PlannedArgv(TypedDict):
 
 class ExecutionSnapshot(TypedDict, total=False):
     # External identity fields are passed through, including overrides of execution metadata.
-    target: JsonValue
-    host: JsonValue
     workdir: JsonValue
     conda_env: JsonValue
     python_command: JsonValue
@@ -224,8 +222,6 @@ def inspect_execution_target(
         raise ValueError("Target runtime CLI preflight returned malformed evidence.")
     execution_env = execution.get("env") if isinstance(execution.get("env"), dict) else {}
     return {
-        "target": str(execution.get("target", "local") or "local"),
-        "host": str(execution.get("host") or ""),
         "workdir": str(execution.get("workdir") or REPO_ROOT),
         "conda_env": str(execution.get("conda_env") or ""),
         "python_command": python_command,
@@ -256,5 +252,4 @@ def run_execution_command(execution: Mapping[str, Any], command: list[str]) -> s
         env_prefix = " ".join(f"{key}={transport.sh(value)}" for key, value in sorted(env.items()))
         run_command = f"env {env_prefix} {run_command}"
     run_command = f"cd {transport.sh(workdir)} && {run_command}"
-    host = str(execution["host"]) if execution.get("target", "local") == "ssh" else None
-    return transport.run_shell(host, run_command, timeout=_EXECUTION_PREFLIGHT_TIMEOUT_SECONDS)
+    return transport.run_shell(run_command, timeout=_EXECUTION_PREFLIGHT_TIMEOUT_SECONDS)

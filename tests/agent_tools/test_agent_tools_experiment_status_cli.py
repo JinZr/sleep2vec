@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
 
 import pytest
 from test_agent_tools_experiment_status import (
@@ -119,13 +118,13 @@ def test_experiment_status_does_not_use_following_read_for_experiment_manifest(t
     real_read = experiment_io.read_text_at
     followed = False
 
-    def swap_then_read(path, *, remote=None):
+    def swap_then_read(path):
         nonlocal followed
         if Path(path) == manifest:
             manifest.unlink()
             manifest.symlink_to(outside)
             followed = True
-        return real_read(path, remote=remote)
+        return real_read(path)
 
     monkeypatch.setattr(experiment_io, "read_text_at", swap_then_read)
 
@@ -180,16 +179,14 @@ def test_experiment_status_human_output_scopes_same_code_blockers(tmp_path):
     assert "`unmaterialized_step` [step=second]" in rendered
 
 
-@pytest.mark.parametrize(("remote", "control_host"), [("baichuan3", "baichuan3"), (None, None)])
-def test_experiment_status_separates_control_host_from_execution_transport(remote, control_host):
-    root = Path("/remote/experiment")
+def test_experiment_status_projects_execution_target_without_control_host():
+    root = Path("/experiment")
     row = {
         "step_id": "train",
         "run_id": "run-000",
         "run_name": "default",
         "status": "planned",
-        "target": "ssh",
-        "host": "gpu-worker",
+        "target": "local",
     }
     registered_steps = [
         {
@@ -209,20 +206,19 @@ def test_experiment_status_separates_control_host_from_execution_transport(remot
     ]
 
     snapshot = experiment_tracking.experiment_status_snapshot(
-        {"id": "status-unit", "title": "Remote status"},
+        {"id": "status-unit", "title": "Local status"},
         registered_steps,
         [row],
         root=root,
-        remote=remote,
     )
     action = snapshot["decision"]["recommended_next"]
 
-    assert action["control_host"] == control_host
-    assert snapshot["runs"][0]["execution"] == {"target": "ssh", "host": "gpu-worker"}
+    assert "control_host" not in action
+    assert snapshot["runs"][0]["execution"] == {"target": "local"}
     rendered = experiment_tracking.format_experiment_status(snapshot)
     assert "| train | train | ordinary | planned=1 |" in rendered
-    assert "ssh:gpu-worker" in rendered
-    assert ("control host: `baichuan3`" in rendered) is (control_host is not None)
+    assert "| train / run-000 — default | planned | local |" in rendered
+    assert "control host:" not in rendered
     assert f"bash {root / 'plans' / 'train' / 'run.sh'}" in rendered
 
 
@@ -279,14 +275,13 @@ def test_experiment_status_keeps_local_hparam_queue_on_controller(tmp_path):
         step_id="tune",
         task="hparam_tune",
         status="pending",
-        host="baichuan3",
     )
 
     snapshot = experiments.experiment_status(root)
     action = snapshot["decision"]["recommended_next"]
 
     assert action["id"] == "hparam-run-queue"
-    assert action["control_host"] is None
+    assert "control_host" not in action
     assert action["argv"] == [
         "python",
         "-m",
@@ -297,50 +292,6 @@ def test_experiment_status_keeps_local_hparam_queue_on_controller(tmp_path):
         "--execute",
     ]
     assert "control host:" not in experiment_tracking.format_experiment_status(snapshot)
-
-
-def test_experiment_status_keeps_remote_finalize_on_controller():
-    root = Path("/remote/experiment")
-    row = {"step_id": "train", "run_id": "run-000", "run_name": "default", "status": "completed"}
-    registered_steps = [
-        {
-            "manifest": {
-                "step": {"id": "train", "phase": "train", "purpose": "Train."},
-                "plan_controller": "ordinary",
-            },
-            "plans": [
-                {
-                    "path": str(root / "plans" / "train"),
-                    "run_keys": [("train", "run-000")],
-                }
-            ],
-        }
-    ]
-
-    snapshot = experiment_tracking.experiment_status_snapshot(
-        {"id": "status-unit", "title": "Remote status"},
-        registered_steps,
-        [row],
-        root=root,
-        remote="baichuan3",
-    )
-    action = snapshot["decision"]["other_legal_actions"][0]
-
-    assert action["control_host"] is None
-    assert action["argv"][-2:] == ["--remote", "baichuan3"]
-
-
-def test_experiment_status_cli_converts_remote_timeout_to_exit_one(monkeypatch, capsys):
-    def timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(["ssh", "baichuan3"], 10)
-
-    monkeypatch.setattr(cli, "experiment_status", timeout)
-
-    assert cli.main(["experiment-status", "--run-dir", "/remote/experiment", "--remote", "baichuan3"]) == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err.startswith("error:")
-    assert "Traceback" not in captured.err
 
 
 def test_experiment_status_cli_converts_malformed_yaml_to_exit_one(tmp_path, capsys):

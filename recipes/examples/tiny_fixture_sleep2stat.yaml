@@ -33,11 +33,6 @@ artifacts:
   run_dir: results/sleep2stat/tiny_fixture
   overwrite: false
 
-execution:
-  target: local
-  path_context: local
-  path_validation: local
-
 evaluation_policy:
   external_test_locked: true
 

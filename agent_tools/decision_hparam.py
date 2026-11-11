@@ -24,11 +24,7 @@ from .models import REPO_ROOT, ConfigSummaryInput, is_full_git_object_id
 from .plan_rendering import FINETUNE_SCHEDULER_FIELDS
 
 _HPARAM_EXECUTION_FIELDS = {
-    "target",
-    "host",
     "workdir",
-    "path_context",
-    "path_validation",
     "max_concurrent",
     "gpu_pool",
     "gpus_per_run",
@@ -168,8 +164,8 @@ def _hparam_config_issues(
                     DecisionStatus.FAIL,
                     "config",
                     (
-                        "Hparam plan generation needs local config YAML content; remote path validation may be "
-                        "deferred, but YAML overrides cannot be generated from an unreadable config."
+                        "Hparam plan generation needs local config YAML content; YAML overrides cannot be "
+                        "generated from an unreadable config."
                     ),
                     None,
                     {"config": config},
@@ -473,7 +469,6 @@ def _hparam_scheduler_issues(
 
 def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionIssue]:
     issues: list[DecisionIssue] = []
-    target = execution.get("target", "local")
     for field in ("log_dir", "pid_dir"):
         if field in execution:
             issues.append(
@@ -485,26 +480,6 @@ def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionI
                     {field: execution.get(field)},
                 )
             )
-    if target not in {"local", "ssh"}:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.target",
-                "execution.target must be local or ssh.",
-                None,
-                {"target": target},
-            )
-        )
-    if target == "ssh" and not execution.get("host"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.host",
-                "execution.host is required when execution.target=ssh.",
-                None,
-                {},
-            )
-        )
     workdir = execution.get("workdir")
     if workdir not in (None, "") and not Path(str(workdir)).is_absolute():
         issues.append(
@@ -546,9 +521,7 @@ def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionI
                 {"runtime_commit": runtime_commit},
             )
         )
-    manager_runtime = (
-        target == "local" and workdir in (None, "", str(REPO_ROOT)) and execution.get("conda_env") in (None, "")
-    )
+    manager_runtime = workdir in (None, "", str(REPO_ROOT)) and execution.get("conda_env") in (None, "")
     if not manager_runtime:
         for field, question in (
             ("python", "What Python executable name or absolute path should the target runtime use?"),
@@ -561,29 +534,9 @@ def _hparam_runtime_identity_issues(execution: dict[str, Any]) -> list[DecisionI
                         f"execution.{field}",
                         f"execution.{field} must be explicit when the target runtime is not local REPO_ROOT.",
                         question,
-                        {"target": target, "workdir": workdir, "conda_env": execution.get("conda_env")},
+                        {"workdir": workdir, "conda_env": execution.get("conda_env")},
                     )
                 )
-    if execution.get("path_context") not in (None, "local", "remote"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.path_context",
-                "execution.path_context must be local or remote.",
-                None,
-                {"path_context": execution.get("path_context")},
-            )
-        )
-    if execution.get("path_validation") not in (None, "local", "remote", "defer", "ssh"):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.path_validation",
-                "execution.path_validation must be local, remote, defer, or ssh.",
-                None,
-                {"path_validation": execution.get("path_validation")},
-            )
-        )
     return issues
 
 

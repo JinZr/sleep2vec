@@ -14,7 +14,6 @@ import pytest
 from test_agent_tools_hparam_runtime import (
     _embedded_process_group_running,
     _hparam_recipe,
-    _is_remote_python_program,
     _process_identity,
     _read_table,
     _write_proc_stat,
@@ -34,22 +33,13 @@ from agent_tools import (
     run_artifacts,
     run_evidence,
     slurm,
-    transport,
 )
 from agent_tools.experiment_workspace import EXECUTION_IDENTITY_FIELDS, MONITOR_EXIT_CODE_PREFIX, merge_run_manifest
 
 
-@pytest.mark.parametrize(
-    ("target", "status", "dry_run"),
-    [("local", "planned", False), ("local", "pending", True), ("ssh", "planned", True), ("ssh", "pending", False)],
-)
-def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(
-    tmp_path: Path, monkeypatch, target, status, dry_run
-):
-    execution = {"target": target, "workdir": str(tmp_path)}
-    if target == "ssh":
-        execution["host"] = "unit-host"
-    recipe = _hparam_recipe(tmp_path, execution=execution)
+@pytest.mark.parametrize(("status", "dry_run"), [("planned", False), ("pending", True)])
+def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Path, monkeypatch, status, dry_run):
+    recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
@@ -57,7 +47,7 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(
     run = plan["runs"][0]
     if dry_run:
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
-        assert _read_table(plan_dir / "launch_manifest.tsv")[0]["target"] == target
+        assert _read_table(plan_dir / "launch_manifest.tsv")[0]["target"] == "local"
     merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": status}])
     frozen_paths = [plan_dir / "plan.json", plan_dir / "recipe.resolved.yaml", Path(run["script"]), Path(run["config"])]
     frozen = {path: path.read_bytes() for path in frozen_paths}
@@ -67,20 +57,13 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: now)
     monkeypatch.setattr(run_evidence, "read_pid", lambda *_a, **_k: pytest.fail("no PID read"))
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: pytest.fail("no identity read"))
-    monkeypatch.setattr(run_evidence, "run_row_command", lambda *_a, **_k: pytest.fail("no remote command"))
+    monkeypatch.setattr(run_evidence, "run_row_command", lambda *_a, **_k: pytest.fail("no process command"))
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
     monkeypatch.setattr(slurm, "active_jobs", lambda *_a, **_k: pytest.fail("no scheduler lookup"))
     monkeypatch.setattr(slurm, "cancel", lambda *_a, **_k: pytest.fail("no scheduler cancel"))
     launcher = FakeLauncher()
     # Stop and the queue take no hooks, so the public owner guards them against starting a process.
     monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-
-    def validate_local(root, paths, *, remote=None):
-        assert remote is None
-        return real_validate(root, paths)
-
-    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_local)
 
     assert hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason) == plan_dir / "run_status.tsv"
 
@@ -110,11 +93,6 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(
     with pytest.raises(ValueError, match="already terminal"):
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason)
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before_repeat
-    monkeypatch.setattr(
-        hparam_runtime.exp_io,
-        "validate_managed_output_paths",
-        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
-    )
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "stopped"
     monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_a, **_k: pytest.fail("no queue monitor"))
@@ -208,7 +186,6 @@ def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
         {"stop_requested_at": "2026-08-30T04:00:00Z"},
         {"status": "launched"},
         {"status": "missing_pid"},
-        {"status": "unknown_remote"},
     ],
 )
 def test_hparam_stop_does_not_metadata_cancel_uncertain_launch(tmp_path: Path, monkeypatch, evidence):
@@ -494,79 +471,23 @@ def test_hparam_plan_commit_rereads_workspace_state_only_under_run_lock(tmp_path
     assert committed["runs"] == plan["runs"]
 
 
-def test_remote_stop_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(
-        tmp_path,
-        [
-            {
-                "run_id": "run-000",
-                "target": "ssh",
-                "host": "unit-host",
-                "status": "running",
-                **_process_identity(),
-            }
-        ],
-    )
+def test_stop_signal_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running", **_process_identity()}])
     before_launch = (tmp_path / "launch_manifest.tsv").read_bytes()
     before_status = (tmp_path / "run_status.tsv").read_bytes()
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-    monkeypatch.setattr(
-        hparam_runtime.exp_io,
-        "validate_managed_output_paths",
-        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
-    )
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda _path, _row: _process_identity())
     monkeypatch.setattr(
         run_evidence,
         "stop_process_group",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("Failed to stop remote process group")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("Failed to stop process group")),
     )
 
-    with pytest.raises(RuntimeError, match="Failed to stop remote process group"):
+    with pytest.raises(RuntimeError, match="Failed to stop process group"):
         hparam_runtime.stop_hparam_run(tmp_path, rows[0]["run_id"], reason="validation diverged")
 
     assert (tmp_path / "launch_manifest.tsv").read_bytes() == before_launch
     assert (tmp_path / "run_status.tsv").read_bytes() == before_status
     assert not (tmp_path / "events.jsonl").exists()
-
-
-@pytest.mark.parametrize("failure", ["permission", "wrong_type", "ssh_error", "timeout"])
-def test_remote_stop_pid_probe_failure_has_no_side_effects(tmp_path: Path, monkeypatch, failure: str):
-    _write_runtime_rows(
-        tmp_path,
-        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "running"}],
-    )
-    merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": "running"}])
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    calls = []
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-    monkeypatch.setattr(
-        hparam_runtime.exp_io,
-        "validate_managed_output_paths",
-        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
-    )
-
-    def fake_pid_read(_row, command):
-        if failure == "permission":
-            return subprocess.CompletedProcess([], 1 if "os.lstat" in command else 44, "", "permission denied")
-        if failure == "wrong_type":
-            return subprocess.CompletedProcess([], 1 if "os.lstat" in command else 44, "", "is a directory")
-        if failure == "timeout":
-            return subprocess.CompletedProcess([], 124, "", "timed out")
-        return subprocess.CompletedProcess([], 255, "", "connection lost")
-
-    monkeypatch.setattr(run_evidence, "run_row_command", fake_pid_read)
-    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: calls.append("kill"))
-    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("merge"))
-    monkeypatch.setattr(hparam_runtime, "write_rows", lambda *_args: calls.append("write"))
-    monkeypatch.setattr(hparam_runtime, "append_event", lambda *_args: calls.append("event"))
-    monkeypatch.setattr(hparam_runtime, "write_status_report", lambda *_args: calls.append("report"))
-
-    with pytest.raises(RuntimeError, match="SSH PID read failed"):
-        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="remote state unknown")
-
-    assert calls == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
 @pytest.mark.parametrize("pid_text", ["0", "-1"])
@@ -638,54 +559,11 @@ def test_hparam_stop_rejects_unsafe_local_pid_topology_before_read_or_kill(tmp_p
     assert calls == []
 
 
-def test_hparam_stop_rejects_unsafe_remote_pid_topology_before_read_or_signal(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(
-        tmp_path,
-        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "running"}],
-    )
-    calls = []
-
-    def reject_remote(_root, _paths, *, remote=None):
-        if remote:
-            calls.append(("preflight", remote))
-            raise ValueError("Managed output paths must be independent regular files: /remote/run.pid")
-
-    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", reject_remote)
-    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: calls.append("read"))
-    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args, **_kwargs: calls.append("signal"))
-
-    with pytest.raises(ValueError, match="Managed output"):
-        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unsafe remote PID topology")
-
-    assert calls == [("preflight", "unit-host")]
-
-
-@pytest.mark.parametrize(
-    ("target", "host", "message"),
-    [
-        pytest.param("cluster", "unit-host", "target must be local or ssh", id="unknown-target"),
-        pytest.param("ssh", "", "requires a non-empty host", id="missing-ssh-host"),
-        pytest.param("ssh", "   ", "requires a non-empty host", id="blank-ssh-host"),
-    ],
-)
-def test_hparam_stop_rejects_invalid_transport_before_pid_read_or_signal(
-    tmp_path: Path,
-    monkeypatch,
-    target: str,
-    host: str,
-    message: str,
-):
+@pytest.mark.parametrize("target", ["ssh", "cluster"])
+def test_hparam_stop_rejects_non_local_target_before_pid_read_or_signal(tmp_path: Path, monkeypatch, target: str):
     rows = _write_runtime_rows(
         tmp_path,
-        [
-            {
-                "run_id": "run-000",
-                "target": target,
-                "host": host,
-                "status": "running",
-                **_process_identity(),
-            }
-        ],
+        [{"run_id": "run-000", "target": target, "status": "running", **_process_identity()}],
     )
     _write_process_identity(rows[0]["pid_path"])
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
@@ -693,8 +571,8 @@ def test_hparam_stop_rejects_invalid_transport_before_pid_read_or_signal(
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: calls.append("read"))
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args, **_kwargs: calls.append("signal"))
 
-    with pytest.raises(ValueError, match=message):
-        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="invalid transport")
+    with pytest.raises(ValueError, match="target must be local"):
+        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="invalid target")
 
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
@@ -743,7 +621,7 @@ def test_hparam_stop_binds_first_process_identity_to_the_frozen_script(
     identity = _write_process_identity(rows[0]["pid_path"])
     commands = []
 
-    def matched_script(_row, command):
+    def matched_script(command):
         commands.append(command)
         return subprocess.CompletedProcess([], 0, process_args.format(script=rows[0]["script"]) + "\n", "")
 
@@ -782,7 +660,7 @@ def test_hparam_stop_rejects_unbound_first_process_identity_before_signal_or_com
     monkeypatch.setattr(
         run_evidence,
         "run_row_command",
-        lambda _row, _command: subprocess.CompletedProcess(
+        lambda _command: subprocess.CompletedProcess(
             [],
             0,
             process_args.format(script=rows[0]["script"]) + "\n",
@@ -796,45 +674,6 @@ def test_hparam_stop_rejects_unbound_first_process_identity_before_signal_or_com
     with pytest.raises(run_evidence.ProcessIdentityError, match="does not match frozen script"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unbound identity")
 
-    assert calls == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_hparam_stop_rejects_unbound_remote_first_process_identity_before_signal_or_commit(
-    tmp_path: Path,
-    monkeypatch,
-):
-    _write_runtime_rows(
-        tmp_path,
-        [{"run_id": "run-000", "target": "ssh", "host": "unit-host", "status": "running"}],
-    )
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-    monkeypatch.setattr(
-        hparam_runtime.exp_io,
-        "validate_managed_output_paths",
-        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
-    )
-    commands = []
-
-    def remote_evidence(_row, command):
-        commands.append(command)
-        if _is_remote_python_program(command, "run_evidence.read_pid_text"):
-            return subprocess.CompletedProcess([], 0, json.dumps(_process_identity()) + "\n", "")
-        if command == "ps -ww -p 123 -o args=":
-            return subprocess.CompletedProcess([], 0, "python unrelated_job.py\n", "")
-        raise AssertionError(command)
-
-    monkeypatch.setattr(run_evidence, "run_row_command", remote_evidence)
-    calls = []
-    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args: calls.append("signal"))
-    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("commit"))
-
-    with pytest.raises(run_evidence.ProcessIdentityError, match="does not match frozen script"):
-        hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unbound remote identity")
-
-    assert len(commands) == 2
-    assert commands[1] == "ps -ww -p 123 -o args="
     assert calls == []
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
@@ -879,27 +718,6 @@ def test_hparam_stop_rejects_a_reused_process_before_canonical_commit(tmp_path: 
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="stale process identity")
 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
-
-
-def test_remote_stop_verifies_and_signals_in_one_command(monkeypatch):
-    identity = _process_identity()
-    commands = []
-    monkeypatch.setattr(
-        run_evidence,
-        "run_row_command",
-        lambda _row, command: commands.append(command) or subprocess.CompletedProcess([], 0, "", ""),
-    )
-
-    run_evidence.stop_process_group({"target": "ssh", "host": "unit-host"}, identity)
-
-    assert len(commands) == 1
-    assert commands[0] == transport.remote_python_program_command(
-        "run_evidence.process_stop",
-        identity["pid"],
-        identity["process_group_id"],
-        identity["process_start_token"],
-        5.0,
-    )
 
 
 @pytest.mark.parametrize(
@@ -1007,7 +825,7 @@ def test_status_binds_first_process_identity_only_to_the_frozen_script(
     monkeypatch.setattr(
         run_evidence,
         "run_row_command",
-        lambda _row, command: (
+        lambda command: (
             subprocess.CompletedProcess(
                 [],
                 0,
@@ -1027,25 +845,11 @@ def test_status_binds_first_process_identity_only_to_the_frozen_script(
     assert observed.get("process_start_token", "") == ("proc:unit-start" if expected_pid else "")
 
 
-@pytest.mark.parametrize(
-    ("target", "host", "expected_status"),
-    [
-        pytest.param("local", "", "missing_pid", id="local"),
-        pytest.param("ssh", "unit-host", "unknown_remote", id="ssh"),
-    ],
-)
-def test_status_keeps_dead_unfrozen_process_identity_unbound(
-    tmp_path: Path,
-    monkeypatch,
-    target: str,
-    host: str,
-    expected_status: str,
-):
+def test_status_keeps_dead_unfrozen_process_identity_unbound(tmp_path: Path, monkeypatch):
     script = tmp_path / "launch.sh"
     script.write_text("#!/usr/bin/env bash\ntrue\n")
     row = {
-        "target": target,
-        "host": host,
+        "target": "local",
         "script": str(script),
         "pid_path": str(tmp_path / "managed.pid"),
         "status": "launched",
@@ -1057,12 +861,12 @@ def test_status_keeps_dead_unfrozen_process_identity_unbound(
         "_require_process_script",
         lambda *_args: (_ for _ in ()).throw(AssertionError("dead identity must remain unbound")),
     )
-    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: None)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: ("", {}, []))
     monkeypatch.setattr(run_evidence, "log_tail", lambda *_args: "")
 
     observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
 
-    assert observed["status"] == expected_status
+    assert observed["status"] == "missing_pid"
     assert observed["pid"] == ""
     assert observed.get("process_group_id", "") == ""
     assert observed.get("process_start_token", "") == ""
@@ -1257,33 +1061,6 @@ def test_log_failure_projection_keeps_labeled_traceback_detection(tmp_path: Path
     log_path.write_text("2: Traceback: CUDA out of memory\n")
 
     assert run_evidence.log_has_failure(log_path, {"scheduler_type": "slurm"}) is True
-
-
-def test_status_preserves_remote_uncertainty_when_monitor_exit_log_is_unreadable(tmp_path: Path, monkeypatch):
-    identity = _process_identity()
-    row = {
-        "target": "ssh",
-        "host": "unit-host",
-        "script": str(tmp_path / "launch.sh"),
-        "pid_path": str(tmp_path / "managed.pid"),
-        "log_path": str(tmp_path / "managed.log"),
-        "status": "running",
-        "terminal_status_owner": "monitor",
-        **identity,
-    }
-    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args: identity)
-    monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
-    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: None)
-    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args: "")
-    monkeypatch.setattr(
-        run_evidence,
-        "run_row_command",
-        lambda *_args: subprocess.CompletedProcess([], 255, "", "connection lost"),
-    )
-
-    observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=False)
-
-    assert observed["status"] == "unknown_remote"
 
 
 def test_status_marks_lifecycle_owned_running_run_with_missing_pid_as_missing_pid(tmp_path: Path):
@@ -1502,8 +1279,7 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
 @pytest.mark.parametrize(
     ("field", "changed"),
     [
-        ("target", "ssh"),
-        ("host", "other-host"),
+        ("target", "other-target"),
         ("workdir", "/other/workdir"),
         ("gpus", "7"),
         ("pid_path", "/tmp/other.pid"),

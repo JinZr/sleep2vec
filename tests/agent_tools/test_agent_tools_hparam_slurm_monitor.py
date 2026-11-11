@@ -17,22 +17,13 @@ from agent_tools.experiment_workspace import (
 
 
 @pytest.mark.parametrize(
-    ("direct_controller", "target", "status", "dry_run"),
-    [(False, "local", "planned", False), (True, "local", "pending", True), (False, "ssh", "planned", False)],
+    ("direct_controller", "status", "dry_run"),
+    [(False, "planned", False), (True, "pending", True)],
 )
 def test_slurm_stop_cancels_unsubmitted_run_without_scheduler_probes(
-    tmp_path: Path, monkeypatch, direct_controller, target, status, dry_run
+    tmp_path: Path, monkeypatch, direct_controller, status, dry_run
 ):
-    execution = {"target": target}
-    if target == "ssh":
-        execution["host"] = "unit-host"
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-    monkeypatch.setattr(
-        hparam_runtime.exp_io,
-        "validate_managed_output_paths",
-        lambda root, paths, remote=None: None if remote else real_validate(root, paths),
-    )
-    plan_dir, plan = _write_slurm_plan(tmp_path, execution=execution, direct_controller=direct_controller)
+    plan_dir, plan = _write_slurm_plan(tmp_path, direct_controller=direct_controller)
     run = plan["runs"][0]
     if dry_run:
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
@@ -49,12 +40,6 @@ def test_slurm_stop_cancels_unsubmitted_run_without_scheduler_probes(
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: pytest.fail("no identity read"))
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
     monkeypatch.setattr(managed_scheduler, "observe_slurm_run", lambda *_a, **_k: pytest.fail("no scheduler probe"))
-
-    def validate_local(root, paths, *, remote=None):
-        assert remote is None
-        return real_validate(root, paths)
-
-    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_local)
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: "2026-08-30T04:05:06Z")
 
     hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel before submission")
@@ -201,9 +186,9 @@ def test_slurm_monitor_commits_terminal_sidecar_result(tmp_path: Path, monkeypat
     read_calls = []
     real_read = managed_scheduler.exp_io.read_managed_output_texts_at
 
-    def read_output_texts(root, paths, *, remote=None):
+    def read_output_texts(root, paths):
         read_calls.append([str(path) for path in paths])
-        return real_read(root, paths, remote=remote)
+        return real_read(root, paths)
 
     monkeypatch.setattr(managed_scheduler.exp_io, "read_managed_output_texts_at", read_output_texts)
     monkeypatch.setattr(managed_scheduler.slurm, "active_jobs", lambda *_args, **_kwargs: [])
@@ -272,9 +257,9 @@ def test_slurm_monitor_reads_allocation_only_for_absent_terminal_mapping(
     scheduler_calls = []
     real_read = managed_scheduler.exp_io.read_managed_output_texts_at
 
-    def read_output_texts(root, paths, *, remote=None):
+    def read_output_texts(root, paths):
         read_calls.append([str(path) for path in paths])
-        return real_read(root, paths, remote=remote)
+        return real_read(root, paths)
 
     def active_jobs(_execution, **kwargs):
         scheduler_calls.append(kwargs)
@@ -696,99 +681,6 @@ def test_slurm_monitor_handles_purged_job_when_accounting_is_unavailable(
             assert f"non-zero exit code {terminal_exit_code}" in canonical["scheduler_reason"]
 
 
-def test_slurm_monitor_ignores_local_host_label_for_accounting_disabled_recovery(
-    tmp_path: Path,
-    monkeypatch,
-):
-    plan_dir, plan = _write_slurm_plan(tmp_path, execution={"host": "local-label"})
-    run = plan["runs"][0]
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "submit",
-        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
-    )
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-    Path(run["scheduler_result_path"]).write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "scheduler_job_id": "3880",
-                "scheduler_cluster": "wuji-h20",
-                "scheduler_submit_token": run["scheduler_submit_token"],
-                "node": "h20-bj-96",
-                "exit_code": 0,
-            }
-        )
-    )
-
-    def run_command(_execution, argv, *, timeout):
-        if argv[0] == "squeue":
-            return subprocess.CompletedProcess([], 0, "", "")
-        if argv[0] == "scontrol":
-            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
-        return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
-
-    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
-
-    hparam_runtime.monitor_hparam_runs(plan_dir)
-
-    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
-    assert canonical["target"] == "local"
-    assert canonical["host"] == "local-label"
-    assert canonical["status"] == "completed"
-    assert canonical["scheduler_raw_state"] == "MISSING"
-
-
-def test_slurm_accounting_disabled_recovery_requires_matching_ssh_host(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
-    run = plan["runs"][0]
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "submit",
-        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
-    )
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-    row = next(item for item in _read_table(tmp_path / "run_manifest.tsv") if item["run_id"] == run["run_id"])
-    row.update({"target": "ssh", "host": "baichuan3"})
-    terminal = {
-        "schema_version": 1,
-        "scheduler_job_id": "3880",
-        "scheduler_cluster": "wuji-h20",
-        "scheduler_submit_token": row["scheduler_submit_token"],
-        "node": "h20-bj-96",
-        "exit_code": 0,
-        "runtime_commit": "a" * 40,
-    }
-
-    def read_output_texts(root, paths, *, remote=None):
-        assert root == plan_dir
-        assert paths == [row["scheduler_result_path"]]
-        assert remote == "other-host"
-        return {row["scheduler_result_path"]: json.dumps(terminal)}
-
-    monkeypatch.setattr(managed_scheduler.exp_io, "read_managed_output_texts_at", read_output_texts)
-    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
-    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args, **_kwargs: "")
-
-    def run_command(_execution, argv, *, timeout):
-        if argv[0] == "squeue":
-            return subprocess.CompletedProcess([], 0, "", "")
-        if argv[0] == "scontrol":
-            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
-        return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
-
-    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
-
-    observed = managed_scheduler.observe_slurm_run(
-        plan_dir,
-        {"target": "ssh", "host": "other-host"},
-        row,
-    )
-
-    assert observed["status"] == "unknown_scheduler"
-    assert observed["scheduler_raw_state"] == "MISSING"
-
-
 @pytest.mark.parametrize("accounting_failure", ["permission", "timeout"])
 def test_slurm_monitor_keeps_purged_sidecar_unknown_for_other_accounting_failures(
     tmp_path: Path,
@@ -841,9 +733,8 @@ def test_slurm_monitor_keeps_purged_sidecar_unknown_for_other_accounting_failure
         ({"scheduler_submit_token": ""}, {"target": "local"}),
         ({"scheduler_direct_controller": ""}, {"target": "local"}),
         ({"target": ""}, {"target": "local"}),
-        ({"target": "ssh", "host": ""}, {"target": "local"}),
+        ({"target": "ssh"}, {"target": "local"}),
         ({}, {"target": "local", "scheduler": {"direct_controller": True}}),
-        ({"target": "ssh", "host": "baichuan3"}, {"target": "local"}),
     ],
 )
 def test_slurm_monitor_requires_complete_matching_canonical_identity_for_accounting_disabled_recovery(
@@ -883,7 +774,7 @@ def test_slurm_monitor_requires_complete_matching_canonical_identity_for_account
         return subprocess.CompletedProcess([], 1, "", "Slurm accounting storage is disabled")
 
     monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
-    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: ("", {}, []))
     monkeypatch.setattr(run_evidence, "log_tail", lambda *_args, **_kwargs: "")
 
     observed = managed_scheduler.observe_slurm_run(plan_dir, execution, row)
@@ -891,65 +782,6 @@ def test_slurm_monitor_requires_complete_matching_canonical_identity_for_account
     assert observed["status"] == ("unknown_scheduler" if row.get("scheduler_job_id") else "submitting")
     assert observed.get("scheduler_job_id", "") == row.get("scheduler_job_id", "")
     assert observed["scheduler_raw_state"] == "MISSING"
-
-
-def test_slurm_monitor_keeps_ssh_transport_failure_unknown_when_output_mentions_disabled_accounting(
-    tmp_path: Path,
-    monkeypatch,
-):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
-    run = plan["runs"][0]
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "submit",
-        lambda *_args, **_kwargs: slurm.JobIdentity("3880", "wuji-h20"),
-    )
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-    row = next(item for item in _read_table(tmp_path / "run_manifest.tsv") if item["run_id"] == run["run_id"])
-    row.update({"target": "ssh", "host": "baichuan3"})
-    terminal = {
-        "schema_version": 1,
-        "scheduler_job_id": "3880",
-        "scheduler_cluster": "wuji-h20",
-        "scheduler_submit_token": row["scheduler_submit_token"],
-        "node": "h20-bj-96",
-        "exit_code": 0,
-        "runtime_commit": "a" * 40,
-    }
-
-    def read_output_texts(root, paths, *, remote=None):
-        assert root == plan_dir
-        assert paths == [row["scheduler_result_path"]]
-        assert remote == "baichuan3"
-        return {row["scheduler_result_path"]: json.dumps(terminal)}
-
-    monkeypatch.setattr(managed_scheduler.exp_io, "read_managed_output_texts_at", read_output_texts)
-    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: None)
-    monkeypatch.setattr(run_evidence, "log_tail", lambda *_args, **_kwargs: "")
-
-    def run_command(_execution, argv, *, timeout):
-        if argv[0] == "squeue":
-            return subprocess.CompletedProcess([], 0, "", "")
-        if argv[0] == "scontrol":
-            return subprocess.CompletedProcess([], 1, "", "slurm_load_jobs error: Invalid job id specified")
-        return subprocess.CompletedProcess(
-            [],
-            255,
-            "",
-            "ssh: connection closed\nSlurm accounting storage is disabled",
-        )
-
-    monkeypatch.setattr(managed_scheduler.slurm, "run_command", run_command)
-
-    observed = managed_scheduler.observe_slurm_run(
-        plan_dir,
-        {"target": "ssh", "host": "baichuan3"},
-        row,
-    )
-
-    assert observed["status"] == "unknown_scheduler"
-    assert observed["scheduler_raw_state"] == "MISSING"
-    assert "ssh: connection closed" in observed["scheduler_reason"]
 
 
 def test_slurm_monitor_rejects_mismatched_terminal_sidecar_cluster_before_query(tmp_path: Path, monkeypatch):
@@ -1390,17 +1222,12 @@ def test_slurm_monitor_health_uses_allocation_start_and_preserves_lifecycle_on_d
     assert int(canonical["scheduler_allocation_age_seconds"]) >= 0
 
 
-@pytest.mark.parametrize("submission_failure", ["timeout", "ssh255"])
-def test_slurm_submission_uncertainty_reconciles_exact_submit_token(
-    tmp_path: Path, monkeypatch, submission_failure: str
-):
+def test_slurm_submission_timeout_reconciles_exact_submit_token(tmp_path: Path, monkeypatch):
     plan_dir, plan = _write_slurm_plan(tmp_path)
     run = plan["runs"][0]
 
     def submit(*_args, **_kwargs):
-        if submission_failure == "timeout":
-            raise subprocess.TimeoutExpired("sbatch", 60)
-        raise slurm.SlurmCommandError("submission", subprocess.CompletedProcess([], 255, "", "ssh: connection closed"))
+        raise subprocess.TimeoutExpired("sbatch", 60)
 
     monkeypatch.setattr(slurm, "submit", submit)
 
@@ -1624,7 +1451,7 @@ def test_hparam_stop_uses_scancel_for_slurm_run(tmp_path: Path, monkeypatch, dir
     hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
-    execution = {"target": "local", "host": ""}
+    execution = {}
     if direct_controller:
         execution["scheduler"] = {"direct_controller": True}
     assert cancelled == [(execution, "3880", "wuji-h20")]

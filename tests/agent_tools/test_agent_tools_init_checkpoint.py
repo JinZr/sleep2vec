@@ -82,16 +82,11 @@ def test_full_init_rejects_unsupported_variants(variant):
     assert "only for sleep2vec2" in issue.message
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"inputs": {"pretrained_backbone_path": "/backbone.ckpt"}},
-        {"execution": {"target": "ssh"}},
-    ],
-)
-def test_full_init_rejects_conflicting_or_unsupported_workflows(extra):
-    recipe = {"variant": "sleep2vec2", **extra}
-    recipe["inputs"] = {**extra.get("inputs", {}), "init_checkpoint_path": "/full.ckpt"}
+def test_full_init_rejects_pretrained_backbone_combination():
+    recipe = {
+        "variant": "sleep2vec2",
+        "inputs": {"pretrained_backbone_path": "/backbone.ckpt", "init_checkpoint_path": "/full.ckpt"},
+    }
     assert finetune_init_checkpoint_issue(recipe).status.value == "FAIL"
 
 

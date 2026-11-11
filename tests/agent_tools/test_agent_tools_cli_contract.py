@@ -200,9 +200,21 @@ def test_experiment_status_cli_contract():
     args = parser.parse_args(["experiment-status", "--run-dir", "experiment"])
 
     assert {name for name, action in actions.items() if action.required} == {"run_dir"}
-    assert set(actions) - {"help"} == {"run_dir", "remote", "json"}
-    assert args.remote is None
+    assert set(actions) - {"help"} == {"run_dir", "json"}
     assert args.json is False
+
+
+@pytest.mark.parametrize("command", ["experiment-status", "experiment-monitor", "experiment-note"])
+def test_experiment_commands_reject_the_removed_remote_option(command: str):
+    parser, _subcommands = _parser_contract()
+    argv = [command, "--run-dir", "experiment", "--remote", "host"]
+    if command == "experiment-note":
+        argv += ["--entry", "entry.yaml"]
+
+    with pytest.raises(SystemExit) as excinfo:
+        parser.parse_args(argv)
+
+    assert excinfo.value.code == 2
 
 
 def test_cli_reports_expected_errors_as_one_line_and_exit_one(tmp_path: Path, capsys):
@@ -226,25 +238,25 @@ def test_cli_reports_malformed_yaml_as_an_expected_error(tmp_path: Path, capsys)
 
 
 def test_cli_folds_multiline_errors_into_one_line(monkeypatch, capsys):
-    def remote_failure():
-        raise RuntimeError("remote command failed:\nTraceback (most recent call last):\n  boom\n")
+    def child_failure():
+        raise RuntimeError("child command failed:\nTraceback (most recent call last):\n  boom\n")
 
-    monkeypatch.setattr(cli, "repo_summary", remote_failure)
+    monkeypatch.setattr(cli, "repo_summary", child_failure)
 
     assert cli.main(["repo-summary", "--json"]) == 1
-    assert capsys.readouterr().err == "error: remote command failed: | Traceback (most recent call last): | boom\n"
+    assert capsys.readouterr().err == "error: child command failed: | Traceback (most recent call last): | boom\n"
 
 
 def test_cli_reports_failed_subprocesses_as_expected_errors(monkeypatch, capsys):
-    def failed_remote_command():
-        raise subprocess.CalledProcessError(255, ["ssh", "host", "mkdir"])
+    def failed_command():
+        raise subprocess.CalledProcessError(1, ["git", "fetch", "origin"])
 
-    monkeypatch.setattr(cli, "repo_summary", failed_remote_command)
+    monkeypatch.setattr(cli, "repo_summary", failed_command)
 
     assert cli.main(["repo-summary", "--json"]) == 1
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "error: Command '['ssh', 'host', 'mkdir']' returned non-zero exit status 255.\n"
+    assert captured.err == "error: Command '['git', 'fetch', 'origin']' returned non-zero exit status 1.\n"
 
 
 def test_doctor_refusal_ends_stderr_with_the_error_line(tmp_path: Path, capsys):
@@ -277,10 +289,8 @@ def test_runtime_sync_cli_defaults_to_dry_run_and_documents_in_place_fast_forwar
     args = parser.parse_args(["runtime-sync", "--workdir", "runtime"])
 
     assert {name for name, action in actions.items() if action.required} == {"workdir"}
-    assert set(actions) - {"help"} == {"workdir", "host", "python", "execute"}
+    assert set(actions) - {"help"} == {"workdir", "execute"}
     assert args.workdir == "runtime"
-    assert args.host is None
-    assert args.python == "python3"
     assert args.execute is False
     assert "Dry run unless --execute is given" in (_subcommand_help(parser, "runtime-sync") or "")
     assert "Never launches work" in (_subcommand_help(parser, "runtime-sync") or "")
@@ -291,12 +301,12 @@ def test_runtime_sync_cli_defaults_to_dry_run_and_documents_in_place_fast_forwar
     monkeypatch.setattr(
         cli,
         "sync_runtime",
-        lambda workdir, *, host, remote_python, execute: calls.append((workdir, host, remote_python, execute))
+        lambda workdir, *, execute: calls.append((workdir, execute))
         or {"status": "update_available", "executed": execute},
     )
 
     assert cli.main(["runtime-sync", "--workdir", "runtime"]) == 0
-    assert calls == [("runtime", None, "python3", False)]
+    assert calls == [("runtime", False)]
 
 
 def test_experiment_note_cli_contract():
@@ -305,7 +315,7 @@ def test_experiment_note_cli_contract():
     args = parser.parse_args(["experiment-note", "--run-dir", "experiment", "--entry", "entry.yaml"])
 
     assert {name for name, action in actions.items() if action.required} == {"run_dir", "entry"}
-    assert args.remote is None
+    assert args.run_dir == "experiment"
     assert "local YAML file path" in actions["entry"].help
     assert "inline text is not accepted" in actions["entry"].help
 
@@ -410,8 +420,6 @@ def test_doctor_runtime_card_probes_target_versions_without_importing_lightning(
     recipe = {
         "task": "hparam_tune",
         "execution": {
-            "target": "ssh",
-            "host": "baichuan3",
             "workdir": "/runtime/repo",
             "python": "/opt/python",
         },
@@ -420,8 +428,7 @@ def test_doctor_runtime_card_probes_target_versions_without_importing_lightning(
     card = plans.doctor_runtime_card(recipe)
 
     assert card == (
-        "Doctor runtime: transport=ssh:baichuan3, host=runtime-host, python=/opt/python, "
-        "python_version=3.10.0, pytorch-lightning=2.6.1"
+        "Doctor runtime: host=runtime-host, python=/opt/python, " "python_version=3.10.0, pytorch-lightning=2.6.1"
     )
     assert calls[0][0] is recipe["execution"]
     assert calls[0][1][:2] == ["/opt/python", "-c"]
@@ -475,7 +482,7 @@ def test_doctor_runtime_card_handles_rejected_probe(monkeypatch):
 
 def test_doctor_runtime_card_does_not_echo_failed_probe_output(monkeypatch):
     result = subprocess.CompletedProcess(
-        ["ssh", "runtime-host"],
+        ["/opt/python", "-c", "probe"],
         23,
         "SECRET_TOKEN=do-not-print\n",
         "private target path: /secret/path\n",

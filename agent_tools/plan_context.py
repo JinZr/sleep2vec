@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from .adapters.registry import all_adapters
-from .configs import runtime_path_base, skips_local_path_validation
+from .configs import runtime_path_base
 from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .domain.index_csv import IndexSummary, index_summary
 from .models import CONFIG_FINETUNE_SECTION, ConfigSummaryInput, coerce_list
@@ -36,7 +36,7 @@ def context_index_summary(
         label_sidecars_valid = (finetune.get("survival") or {}).get("valid") is True
     elif task_type == "multilabel_classification":
         label_sidecars_valid = (finetune.get("multilabel") or {}).get("valid") is True
-    if not paths or skips_local_path_validation(recipe, paths):
+    if not paths:
         return None
     validated_summary = None
     if (

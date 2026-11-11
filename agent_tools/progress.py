@@ -1,4 +1,4 @@
-"""The run-side progress and event files, and their local or remote readers.
+"""The run-side progress and event files, and their local reader.
 
 Layer 0 leaf. Owns ``status/progress.json`` and ``status/events.jsonl`` under a
 run directory: training and preprocessing scripts write them, monitoring reads
@@ -11,16 +11,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess  # noqa: F401 -- tests patch progress.subprocess.run (stdlib global)
 import time
 from typing import Any
 
-from . import transport
 from .models import json_ready
 
 PROGRESS_RELATIVE_PATH = Path("status") / "progress.json"
 EVENTS_RELATIVE_PATH = Path("status") / "events.jsonl"
-DEFAULT_SSH_TIMEOUT_SECONDS = 10
 
 
 def progress_path(run_dir: str | Path) -> Path:
@@ -78,49 +75,21 @@ def append_event(run_dir: str | Path, event: str, payload: dict[str, Any] | None
     return path
 
 
-def read_progress(
-    run_dir: str | Path,
-    *,
-    remote: str | None = None,
-    timeout_seconds: int = DEFAULT_SSH_TIMEOUT_SECONDS,
-) -> dict[str, Any]:
+def read_progress(run_dir: str | Path) -> dict[str, Any]:
     path = progress_path(run_dir)
-    if remote:
-        try:
-            result = transport.run_shell(remote, f"cat {_sh(path)}", timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            return {
-                "status": "unknown_remote",
-                "task": None,
-                "path": str(path),
-                "remote": remote,
-                "message": f"progress read timed out after {timeout_seconds}s",
-            }
-        if result.returncode != 0:
-            return {
-                "status": "missing",
-                "task": None,
-                "path": str(path),
-                "remote": remote,
-                "message": result.stderr.strip() or "progress file not found",
-            }
-        raw = result.stdout
-    else:
-        if not path.exists():
-            return {"status": "missing", "task": None, "path": str(path), "message": "progress file not found"}
-        raw = path.read_text()
+    if not path.exists():
+        return {"status": "missing", "task": None, "path": str(path), "message": "progress file not found"}
+    raw = path.read_text()
     if not raw.strip():
-        return _invalid_progress(path, remote, "progress file is empty")
+        return _invalid_progress(path, "progress file is empty")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return _invalid_progress(path, remote, f"progress file is not valid JSON: {exc.msg}")
+        return _invalid_progress(path, f"progress file is not valid JSON: {exc.msg}")
     if isinstance(data, dict):
         data.setdefault("path", str(path))
-        if remote:
-            data.setdefault("remote", remote)
         return data
-    return _invalid_progress(path, remote, "progress file must contain a JSON object")
+    return _invalid_progress(path, "progress file must contain a JSON object")
 
 
 def format_progress(data: dict[str, Any]) -> str:
@@ -149,14 +118,8 @@ def format_progress(data: dict[str, Any]) -> str:
     return "\n".join(parts) + "\n"
 
 
-_sh = transport.sh
-
-
-def _invalid_progress(path: Path, remote: str | None, message: str) -> dict[str, Any]:
-    payload = {"status": "unknown", "task": None, "path": str(path), "message": message}
-    if remote:
-        payload["remote"] = remote
-    return payload
+def _invalid_progress(path: Path, message: str) -> dict[str, Any]:
+    return {"status": "unknown", "task": None, "path": str(path), "message": message}
 
 
 def _now() -> str:

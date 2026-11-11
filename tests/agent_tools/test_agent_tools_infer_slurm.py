@@ -76,16 +76,6 @@ def _runtime_commit():
     ).stdout.strip()
 
 
-@pytest.fixture
-def _local_ssh(tmp_path: Path, _no_external_scheduler):
-    guarded_bin = tmp_path / "guarded-bin"
-    ssh = guarded_bin / "ssh"
-    ssh.write_text('#!/bin/sh\n[ "$#" -eq 2 ] && [ "$1" = "infer-fixture" ] || exit 98\nexec /bin/bash -c "$2"\n')
-    python = guarded_bin / "python3"
-    python.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
-    python.chmod(0o755)
-
-
 def _infer_slurm_recipe(tmp_path: Path, *, variant: str, task: str, runtime_commit: str) -> Path:
     workspace = tmp_path / "workspace"
     inputs_dir = workspace / "inputs"
@@ -123,7 +113,6 @@ def _infer_slurm_recipe(tmp_path: Path, *, variant: str, task: str, runtime_comm
             },
             "runtime": {"batch_size": 2, "num_workers": 0},
             "execution": {
-                "target": "local",
                 "workdir": str(workdir),
                 "python": sys.executable,
                 "runtime_commit": runtime_commit,
@@ -170,13 +159,9 @@ def _read_registered_infer_plan(plan_dir: Path):
     )
 
 
-def _build_infer_slurm_plan(tmp_path: Path, runtime_commit: str, *, target="local", direct_controller=False):
+def _build_infer_slurm_plan(tmp_path: Path, runtime_commit: str, *, direct_controller=False):
     recipe_path = _infer_slurm_recipe(tmp_path, variant="sleep2vec", task="infer", runtime_commit=runtime_commit)
     recipe = yaml.safe_load(recipe_path.read_text())
-    recipe["execution"]["target"] = target
-    if target == "ssh":
-        recipe["execution"]["host"] = "infer-fixture"
-        recipe["execution"]["path_validation"] = "ssh"
     recipe["execution"]["scheduler"]["direct_controller"] = direct_controller
     recipe_path.write_text(yaml.safe_dump(recipe))
     plan_dir = recipe_path.parent / "plan"
@@ -190,10 +175,8 @@ def _stub_queued_slurm(monkeypatch, plan_dir: Path, plan: dict):
     frozen_execution = plan["recipe"]["execution"]
     calls = []
 
-    def run_command(execution, argv, *, timeout):
+    def run_command(_execution, argv, *, timeout):
         calls.append(argv)
-        assert execution["target"] == frozen_execution["target"]
-        assert execution.get("host", "") == frozen_execution.get("host", "")
         if argv == ["scontrol", "show", "config"]:
             return subprocess.CompletedProcess(argv, 0, "ClusterName = unit-cluster\n", "")
         if argv[0] == "bash":
@@ -206,8 +189,7 @@ def _stub_queued_slurm(monkeypatch, plan_dir: Path, plan: dict):
                 run["scheduler_script"], run["scheduler_submit_token"], row["execution_snapshot_sha256"]
             )
             assert shlex.split(inner) == ["env", "-u", "SLURM_CLUSTERS", *argv]
-            expected = f"ssh infer-fixture {shlex.quote(inner)}" if frozen_execution["target"] == "ssh" else inner
-            assert row["command"] == expected
+            assert row["command"] == inner
             return subprocess.CompletedProcess(argv, 0, "3880\n", "")
         assert ("--clusters=unit-cluster" in argv) is not frozen_execution["scheduler"]["direct_controller"]
         if argv[0] == "squeue":
@@ -256,7 +238,7 @@ def test_infer_slurm_round_trip_preserves_unsubmitted_identity(
     assert row["run_id"] == "run-000"
     assert row["scheduler_type"] == "slurm"
     assert row["terminal_status_owner"] == "scheduler_sidecar"
-    for field in ("target", "host", "workdir", "command", "scheduler_job_id", "scheduler_cluster"):
+    for field in ("target", "workdir", "command", "scheduler_job_id", "scheduler_cluster"):
         assert row.get(field, "") == ""
     assert not experiment_workspace.has_managed_launch_evidence(row)
     for field in (
@@ -492,14 +474,11 @@ def test_infer_slurm_worker_authenticates_allocation_before_workload(
     assert manifest_path.read_bytes() == before
 
 
-@pytest.mark.parametrize("target", ["local", "ssh"])
 @pytest.mark.parametrize("direct_controller", [False, True])
 def test_infer_launch_dry_run_and_reexecute_preserve_submission_identity(
-    tmp_path: Path, monkeypatch, target, direct_controller, _runtime_commit, _runtime_probe, _local_ssh
+    tmp_path: Path, monkeypatch, direct_controller, _runtime_commit, _runtime_probe
 ):
-    plan_dir, plan = _build_infer_slurm_plan(
-        tmp_path, _runtime_commit, target=target, direct_controller=direct_controller
-    )
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit, direct_controller=direct_controller)
     calls = _stub_queued_slurm(monkeypatch, plan_dir, plan)
     manifest = plan_dir.parent / "run_manifest.tsv"
     before = manifest.read_bytes()
@@ -510,7 +489,7 @@ def test_infer_launch_dry_run_and_reexecute_preserve_submission_identity(
     assert manifest.read_bytes() == before
     assert calls == []
     assert not (plan_dir / "execution_snapshot.json").exists()
-    assert preview.launch_rows[0]["target"] == target
+    assert preview.launch_rows[0]["target"] == "local"
     assert not experiment_workspace.has_managed_launch_evidence(preview.committed_rows[0])
     launched = experiments.launch_infer_run(plan_dir, dry_run=False)
     assert launched.committed_rows[0]["status"] == "queued"
@@ -525,21 +504,18 @@ def test_infer_launch_dry_run_and_reexecute_preserve_submission_identity(
     assert sum(argv == ["scontrol", "show", "config"] for argv in calls) == 1
 
 
-@pytest.mark.parametrize(("failure", "unique_match"), [("timeout", False), ("ssh255", False), ("timeout", True)])
+@pytest.mark.parametrize("unique_match", [False, True])
 def test_infer_launch_lost_receipt_never_resubmits(
-    tmp_path: Path, monkeypatch, failure, unique_match, _runtime_commit, _runtime_probe, _local_ssh
+    tmp_path: Path, monkeypatch, unique_match, _runtime_commit, _runtime_probe
 ):
-    target = "ssh" if failure == "ssh255" else "local"
-    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit, target=target)
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
     calls = _stub_queued_slurm(monkeypatch, plan_dir, plan)
     queued_command = slurm.run_command
 
     def lose_receipt(execution, argv, *, timeout):
         result = queued_command(execution, argv, timeout=timeout)
         if argv[0] == "bash":
-            if failure == "timeout":
-                raise subprocess.TimeoutExpired(argv, timeout)
-            return subprocess.CompletedProcess(argv, 255, "", "SSH connection closed before receipt")
+            raise subprocess.TimeoutExpired(argv, timeout)
         if argv[0] == "squeue" and not unique_match:
             return subprocess.CompletedProcess(argv, 0, "", "")
         return result

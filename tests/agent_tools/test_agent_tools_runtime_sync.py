@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -13,7 +12,7 @@ import time
 from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS
 import pytest
 
-from agent_tools import experiment_workspace, managed_scheduler, python_programs, run_evidence, runtime_sync, transport
+from agent_tools import experiment_workspace, managed_scheduler, python_programs, run_evidence, runtime_sync
 from agent_tools.experiment_workspace import file_sha256
 from agent_tools.runtime_sync import sync_runtime
 
@@ -45,38 +44,6 @@ def _commit(repo: Path, message: str, content: str) -> str:
     return _commit_staged(repo, message)
 
 
-def _run_embedded_locally(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        runtime_sync.transport,
-        "run_shell",
-        lambda _host, command, *, timeout: subprocess.run(
-            ["bash", "-lc", command], text=True, capture_output=True, timeout=timeout
-        ),
-    )
-
-
-def _runtime_sync_payload(**overrides: object) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "status": "unchanged",
-        "executed": False,
-        "host": "",
-        "workdir": "/remote/runtime",
-        "before_commit": "a" * 40,
-        "upstream_commit": "a" * 40,
-        "after_commit": "a" * 40,
-    }
-    payload.update(overrides)
-    return payload
-
-
-@pytest.mark.parametrize("host", ["", " \t"], ids=["empty", "whitespace"])
-def test_runtime_sync_rejects_explicitly_blank_host_before_local_access(monkeypatch, host: str) -> None:
-    monkeypatch.setattr(runtime_sync, "_git", lambda *_args, **_kwargs: pytest.fail("must not inspect local Git"))
-
-    with pytest.raises(ValueError, match="host must be non-empty"):
-        sync_runtime("/remote/runtime", host=host, execute=True)
-
-
 @pytest.fixture
 def rolling_runtime(tmp_path: Path) -> tuple[Path, Path, str]:
     source = tmp_path / "source"
@@ -104,7 +71,6 @@ def test_runtime_sync_fast_forwards_the_existing_checkout_without_copying(
     assert preview == {
         "status": "update_available",
         "executed": False,
-        "host": "",
         "workdir": str(runtime),
         "before_commit": first,
         "upstream_commit": second,
@@ -159,7 +125,6 @@ def test_runtime_sync_reports_unchanged_checkout(rolling_runtime: tuple[Path, Pa
     assert result == {
         "status": "unchanged",
         "executed": execute,
-        "host": "",
         "workdir": str(runtime),
         "before_commit": first,
         "upstream_commit": first,
@@ -183,23 +148,20 @@ def test_runtime_sync_rejects_tracked_or_importable_untracked_code(
         sync_runtime(runtime, execute=True)
 
 
-@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
 @pytest.mark.parametrize(
     "index_flag",
     ["--assume-unchanged", "--skip-worktree"],
     ids=["assume-unchanged", "skip-worktree"],
 )
 def test_runtime_sync_rejects_index_hidden_tracked_changes(
-    rolling_runtime: tuple[Path, Path, str], monkeypatch, host: str | None, index_flag: str
+    rolling_runtime: tuple[Path, Path, str], index_flag: str
 ) -> None:
     _source, runtime, first = rolling_runtime
     _git(runtime, "update-index", index_flag, "tracked.txt")
     (runtime / "tracked.txt").write_text("hidden change\n")
-    if host:
-        _run_embedded_locally(monkeypatch)
 
     with pytest.raises(RuntimeError, match="index-hidden tracked worktree changes"):
-        sync_runtime(runtime, host=host, remote_python=sys.executable, execute=True)
+        sync_runtime(runtime, execute=True)
 
     assert _git(runtime, "rev-parse", "HEAD") == first
 
@@ -215,19 +177,16 @@ def test_runtime_sync_rejects_ignored_importable_code(
         sync_runtime(runtime, execute=True)
 
 
-@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
 def test_runtime_sync_scans_importable_code_from_repository_root(
-    rolling_runtime: tuple[Path, Path, str], monkeypatch, host: str | None
+    rolling_runtime: tuple[Path, Path, str],
 ) -> None:
     _source, runtime, _first = rolling_runtime
     subdirectory = runtime / "nested"
     subdirectory.mkdir()
     (runtime / "root_module.py").write_text("VALUE = 1\n")
-    if host:
-        _run_embedded_locally(monkeypatch)
 
     with pytest.raises(RuntimeError, match="untracked or ignored importable code"):
-        sync_runtime(subdirectory, host=host, remote_python=sys.executable, execute=True)
+        sync_runtime(subdirectory, execute=True)
 
 
 def test_local_runtime_sync_reports_updated_head_when_upstream_deletes_supplied_subdirectory(
@@ -253,14 +212,11 @@ def test_local_runtime_sync_reports_updated_head_when_upstream_deletes_supplied_
     assert not subdirectory.exists()
 
 
-@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
 @pytest.mark.parametrize("ignored", [False, True], ids=["untracked", "ignored"])
 @pytest.mark.parametrize("initialized", [False, True], ids=["namespace-package", "regular-package"])
 def test_runtime_sync_rejects_symlinked_package_directories(
     rolling_runtime: tuple[Path, Path, str],
     tmp_path: Path,
-    monkeypatch,
-    host: str | None,
     ignored: bool,
     initialized: bool,
 ) -> None:
@@ -273,11 +229,9 @@ def test_runtime_sync_rejects_symlinked_package_directories(
     (runtime / "plugin").symlink_to(package, target_is_directory=True)
     if ignored:
         (runtime / ".git" / "info" / "exclude").write_text("plugin\n")
-    if host:
-        _run_embedded_locally(monkeypatch)
 
     with pytest.raises(RuntimeError, match="untracked or ignored importable code"):
-        sync_runtime(runtime, host=host, remote_python=sys.executable, execute=True)
+        sync_runtime(runtime, execute=True)
 
 
 def test_runtime_sync_allows_untracked_non_code_files(rolling_runtime: tuple[Path, Path, str]) -> None:
@@ -315,9 +269,8 @@ def test_runtime_sync_allows_non_sourceless_bytecode(
     assert sync_runtime(runtime)["status"] == "update_available"
 
 
-@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
 def test_runtime_sync_rejects_update_that_deletes_legacy_bytecode_source(
-    rolling_runtime: tuple[Path, Path, str], monkeypatch, host: str | None
+    rolling_runtime: tuple[Path, Path, str],
 ) -> None:
     source, runtime, _first = rolling_runtime
     (source / "legacy_module.py").write_text("VALUE = 1\n")
@@ -331,11 +284,9 @@ def test_runtime_sync_rejects_update_that_deletes_legacy_bytecode_source(
     _git(source, "rm", "legacy_module.py")
     _commit_staged(source, "Remove runtime module")
     _git(source, "push", "origin", "main")
-    if host:
-        _run_embedded_locally(monkeypatch)
 
     with pytest.raises(RuntimeError, match="sourceless bytecode"):
-        sync_runtime(runtime, host=host, remote_python=sys.executable, execute=True)
+        sync_runtime(runtime, execute=True)
 
     assert _git(runtime, "rev-parse", "HEAD") == before
     assert (runtime / "legacy_module.py").is_file()
@@ -358,9 +309,8 @@ def test_runtime_sync_fast_forwards_detached_head_without_moving_main(
     assert _git(runtime, "rev-parse", "refs/heads/main") == first
 
 
-@pytest.mark.parametrize("host", [None, "unit-host"], ids=["local", "remote-bootstrap"])
 def test_runtime_sync_ignores_ambient_repository_selection_variables(
-    rolling_runtime: tuple[Path, Path, str], tmp_path: Path, monkeypatch, host: str | None
+    rolling_runtime: tuple[Path, Path, str], tmp_path: Path, monkeypatch
 ) -> None:
     source, runtime, _first = rolling_runtime
     second = _commit(source, "Advance runtime", "two\n")
@@ -371,10 +321,8 @@ def test_runtime_sync_ignores_ambient_repository_selection_variables(
     monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
     monkeypatch.setenv("GIT_INDEX_FILE", str(decoy / ".git" / "index"))
-    if host:
-        _run_embedded_locally(monkeypatch)
 
-    result = sync_runtime(runtime, host=host, remote_python=sys.executable, execute=True)
+    result = sync_runtime(runtime, execute=True)
 
     assert result["status"] == "fast_forwarded"
     assert result["after_commit"] == second
@@ -464,7 +412,6 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
     sync_result = {
         "status": "unchanged",
         "executed": True,
-        "host": "",
         "workdir": str(runtime),
         "before_commit": first,
         "upstream_commit": first,
@@ -595,118 +542,6 @@ def test_commit_status_records_running_provenance(monkeypatch, inherited: bool) 
     exec(compile(python_programs.source("plan_rendering.commit_status"), "commit_status", "exec"), {})
 
     assert committed == [("/experiment", "train", "run-000", planned_commit, actual_commit)]
-
-
-@pytest.mark.parametrize("execute", [False, True], ids=["dry-run", "execute"])
-def test_remote_runtime_sync_quotes_the_checkout_and_selected_python(monkeypatch, execute: bool) -> None:
-    calls = []
-    upstream_commit = "a" * 40 if execute else "b" * 40
-    payload = {
-        "status": "unchanged" if execute else "update_available",
-        "executed": execute,
-        "host": "",
-        "workdir": "/remote/runtime dir",
-        "before_commit": "a" * 40,
-        "upstream_commit": upstream_commit,
-        "after_commit": "a" * 40,
-    }
-
-    def run_shell(host, command, *, timeout):
-        calls.append((host, command, timeout))
-        return subprocess.CompletedProcess([], 0, json.dumps(payload), "")
-
-    monkeypatch.setattr(runtime_sync.transport, "run_shell", run_shell)
-
-    result = sync_runtime(
-        "/remote/runtime dir",
-        host="baichuan3",
-        remote_python="/opt/conda env/bin/python",
-        execute=execute,
-    )
-
-    argv = [
-        "/opt/conda env/bin/python",
-        "-c",
-        python_programs.source("runtime_sync.sync"),
-        "/remote/runtime dir",
-        "1" if execute else "0",
-    ]
-    expected = " ".join(transport.sh(part) for part in argv)
-    assert calls == [("baichuan3", expected, runtime_sync.REMOTE_SYNC_TIMEOUT_SECONDS)]
-    assert result == {**payload, "host": "baichuan3"}
-
-
-@pytest.mark.parametrize(
-    ("payload", "execute"),
-    [
-        pytest.param({}, False, id="empty"),
-        pytest.param(_runtime_sync_payload(unexpected=True), False, id="extra-field"),
-        pytest.param(_runtime_sync_payload(executed=True), False, id="execute-mismatch"),
-        pytest.param(_runtime_sync_payload(status="moved"), False, id="invalid-status"),
-        pytest.param(_runtime_sync_payload(workdir=""), False, id="blank-workdir"),
-        pytest.param(_runtime_sync_payload(workdir="relative/runtime"), False, id="relative-workdir"),
-        pytest.param(_runtime_sync_payload(before_commit="A" * 40), False, id="invalid-sha"),
-        pytest.param(_runtime_sync_payload(before_commit="a" * 64), False, id="sha256-object-id"),
-        pytest.param(_runtime_sync_payload(upstream_commit="b" * 40), False, id="unchanged-relation"),
-        pytest.param(
-            _runtime_sync_payload(status="update_available", upstream_commit="b" * 40, after_commit="b" * 40),
-            False,
-            id="update-relation",
-        ),
-        pytest.param(
-            _runtime_sync_payload(status="fast_forwarded", executed=True, upstream_commit="b" * 40),
-            True,
-            id="fast-forward-relation",
-        ),
-    ],
-)
-def test_remote_runtime_sync_rejects_untrusted_evidence(monkeypatch, payload: dict, execute: bool) -> None:
-    monkeypatch.setattr(
-        runtime_sync.transport,
-        "run_shell",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, json.dumps(payload), ""),
-    )
-
-    with pytest.raises(RuntimeError, match="evidence"):
-        sync_runtime("/remote/runtime", host="unit-host", execute=execute)
-
-
-def test_remote_runtime_sync_bootstraps_checkout_without_agent_tools(
-    rolling_runtime: tuple[Path, Path, str], monkeypatch
-) -> None:
-    source, runtime, first = rolling_runtime
-    second = _commit(source, "Advance", "two\n")
-    _git(source, "push", "origin", "main")
-    calls = []
-
-    def run_shell(host, command, *, timeout):
-        calls.append((host, command, timeout))
-        return subprocess.run(["bash", "-lc", command], text=True, capture_output=True, timeout=timeout)
-
-    assert not (runtime / "agent_tools").exists()
-    monkeypatch.setattr(runtime_sync.transport, "run_shell", run_shell)
-
-    result = sync_runtime(runtime, host="unit-host", remote_python=sys.executable, execute=True)
-
-    assert len(calls) == 1
-    assert calls[0][0] == "unit-host"
-    assert calls[0][2] == runtime_sync.REMOTE_SYNC_TIMEOUT_SECONDS
-    assert result["status"] == "fast_forwarded"
-    assert result["host"] == "unit-host"
-    assert result["before_commit"] == first
-    assert result["after_commit"] == result["upstream_commit"] == second
-    assert _git(runtime, "rev-parse", "HEAD") == second
-    assert not (runtime / "agent_tools").exists()
-
-
-def test_remote_runtime_sync_rejects_sourceless_bytecode(rolling_runtime: tuple[Path, Path, str], monkeypatch) -> None:
-    _source, runtime, _first = rolling_runtime
-    (runtime / ".git" / "info" / "exclude").write_text("orphan.pyc\n")
-    (runtime / "orphan.pyc").write_bytes(b"sourceless bytecode")
-    _run_embedded_locally(monkeypatch)
-
-    with pytest.raises(RuntimeError, match="untracked or ignored importable code"):
-        sync_runtime(runtime, host="unit-host", remote_python=sys.executable, execute=True)
 
 
 def test_direct_process_launcher_ignores_authored_repository_selection_variables(tmp_path: Path) -> None:

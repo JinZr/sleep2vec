@@ -242,7 +242,6 @@ def test_sleep2stat_yasa_plan_adds_record_preflight_and_summary_types(tmp_path: 
             "inputs": {"config": str(config), "split": ["test"]},
             "runtime": {"device": "cpu", "num_workers": 1, "limit_records": 1, "dry_run": True},
             "artifacts": {"run_dir": str(tmp_path / "run"), "overwrite": False},
-            "execution": {"target": "local", "path_context": "local", "path_validation": "local"},
             "evaluation_policy": {"external_test_locked": True},
             "decisions": {
                 "task": {"value": "sleep2stat", "source": "explicit_recipe"},
@@ -433,7 +432,6 @@ def test_sleep2stat_kaldi_relative_manifest_is_not_resolved_under_data_root(tmp_
             "task": "sleep2stat",
             "inputs": {"config": str(config), "split": ["test"]},
             "artifacts": {"run_dir": str(tmp_path / "run"), "overwrite": False},
-            "execution": {"target": "local", "path_context": "local", "path_validation": "local"},
             "evaluation_policy": {"external_test_locked": True},
             "decisions": {
                 "task": {"value": "sleep2stat", "source": "explicit_recipe"},
@@ -510,7 +508,6 @@ def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: 
             "task": "sleep2stat",
             "inputs": {"config": str(config), "split": ["test"]},
             "artifacts": {"run_dir": str(tmp_path / "run"), "overwrite": False},
-            "execution": {"target": "local", "path_context": "local", "path_validation": "local"},
             "evaluation_policy": {"external_test_locked": True},
             "decisions": {
                 "task": {"value": "sleep2stat", "source": "explicit_recipe"},

@@ -75,7 +75,6 @@ class HparamSelectionLifecycle(TypedDict):
 class _ExperimentStatusActionCore(TypedDict):
     id: str
     step_id: str | None
-    control_host: str | None
     reason: str
     advisory: bool
     mutates: bool
@@ -113,7 +112,6 @@ class ExperimentStatusMetadata(TypedDict):
     title: str
     root: str
     status: str
-    remote: str | None
 
 
 class ExperimentStatusStep(TypedDict):
@@ -127,7 +125,6 @@ class ExperimentStatusStep(TypedDict):
 
 class ExperimentStatusExecution(TypedDict):
     target: str | None
-    host: str | None
 
 
 class ExperimentStatusScheduler(TypedDict):
@@ -186,7 +183,6 @@ class ExperimentStatusSnapshot(TypedDict):
     decision: ExperimentStatusDecision
 
 
-checkpoint_evidence_host = experiment_sources.checkpoint_evidence_host
 validate_checkpoint_evidence_rows = experiment_sources.validate_checkpoint_evidence_rows
 
 HPARAM_SELECTION_METADATA_FIELDS = {
@@ -223,23 +219,15 @@ def monitor_run_row(
     row: Mapping[str, str],
     previous_rows: Sequence[Mapping[str, str]],
     *,
-    remote: str | None = None,
     monitor_context: managed_scheduler.SlurmMonitorContext | None = None,
 ) -> dict[str, JsonValue]:
     previous = resolve_run_row(previous_rows, row) or {}
     observation_row = dict(row)
-    transport_override = False
-    if remote and not observation_row.get("host"):
-        transport_override = True
-        observation_row["target"] = "ssh"
-        observation_row["host"] = remote
     scheduler_row = previous if previous.get("scheduler_type") not in (None, "") else row
     if scheduler_type(scheduler_row) == "slurm":
         has_execution_identity = any(source.get("target") not in (None, "") for source in (row, previous))
         if has_execution_identity:
-            execution: dict[str, JsonValue] = {"target": observation_row.get("target") or "local"}
-            if execution["target"] == "ssh":
-                execution["host"] = observation_row.get("host")
+            execution: dict[str, JsonValue] = {}
             if scheduler_direct_controller(scheduler_row):
                 execution["scheduler"] = {"direct_controller": True}
             status = managed_scheduler.observe_slurm_run(
@@ -247,7 +235,7 @@ def monitor_run_row(
                 execution,
                 observation_row,
                 health=True,
-                monitor_context=None if transport_override else monitor_context,
+                monitor_context=monitor_context,
             )
         else:
             status = {**observation_row}
@@ -320,9 +308,6 @@ def monitor_run_row(
         "run_id": row["run_id"],
         **{field: status[field] for field in observation_fields if field in status},
     }
-    if transport_override:
-        observation.pop("target", None)
-        observation.pop("host", None)
     return observation
 
 
@@ -371,7 +356,6 @@ def _experiment_lifecycle_decision(
     candidates: list[ExperimentStatusAction],
     blockers: list[ExperimentStatusBlocker],
     root: Path,
-    remote: str | None,
 ) -> tuple[str, ExperimentStatusDecision]:
     decision: ExperimentStatusDecision = {
         "manual_choice_required": False,
@@ -391,11 +375,7 @@ def _experiment_lifecycle_decision(
         )
         decision["manual_choice_required"] = True
     else:
-        uncertain = [
-            row
-            for row in sorted_rows
-            if row["status"] in {"unknown_scheduler", "unknown_remote", "missing_pid", "submitting"}
-        ]
+        uncertain = [row for row in sorted_rows if row["status"] in {"unknown_scheduler", "missing_pid", "submitting"}]
         active = [row for row in sorted_rows if row["status"] in managed_scheduler.ACTIVE_STATUSES]
         if uncertain:
             state = "blocked"
@@ -421,7 +401,7 @@ def _experiment_lifecycle_decision(
                         blocked_actions=["finalize", "launch", "resubmit"],
                     )
                 )
-            decision["recommended_next"] = _monitor_action(root, remote)
+            decision["recommended_next"] = _monitor_action(root)
         elif active:
             state = "in_progress"
             for step_id in sorted({str(row["step_id"]) for row in active}):
@@ -433,7 +413,7 @@ def _experiment_lifecycle_decision(
                         blocked_actions=["finalize", "launch", "resubmit"],
                     )
                 )
-            decision["recommended_next"] = _monitor_action(root, remote)
+            decision["recommended_next"] = _monitor_action(root)
         elif all(row["status"] in TERMINAL_STATUSES for row in sorted_rows):
             if plan_blockers or missing_stop_reason_rows:
                 state = "blocked"
@@ -441,8 +421,7 @@ def _experiment_lifecycle_decision(
             elif hparam["pending_steps"]:
                 state = "ready_to_select"
                 select_actions = [
-                    _hparam_select_action(step["step_id"], step["plan_path"], remote)
-                    for step in hparam["pending_steps"]
+                    _hparam_select_action(step["step_id"], step["plan_path"]) for step in hparam["pending_steps"]
                 ]
                 for step in hparam["pending_steps"]:
                     blockers.append(
@@ -469,10 +448,10 @@ def _experiment_lifecycle_decision(
                     )
                 )
                 first = hparam["selected_steps"][0]
-                decision["recommended_next"] = _hparam_select_action(first["step_id"], first["plan_path"], remote)
+                decision["recommended_next"] = _hparam_select_action(first["step_id"], first["plan_path"])
             elif hparam["selected_steps"] and hparam["automatic_report_final"]:
                 state = "ready_to_finalize"
-                decision["recommended_next"] = _finalize_action(root, hparam["report_path"], remote)
+                decision["recommended_next"] = _finalize_action(root, hparam["report_path"])
             elif hparam["selected_steps"]:
                 state = "ready_to_report"
                 blockers.append(
@@ -483,7 +462,7 @@ def _experiment_lifecycle_decision(
                         blocked_actions=["finalize"],
                     )
                 )
-                finalize = _finalize_action(root, "{report_path}", remote)
+                finalize = _finalize_action(root, "{report_path}")
                 finalize["required_inputs"] = ["report_path"]
                 decision["manual_choice_required"] = True
                 decision["other_legal_actions"] = [finalize]
@@ -496,13 +475,13 @@ def _experiment_lifecycle_decision(
                         blocked_actions=["finalize"],
                     )
                 )
-                finalize = _finalize_action(root, "{report_path}", remote)
+                finalize = _finalize_action(root, "{report_path}")
                 finalize["required_inputs"] = ["report_path"]
                 decision["manual_choice_required"] = True
                 decision["other_legal_actions"] = [finalize]
             else:
                 state = "ready_to_finalize"
-                finalize = _finalize_action(root, "{report_path}", remote)
+                finalize = _finalize_action(root, "{report_path}")
                 finalize["required_inputs"] = ["report_path"]
                 # The report is experiment-wide human input, not evidence attached to any managed run.
                 blockers.append(
@@ -531,7 +510,6 @@ def experiment_status_snapshot(
     rows: list[dict[str, str]],
     *,
     root: Path,
-    remote: str | None = None,
     hparam_selection_report: HparamSelectionReportSnapshot | None = None,
 ) -> ExperimentStatusSnapshot:
     allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
@@ -544,7 +522,7 @@ def experiment_status_snapshot(
                 f"{row.get('run_id')}: {status}"
             )
     sorted_rows = sorted(rows, key=lambda row: (str(row["step_id"]), str(row["run_id"])))
-    plan_blockers, candidates = _plan_advice(registered_steps, sorted_rows, remote=remote)
+    plan_blockers, candidates = _plan_advice(registered_steps, sorted_rows)
     hparam = hparam_selection_lifecycle(
         registered_steps,
         sorted_rows,
@@ -617,7 +595,6 @@ def experiment_status_snapshot(
         candidates=candidates,
         blockers=blockers,
         root=root,
-        remote=remote,
     )
 
     blocker_codes_by_key: dict[tuple[str, str], list[str]] = {
@@ -642,7 +619,6 @@ def experiment_status_snapshot(
             "title": str(experiment["title"]),
             "root": str(root),
             "status": "completed" if completed else "active",
-            "remote": remote,
         },
         "lifecycle_source": str(root / "run_manifest.tsv"),
         "live_observation": False,
@@ -932,17 +908,16 @@ def validated_hparam_ranking(step: HparamSelectionReportStep) -> list[dict[str, 
     return ranked or None
 
 
-def _hparam_select_action(step_id: str, plan_path: str, remote: str | None) -> ExperimentStatusAction:
+def _hparam_select_action(step_id: str, plan_path: str) -> ExperimentStatusAction:
     return _status_action(
         "hparam-select",
         "Rank terminal successful candidates and regenerate the deterministic selection report.",
         ["python", "-m", "agent_tools", "hparam-select", "--run-dir", plan_path],
         step_id=step_id,
-        control_host=remote,
     )
 
 
-def _finalize_action(root: Path, report_path: str, remote: str | None) -> ExperimentStatusAction:
+def _finalize_action(root: Path, report_path: str) -> ExperimentStatusAction:
     return _status_action(
         "experiment-finalize",
         "Publish the verified non-empty experiment report.",
@@ -955,7 +930,6 @@ def _finalize_action(root: Path, report_path: str, remote: str | None) -> Experi
             str(root),
             "--report",
             report_path,
-            *(["--remote", remote] if remote else []),
         ],
     )
 
@@ -999,10 +973,7 @@ def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
             ]
         )
         for run in snapshot["runs"]:
-            execution = run["execution"]
-            execution_text = execution["target"] or ""
-            if execution["host"]:
-                execution_text += f":{execution['host']}"
+            execution_text = run["execution"]["target"] or ""
             scheduler = run["scheduler"]
             scheduler_text = " ".join(
                 f"{name}={value}"
@@ -1065,9 +1036,7 @@ def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
         lines.append("Manual choice required.")
     if actions:
         for action in actions:
-            control_host = action.get("control_host")
-            host_text = f" (control host: `{control_host}`)" if control_host else ""
-            lines.append(f"- `{action['id']}`{host_text}: `{shlex.join(action['argv'])}` — {action['reason']}")
+            lines.append(f"- `{action['id']}`: `{shlex.join(action['argv'])}` — {action['reason']}")
             if action.get("required_inputs"):
                 lines.append(f"  Required inputs: {', '.join(action['required_inputs'])}")
     else:
@@ -1081,8 +1050,6 @@ def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
 def _plan_advice(
     registered_steps: list[artifacts.RegisteredPlanStep],
     rows: Sequence[Mapping[str, str]],
-    *,
-    remote: str | None = None,
 ) -> tuple[list[ExperimentStatusBlocker], list[ExperimentStatusAction]]:
     rows_by_key = {managed_run_key(row): row for row in rows}
     blockers = []
@@ -1116,28 +1083,23 @@ def _plan_advice(
                     "--execute",
                 ]
                 action_id = "hparam-run-queue"
-                control_host = remote
             elif plan["task"] == "infer" and all(scheduler_type(row) == "slurm" for row in plan_rows):
                 argv = ["python", "-m", "agent_tools", "infer-launch", "--plan-dir", plan["path"], "--execute"]
                 action_id = "infer-launch"
-                control_host = remote
             elif plan["task"] == "preset_prepare" and (plan["recipe"].get("execution") or {}).get("scheduler") == {
                 "type": "direct"
             }:
                 argv = ["python", "-m", "agent_tools", "preset-launch", "--plan-dir", plan["path"], "--execute"]
                 action_id = "preset-launch"
-                control_host = remote
             else:
                 argv = ["bash", plan["launch_script"]]
                 action_id = "run-plan"
-                control_host = remote
             candidates.append(
                 _status_action(
                     action_id,
                     "Launch only after explicit user authorization and the command's own preflight succeeds.",
                     argv,
                     step_id=step_id,
-                    control_host=control_host,
                 )
             )
     candidates.sort(key=lambda action: (action["step_id"] or "", action["id"], action["argv"]))
@@ -1153,7 +1115,6 @@ def _status_run_payload(row: Mapping[str, str]) -> ExperimentStatusRun:
         "status": str(row["status"]),
         "execution": {
             "target": _optional_text(row.get("target")),
-            "host": _optional_text(row.get("host")),
         },
         "scheduler": {
             "type": _optional_text(row.get("scheduler_type")),
@@ -1210,14 +1171,11 @@ def _status_blocker(
     }
 
 
-def _monitor_action(root: Path, remote: str | None) -> ExperimentStatusAction:
-    argv = ["python", "-m", "agent_tools", "experiment-monitor", "--run-dir", str(root)]
-    if remote:
-        argv.extend(["--remote", remote])
+def _monitor_action(root: Path) -> ExperimentStatusAction:
     return _status_action(
         "experiment-monitor",
         "Refresh canonical lifecycle evidence.",
-        argv,
+        ["python", "-m", "agent_tools", "experiment-monitor", "--run-dir", str(root)],
     )
 
 
@@ -1227,12 +1185,10 @@ def _status_action(
     argv: list[str],
     *,
     step_id: str | None = None,
-    control_host: str | None = None,
 ) -> ExperimentStatusAction:
     return {
         "id": action_id,
         "step_id": step_id,
-        "control_host": control_host,
         "reason": reason,
         "advisory": True,
         "mutates": True,

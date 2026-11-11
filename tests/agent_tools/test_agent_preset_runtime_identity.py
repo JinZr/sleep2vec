@@ -80,7 +80,6 @@ def preset_runtime(tmp_path: Path):
     payload = tmp_path / "payload.json"
     return {
         "execution": {
-            "target": "local",
             "workdir": str(runtime),
             "python": str(runtime_python),
             "runtime_commit": commit,
@@ -387,15 +386,8 @@ def test_preset_default_identity_is_bound_without_preset_build(tmp_path: Path, p
     assert shlex.split(plan["commands"][0])[0] == sys.executable
 
 
-@pytest.mark.parametrize("target", [None, "", "local"])
-def test_preset_manager_defaults_preserve_authored_execution_metadata(tmp_path: Path, preset_runtime, target):
-    metadata = {
-        "target": target,
-        "workdir": str(REPO_ROOT),
-        "path_context": "local",
-        "path_validation": "local",
-        "host": "metadata-only",
-    }
+def test_preset_manager_defaults_preserve_authored_execution_metadata(tmp_path: Path, preset_runtime):
+    metadata = {"workdir": str(REPO_ROOT)}
     preset_runtime["execution"] = dict(metadata)
     recipe = _runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
@@ -409,29 +401,8 @@ def test_preset_manager_defaults_preserve_authored_execution_metadata(tmp_path: 
     assert execution["runtime_commit"]
 
 
-def test_preset_explicit_identity_preserves_remote_path_context_and_host(tmp_path: Path, preset_runtime):
-    preset_runtime["execution"].update({"path_context": "remote", "path_validation": "defer", "host": "metadata-only"})
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
-    plan_dir = preset_runtime["workspace"] / "plan"
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
-    plan = json.loads((plan_dir / "plan.json").read_text())
-    assert plan["recipe"]["execution"] == {**preset_runtime["execution"], "scheduler": {"type": "direct"}}
-
-
-@pytest.mark.parametrize("context", ["other_workdir", "remote_paths", "local_target_remote_paths", "ssh_target"])
-def test_preset_nonmanager_context_requires_explicit_identity_before_workspace_creation(
-    tmp_path: Path, preset_runtime, context
-):
-    execution = {
-        "other_workdir": {"workdir": preset_runtime["execution"]["workdir"]},
-        "remote_paths": {"path_context": "remote", "path_validation": "defer"},
-        "local_target_remote_paths": {"target": "local", "path_context": "remote", "path_validation": "defer"},
-        "ssh_target": {"target": "ssh", "host": "metadata-only", "path_validation": "defer"},
-    }[context]
-    preset_runtime["execution"] = execution
+def test_preset_nonmanager_context_requires_explicit_identity_before_workspace_creation(tmp_path: Path, preset_runtime):
+    preset_runtime["execution"] = {"workdir": preset_runtime["execution"]["workdir"]}
     recipe = _runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
 
@@ -441,13 +412,9 @@ def test_preset_nonmanager_context_requires_explicit_identity_before_workspace_c
     issue = next(issue for issue in report.blocking_issues() if issue.field == "execution")
     assert issue.evidence["preflight_before_workspace"] is True
     assert issue.status == plans.DecisionStatus.FAIL
-    if context == "ssh_target":
-        assert "local" in issue.message.lower()
-        assert "ssh" in issue.message.lower()
-    else:
-        assert "execution.python" in issue.message
-        assert "execution.runtime_commit" in issue.message
-        assert "execution.workdir" in issue.message
+    assert "execution.python" in issue.message
+    assert "execution.runtime_commit" in issue.message
+    assert "execution.workdir" in issue.message
     assert not preset_runtime["workspace"].exists()
 
 

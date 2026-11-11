@@ -30,7 +30,6 @@ from agent_tools import (
     python_programs,
     run_artifacts,
     run_evidence,
-    transport,
 )
 from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256
 from agent_tools.models import REPO_ROOT
@@ -50,11 +49,9 @@ def _stub_execution_snapshot_preflight(monkeypatch, request):
 def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None, variant: str = "sleep2vec") -> Path:
     base = write_finetune_recipe(tmp_path, variant=variant)
     execution_payload = dict(execution) if execution is not None else {"workdir": str(tmp_path)}
-    manager_runtime = (
-        str(execution_payload.get("target", "local") or "local") == "local"
-        and execution_payload.get("workdir") in (None, "", str(REPO_ROOT))
-        and execution_payload.get("conda_env") in (None, "")
-    )
+    manager_runtime = execution_payload.get("workdir") in (None, "", str(REPO_ROOT)) and execution_payload.get(
+        "conda_env"
+    ) in (None, "")
     if not manager_runtime:
         execution_payload.setdefault("python", sys.executable)
         execution_payload.setdefault("runtime_commit", _RUNTIME_COMMIT)
@@ -176,10 +173,6 @@ def _embedded_process_group_running(proc_root: Path, pgid: int) -> bool | None:
     return namespace["process_group_running"](pgid, str(proc_root))
 
 
-def _is_remote_python_program(command: str, name: str) -> bool:
-    return command.startswith(f"python3 -c {transport.sh(python_programs.source(name))}")
-
-
 def _set_execution_probe(
     monkeypatch,
     plan_dir: Path,
@@ -292,7 +285,6 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
         row = {
             **run,
             "target": "local",
-            "host": "",
             "workdir": str(root),
             "gpus": "",
             "pid_path": str(managed_dir / "pid"),
@@ -459,13 +451,15 @@ def test_hparam_runtime_rejects_legacy_status_filename(tmp_path: Path):
     assert (tmp_path / "run_status.tsv").read_bytes() == current_status
 
 
-def test_hparam_doctor_rejects_invalid_execution_target(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, execution={"target": "cluster"})
+@pytest.mark.parametrize("field", ["target", "host", "path_context", "path_validation"])
+def test_hparam_doctor_rejects_removed_ssh_execution_fields(tmp_path: Path, field: str):
+    value = {"target": "ssh", "host": "runtime-host", "path_context": "remote", "path_validation": "ssh"}[field]
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), field: value})
 
     result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 1
-    assert "execution.target" in result.stdout
+    assert f"execution.{field}" in result.stdout
 
 
 def test_hparam_doctor_rejects_deprecated_log_and_pid_dirs(tmp_path: Path):

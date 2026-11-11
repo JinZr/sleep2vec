@@ -144,7 +144,7 @@ def test_slurm_controller_binding_failure_never_submits_or_transitions_run(
 
     after = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert calls == [["scontrol", "show", "config"]]
-    for field in ("status", "target", "host", "scheduler_cluster", "scheduler_job_id"):
+    for field in ("status", "target", "scheduler_cluster", "scheduler_job_id"):
         assert after.get(field, "") == before.get(field, "")
 
 
@@ -174,7 +174,7 @@ def test_slurm_runtime_preflight_failure_fails_before_controller_or_submit(tmp_p
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     after = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
-    for field in ("status", "target", "host", "scheduler_cluster", "scheduler_job_id"):
+    for field in ("status", "target", "scheduler_cluster", "scheduler_job_id"):
         assert after.get(field, "") == before.get(field, "")
 
 
@@ -344,7 +344,7 @@ def test_hparam_monitor_uses_canonical_slurm_controller_topology(
 
     hparam_runtime.monitor_hparam_runs(plan_dir)
 
-    execution = {"target": "local"}
+    execution = {}
     if direct_controller:
         execution["scheduler"] = {"direct_controller": True}
     assert observed_executions == [execution]
@@ -546,7 +546,7 @@ def test_slurm_doctor_reports_fixed_node_capacity_from_max_runs_without_mutating
         },
     )
 
-    def capacity(execution, resources, planned_runs, *, timeout=slurm.transport.SSH_TIMEOUT_SECONDS):
+    def capacity(execution, resources, planned_runs, *, timeout=slurm.transport.COMMAND_TIMEOUT_SECONDS):
         calls.append((execution, resources, planned_runs, timeout))
         if capacity_kind == "malformed":
             raise ValueError("scontrol node output lacks valid CPUTot or RealMemory capacity.")
@@ -954,60 +954,6 @@ def test_hparam_launch_ignores_existing_runtime_dir_for_nonlaunchable_run(tmp_pa
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
     assert calls == [True]
-
-
-def test_slurm_ssh_launch_rejects_unsafe_remote_checkpoint_dir_before_submission(tmp_path: Path, monkeypatch):
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-
-    def validate_without_remote(root, paths, remote=None):
-        if remote is None:
-            return real_validate(root, paths)
-
-    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
-    plan_dir, plan = _write_slurm_plan(
-        tmp_path,
-        execution={"target": "ssh", "host": "offline-host", "workdir": str(tmp_path)},
-    )
-    run = plan["runs"][0]
-    snapshot = (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes()
-    checkpoint_dir = Path(run["checkpoint_dir"])
-    remote_probes = []
-
-    def reject_remote_checkpoint(root, paths, remote=None):
-        if remote:
-            remote_probes.append((Path(root), list(paths), remote))
-            if checkpoint_dir in paths:
-                raise ValueError(f"Managed output paths must be independent regular files: {checkpoint_dir}")
-            return None
-        return real_validate(root, paths)
-
-    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", reject_remote_checkpoint)
-    submitted = []
-    monkeypatch.setattr(managed_scheduler.slurm, "submit", lambda *_args, **_kwargs: submitted.append(True))
-
-    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
-
-    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
-    assert remote_probes == [
-        (
-            Path("/"),
-            [
-                plan_dir / "plan.json",
-                Path(run["runtime_dir"]),
-                checkpoint_dir,
-                plan_hparam.plan_output_path(
-                    plan_dir,
-                    (plan["recipe"].get("artifacts") or {}).get("results_csv_path"),
-                    "results/agent_hparam_results.csv",
-                ),
-            ],
-            "offline-host",
-        )
-    ]
-    assert submitted == []
-    assert canonical["status"] in {"planned", "pending"}
-    assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
 
 
 @pytest.mark.parametrize(

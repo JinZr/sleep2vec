@@ -1,12 +1,8 @@
-"""Managed file I/O: locked, validated, local-or-remote reads and writes.
+"""Managed file I/O: locked, validated local reads and writes.
 
-Layer 0 leaf. Provides managed path validation, blocking file locks, and
-local/SSH I/O helpers.
-
-Remote uncertainty is preserved rather than collapsed into "missing": an
-unreachable host and an absent artifact reach callers as different outcomes,
-which is what lets observation code refuse to treat a transport failure as
-evidence.
+Layer 0 leaf. Provides managed path validation, blocking file locks, and the
+descriptor-relative conditional-replace and append helpers for managed
+workspace files.
 """
 
 from __future__ import annotations
@@ -24,22 +20,11 @@ import os
 from pathlib import Path
 import secrets
 import stat
-import subprocess
 import time
 from typing import Any, Iterator, Literal, TypedDict, overload
 
-from . import transport
 from .manifests import read_rows, utc_now, validate_managed_header, write_rows, write_text
 from .models import json_ready
-from .transport import REMOTE_CONFLICT_RETURN_CODE, REMOTE_MISSING_RETURN_CODE
-
-
-def _run_remote_text_program(remote: str, name: str, payload: str) -> subprocess.CompletedProcess:
-    return transport.run_ssh(
-        remote,
-        transport.remote_python_program_command(name, payload),
-        text=True,
-    )
 
 
 @contextmanager
@@ -61,65 +46,20 @@ def blocking_file_lock(path: str | Path) -> Iterator[None]:
         yield
 
 
-def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
-    dirs = [root / "reports"]
-    if remote:
-        command = "mkdir -p " + " ".join(transport.sh(path) for path in dirs) + " && printf 'true\\n'"
-        result = transport.run_ssh(remote, command, text=True, check=True)
-        if result.returncode != 0 or result.stdout != "true\n":
-            detail = result.stderr.strip() or "no valid result"
-            raise RuntimeError(f"SSH directory creation outcome may be unknown for {root} on {remote}: {detail}")
-        return
-    for path in dirs:
+def mkdir_experiment_dirs(root: Path) -> None:
+    for path in [root / "reports"]:
         path.mkdir(parents=True, exist_ok=True)
 
 
-def remote_dir_nonempty(root: Path, remote: str) -> bool:
-    result = _run_remote_text_program(remote, "experiment_io.remote_dir_nonempty", str(root))
-    if result.returncode not in {0, REMOTE_MISSING_RETURN_CODE}:
-        detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"SSH directory probe failed for {root} on {remote}: {detail}")
-    if result.stdout == "false\n":
-        return False
-    if result.returncode == 0 and result.stdout == "true\n":
-        return True
-    raise RuntimeError(f"SSH directory probe returned no valid result for {root} on {remote}: {result.stderr.strip()}")
+def path_exists_at(path: str | Path) -> bool:
+    target = Path(path)
+    return target.exists() or target.is_symlink()
 
 
-def path_exists_at(path: str | Path, *, remote: str | None = None) -> bool:
-    if not remote:
-        target = Path(path)
-        return target.exists() or target.is_symlink()
-    result = _run_remote_text_program(remote, "experiment_io.path_exists", str(path))
-    if result.returncode not in {0, REMOTE_MISSING_RETURN_CODE}:
-        detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"SSH path probe failed for {path} on {remote}: {detail}")
-    if result.stdout == "false\n":
-        return False
-    if result.returncode == 0 and result.stdout == "true\n":
-        return True
-    raise RuntimeError(f"SSH path probe returned no valid result for {path} on {remote}: {result.stderr.strip()}")
-
-
-def list_managed_subdirectories_at(
-    root: str | Path,
-    directory: str | Path,
-    *,
-    remote: str | None = None,
-) -> list[str]:
+def list_managed_subdirectories_at(root: str | Path, directory: str | Path) -> list[str]:
     root = Path(root)
     directory = Path(directory)
     _validate_raw_managed_path(root, directory)
-    if remote:
-        payload = json.dumps([str(root), str(directory)])
-        result = _run_remote_text_program(remote, "experiment_io.list_managed_subdirectories", payload)
-        if result.returncode == 2:
-            raise ValueError(result.stderr.strip() or f"Managed directory is invalid: {directory}")
-        if result.returncode != 0:
-            detail = result.stderr.strip() or f"exit code {result.returncode}"
-            raise RuntimeError(f"SSH directory read failed for {directory} on {remote}: {detail}")
-        return json.loads(result.stdout)
-
     try:
         root_info = os.lstat(root)
     except FileNotFoundError as exc:
@@ -160,7 +100,6 @@ def read_managed_files_at(
     root: str | Path,
     paths: list[str | Path],
     *,
-    remote: str | None = None,
     exact_directory_entries: bool = False,
     allow_invalid_utf8: Literal[False] = False,
 ) -> dict[str, ManagedFileSnapshot]: ...
@@ -171,7 +110,6 @@ def read_managed_files_at(
     root: str | Path,
     paths: list[str | Path],
     *,
-    remote: str | None = None,
     exact_directory_entries: bool = False,
     allow_invalid_utf8: bool,
 ) -> dict[str, ManagedFileSnapshot] | dict[str, PermissiveManagedFileSnapshot]: ...
@@ -181,7 +119,6 @@ def read_managed_files_at(
     root: str | Path,
     paths: list[str | Path],
     *,
-    remote: str | None = None,
     exact_directory_entries: bool = False,
     allow_invalid_utf8: bool = False,
 ) -> dict[str, ManagedFileSnapshot] | dict[str, PermissiveManagedFileSnapshot]:
@@ -191,16 +128,6 @@ def read_managed_files_at(
         _validate_raw_managed_path(root, target)
     if len(targets) != len(set(targets)):
         raise ValueError("Managed file paths must be unique.")
-    if remote:
-        request = json.dumps([str(root), [str(path) for path in targets], exact_directory_entries, allow_invalid_utf8])
-        result = _run_remote_text_program(remote, "experiment_io.read_managed_files", request)
-        if result.returncode == 2:
-            raise ValueError(result.stderr.strip() or "Managed control bundle is invalid.")
-        if result.returncode != 0:
-            detail = result.stderr.strip() or f"exit code {result.returncode}"
-            raise RuntimeError(f"SSH managed-file read failed on {remote}: {detail}")
-        return json.loads(result.stdout)
-
     try:
         root_info = os.lstat(root)
     except FileNotFoundError as exc:
@@ -255,39 +182,9 @@ def read_managed_files_at(
     return payload
 
 
-def _read_remote_managed_output_texts(root: Path, path_keys: list[str], *, remote: str) -> dict[str, str | None]:
-    request = json.dumps([str(root), path_keys])
-    result = _run_remote_text_program(remote, "experiment_io.read_managed_output_texts", request)
-    if result.returncode == 2:
-        raise ValueError(result.stderr.strip() or "Managed output files are invalid.")
-    if result.returncode != 0:
-        detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"SSH managed-output read failed on {remote}: {detail}")
-
-    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        payload = {}
-        for key, value in pairs:
-            if key in payload:
-                raise ValueError("SSH managed-output read returned duplicate paths.")
-            payload[key] = value
-        return payload
-
-    remote_payload = json.loads(result.stdout, object_pairs_hook=unique_object)
-    # A complete positive response is required even when SSH rewrites a failed child's exit status.
-    if (
-        not isinstance(remote_payload, dict)
-        or set(remote_payload) != set(path_keys)
-        or any(value is not None and not isinstance(value, str) for value in remote_payload.values())
-    ):
-        raise ValueError("SSH managed-output read returned an invalid or incomplete response.")
-    return remote_payload
-
-
 def read_managed_output_texts_at(
     root: str | Path,
     paths: Sequence[str | Path],
-    *,
-    remote: str | None = None,
 ) -> dict[str, str | None]:
     root = Path(root)
     path_keys = [str(path) for path in paths]
@@ -300,9 +197,6 @@ def read_managed_output_texts_at(
         raise ValueError("Managed output paths must be unique.")
     if not targets:
         return {}
-    if remote:
-        return _read_remote_managed_output_texts(root, path_keys, remote=remote)
-
     payload: dict[str, str | None] = {}
     seen_inodes: set[tuple[int, int]] = set()
     with ExitStack() as stack:
@@ -364,22 +258,18 @@ def _validate_raw_managed_path(root: Path, target: Path) -> None:
 def read_rows_at(
     path: str | Path,
     *,
-    remote: str | None = None,
     require_managed_identity: bool = False,
     strict: bool = False,
 ) -> list[dict[str, str]]:
     strict = strict or require_managed_identity
-    if not remote and not strict:
+    if not strict:
         return read_rows(path, require_managed_identity=require_managed_identity)
-    if remote:
-        text = read_text_at(path, remote=remote)
-    else:
-        target = Path(path)
-        if not target.exists() and not target.is_symlink():
-            return []
-        text = target.read_text()
+    target = Path(path)
+    if not target.exists() and not target.is_symlink():
+        return []
+    text = target.read_text()
     if not text:
-        if strict and path_exists_at(path, remote=remote):
+        if path_exists_at(path):
             raise ValueError(f"Strict table is empty: {path}")
         return []
     delimiter = "\t" if Path(str(path)).suffix == ".tsv" else ","
@@ -403,28 +293,9 @@ def read_rows_at(
     return rows
 
 
-def validate_managed_output_paths(
-    root: str | Path,
-    paths: Sequence[str | Path],
-    *,
-    remote: str | None = None,
-) -> None:
+def validate_managed_output_paths(root: str | Path, paths: Sequence[str | Path]) -> None:
     if not paths:
         return
-    if remote:
-        payload = json.dumps([str(root), *(str(path) for path in paths)])
-        result = _run_remote_text_program(remote, "experiment_io.validate_managed_output_paths", payload)
-        if result.returncode == 2:
-            raise ValueError(result.stderr.strip() or "Managed output paths must be independent regular files.")
-        if result.returncode != 0:
-            detail = result.stderr.strip() or f"exit code {result.returncode}"
-            raise RuntimeError(f"SSH output path validation failed on {remote}: {detail}")
-        if result.stdout != "true\n":
-            raise RuntimeError(
-                f"SSH output path validation returned no valid result on {remote}: {result.stderr.strip()}"
-            )
-        return
-
     root_path = Path(os.path.abspath(root))
     _validate_managed_output_root(root_path)
     seen_paths: dict[Path, None] = {}
@@ -541,57 +412,17 @@ def _recheck_managed_output_inodes(
     return seen_inodes
 
 
-def read_text_at(path: str | Path, *, remote: str | None = None) -> str:
-    if not remote:
-        target = Path(path)
-        return target.read_bytes().decode() if target.exists() else ""
-    # A complete JSON string distinguishes empty text from a failed child with a rewritten SSH exit status.
-    result = transport.run_ssh(remote, transport.remote_python_program_command("experiment_io.read_text", str(path)))
-    if result.returncode not in {0, REMOTE_MISSING_RETURN_CODE}:
-        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
-        detail = stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"SSH read failed for {path} on {remote}: {detail}")
-    try:
-        text = json.loads(result.stdout)
-    except ValueError as exc:
-        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
-        raise RuntimeError(f"SSH read returned no valid result for {path} on {remote}: {stderr.strip()}") from exc
-    if text is None:
-        return ""
-    if result.returncode == 0 and isinstance(text, str):
-        return text
-    raise RuntimeError(f"SSH read returned no valid result for {path} on {remote}.")
+def read_text_at(path: str | Path) -> str:
+    target = Path(path)
+    return target.read_bytes().decode() if target.exists() else ""
 
 
-def write_rows_at(path: str | Path, rows: Sequence[Mapping[str, Any]], *, remote: str | None = None) -> None:
-    if not remote:
-        write_rows(path, rows)
-        return
-    target = Path(str(path))
-    fieldnames = sorted({key for row in rows for key in row}) if rows else ["run_id"]
-    delimiter = "\t" if target.suffix == ".tsv" else ","
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames, delimiter=delimiter)
-    writer.writeheader()
-    writer.writerows(rows)
-    write_text_at(path, buffer.getvalue(), remote=remote)
+def write_rows_at(path: str | Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    write_rows(path, rows)
 
 
-def write_text_at(path: str | Path, text: str, *, remote: str | None = None) -> None:
-    if not remote:
-        write_text(path, text)
-        return
-    target = Path(str(path))
-    result = transport.run_ssh(
-        remote,
-        transport.remote_write_command(target) + " && printf 'true\\n'",
-        input=text,
-        text=True,
-        check=True,
-    )
-    if result.returncode != 0 or result.stdout != "true\n":
-        detail = result.stderr.strip() or "no valid result"
-        raise RuntimeError(f"SSH write outcome may be unknown for {target} on {remote}: {detail}")
+def write_text_at(path: str | Path, text: str) -> None:
+    write_text(path, text)
 
 
 _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -936,7 +767,6 @@ def conditional_atomic_replace_text_at(
     expected_sha256: str | None,
     *,
     managed_root: str | Path,
-    remote: str | None = None,
     dependency_path: str | Path | None = None,
     expected_dependency_sha256: str | None = None,
     guard_path: str | Path | None = None,
@@ -956,104 +786,77 @@ def conditional_atomic_replace_text_at(
     if guard is not None:
         _validate_raw_managed_path(root, guard)
     payload = text.encode()
-    if not remote:
-        with ExitStack() as lock_stack:
-            root_descriptor = _open_managed_root(root)
-            lock_stack.callback(os.close, root_descriptor)
-            root_info = os.fstat(root_descriptor)
-            locked_files: set[tuple[int, int, str]] = set()
-            target_parent, target_name = _open_managed_parent(
-                root_descriptor,
-                target.relative_to(root),
-                create=True,
-            )
-            lock_stack.callback(os.close, target_parent)
-            if dependency is not None:
-                if not _check_managed_dependency(
-                    root=root,
-                    root_descriptor=root_descriptor,
-                    dependency=dependency,
-                    expected_dependency_sha256=expected_dependency_sha256,
-                    lock_stack=lock_stack,
-                    locked_files=locked_files,
-                ):
-                    return False
-            target_lock_name = f".{target_name}.cas.lock"
-            target_parent_info = os.fstat(target_parent)
-            target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
-            if target_lock_key not in locked_files:
-                lock_stack.enter_context(_blocking_file_lock_at(target_parent, target_lock_name))
-                locked_files.add(target_lock_key)
-            if guard is not None:
-                try:
-                    guard_parent, guard_name = _open_managed_parent(
-                        root_descriptor,
-                        guard.relative_to(root),
-                        create=False,
-                    )
-                except FileNotFoundError:
-                    return False
-                lock_stack.callback(os.close, guard_parent)
-                try:
-                    guard_bytes, _guard_mode = _read_regular_file_at(guard_parent, guard_name)
-                except FileNotFoundError:
-                    return False
-                if hashlib.sha256(guard_bytes).hexdigest() != expected_guard_sha256:
-                    return False
-            if expected_sha256 is None:
-                try:
-                    os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
-                except FileNotFoundError:
-                    pass
-                else:
-                    return False
-                target_mode = 0o644
-            else:
-                try:
-                    current, target_mode = _read_regular_file_at(target_parent, target_name)
-                except FileNotFoundError:
-                    return False
-                if hashlib.sha256(current).hexdigest() != expected_sha256:
-                    return False
-            return _publish_managed_replacement(
+    with ExitStack() as lock_stack:
+        root_descriptor = _open_managed_root(root)
+        lock_stack.callback(os.close, root_descriptor)
+        root_info = os.fstat(root_descriptor)
+        locked_files: set[tuple[int, int, str]] = set()
+        target_parent, target_name = _open_managed_parent(
+            root_descriptor,
+            target.relative_to(root),
+            create=True,
+        )
+        lock_stack.callback(os.close, target_parent)
+        if dependency is not None:
+            if not _check_managed_dependency(
                 root=root,
-                target=target,
-                root_info=root_info,
-                target_parent=target_parent,
-                target_name=target_name,
-                target_parent_info=target_parent_info,
-                target_mode=target_mode,
-                expected_sha256=expected_sha256,
-                current=current if expected_sha256 is not None else None,
-                payload=payload,
+                root_descriptor=root_descriptor,
+                dependency=dependency,
+                expected_dependency_sha256=expected_dependency_sha256,
                 lock_stack=lock_stack,
-            )
-
-    result = transport.run_ssh(
-        remote,
-        transport.remote_python_program_command(
-            "experiment_io.conditional_atomic_replace_text",
-            str(root),
-            str(target),
-            expected_sha256 or "",
-            str(dependency) if dependency is not None else "",
-            expected_dependency_sha256 or "",
-            str(guard) if guard is not None else "",
-            expected_guard_sha256 or "",
-        ),
-        input=payload,
-    )
-    if result.returncode not in {0, REMOTE_CONFLICT_RETURN_CODE}:
-        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
-        detail = stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"SSH atomic replace failed for {target} on {remote}; outcome may be unknown: {detail}")
-    if result.stdout == b"false\n":
-        return False
-    if result.returncode == 0 and result.stdout == b"true\n":
-        return True
-    stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
-    detail = stderr.strip() or "no valid result"
-    raise RuntimeError(f"SSH atomic replace outcome may be unknown for {target} on {remote}: {detail}")
+                locked_files=locked_files,
+            ):
+                return False
+        target_lock_name = f".{target_name}.cas.lock"
+        target_parent_info = os.fstat(target_parent)
+        target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
+        if target_lock_key not in locked_files:
+            lock_stack.enter_context(_blocking_file_lock_at(target_parent, target_lock_name))
+            locked_files.add(target_lock_key)
+        if guard is not None:
+            try:
+                guard_parent, guard_name = _open_managed_parent(
+                    root_descriptor,
+                    guard.relative_to(root),
+                    create=False,
+                )
+            except FileNotFoundError:
+                return False
+            lock_stack.callback(os.close, guard_parent)
+            try:
+                guard_bytes, _guard_mode = _read_regular_file_at(guard_parent, guard_name)
+            except FileNotFoundError:
+                return False
+            if hashlib.sha256(guard_bytes).hexdigest() != expected_guard_sha256:
+                return False
+        if expected_sha256 is None:
+            try:
+                os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                return False
+            target_mode = 0o644
+        else:
+            try:
+                current, target_mode = _read_regular_file_at(target_parent, target_name)
+            except FileNotFoundError:
+                return False
+            if hashlib.sha256(current).hexdigest() != expected_sha256:
+                return False
+        return _publish_managed_replacement(
+            root=root,
+            target=target,
+            root_info=root_info,
+            target_parent=target_parent,
+            target_name=target_name,
+            target_parent_info=target_parent_info,
+            target_mode=target_mode,
+            expected_sha256=expected_sha256,
+            current=current if expected_sha256 is not None else None,
+            payload=payload,
+            lock_stack=lock_stack,
+        )
 
 
 def _check_managed_dependency(
@@ -1183,39 +986,6 @@ def _publish_managed_replacement(
     return True
 
 
-def append_event_at(
-    root: Path,
-    event_type: str,
-    payload: dict[str, Any],
-    *,
-    remote: str | None = None,
-) -> None:
+def append_event_at(root: Path, event_type: str, payload: dict[str, Any]) -> None:
     row = json.dumps({"time": utc_now(), "event_type": event_type, **json_ready(payload)}, sort_keys=True) + "\n"
-    path = root / "events.jsonl"
-    if not remote:
-        append_managed_text_at(path, row, managed_root=root)
-        return
-    command = transport.remote_python_program_command(
-        "experiment_io.conditional_atomic_replace_text",
-        str(root),
-        str(path),
-        "",
-        "",
-        "",
-        "",
-        "",
-        "append",
-    )
-    result = transport.run_ssh(
-        remote,
-        command,
-        input=row.encode(),
-    )
-    if result.returncode != 0:
-        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
-        detail = stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"SSH managed event append failed on {remote}; outcome may be unknown: {detail}")
-    if result.stdout != b"true\n":
-        stderr = result.stderr.decode() if isinstance(result.stderr, bytes) else result.stderr
-        detail = stderr.strip() or "no valid result"
-        raise RuntimeError(f"SSH managed event append outcome may be unknown on {remote}: {detail}")
+    append_managed_text_at(root / "events.jsonl", row, managed_root=root)

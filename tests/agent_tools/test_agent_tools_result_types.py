@@ -24,7 +24,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             from typing import Any, Literal
 
             direct_launch: managed_scheduler.DirectLaunchIdentity = {
-                "target": "local", "host": None, "workdir": Path("/runtime"),
+                "target": "local", "workdir": Path("/runtime"),
                 "gpus": "", "pid_path": "/run/pid", "log_path": "/run/stdout.log", "command": "",
             }
             direct_log: str = direct_launch["log_path"]
@@ -505,7 +505,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 selection["metric"] = 1  # type: ignore[typeddict-item]
 
             steps = experiments._registered_plan_steps(
-                Path("/workspace"), {}, [], remote=None, require_registered_rows=True,
+                Path("/workspace"), {}, [], require_registered_rows=True,
             )
             steps[0]["plans"][0]["run_key"]  # type: ignore[typeddict-item]
             lifecycle = experiment_tracking.hparam_selection_lifecycle(steps, [], root=Path("/workspace"))
@@ -544,9 +544,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             status_snapshot = experiment_tracking.experiment_status_snapshot({}, steps, [], root=Path("/workspace"))
             status_experiment = status_snapshot["experiment"]
             status_title: str = status_experiment["title"]
-            status_remote: str | None = status_experiment["remote"]
+            status_root: str = status_experiment["root"]
             status_experiment["experiment_id"]  # type: ignore[typeddict-item]
-            required_remote: str = status_experiment["remote"]  # type: ignore[assignment]
             status_experiment["title"] = None  # type: ignore[typeddict-item]
             status_step = status_snapshot["steps"][0]
             status_plans: list[str] = status_step["plans"]
@@ -556,7 +555,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             status_step["status_counts"]["completed"] = "1"  # type: ignore[assignment]
             status_run = status_snapshot["runs"][0]
             run_id: str = status_run["run_id"]
-            status_run["execution"]["host"] = 1  # type: ignore[typeddict-item]
+            status_run["execution"]["target"] = 1  # type: ignore[typeddict-item]
             status_run["scheduler"]["job_id"] = 1  # type: ignore[typeddict-item]
             status_run["scheduler"]["jobid"]  # type: ignore[typeddict-item]
             status_run["process"]["pid"] = 123  # type: ignore[typeddict-item]
@@ -565,9 +564,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             status_run["blockers"] = [1]  # type: ignore[list-item]
             optional_pid: str | None = status_run["process"]["pid"]
             required_pid: str = status_run["process"]["pid"]  # type: ignore[assignment]
-            missing_execution_host: experiment_tracking.ExperimentStatusExecution = {  # type: ignore[typeddict-item]
-                "target": None,
-            }
+            missing_execution_target: experiment_tracking.ExperimentStatusExecution = {}  # type: ignore[typeddict-item]
             public_status = experiments.experiment_status("/workspace")
             public_status["runs"][0]["evidence"]["checkpoint_count"] = 2  # type: ignore[typeddict-item]
             status_summary = status_snapshot["summary"]
@@ -590,7 +587,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             recommended = status_snapshot["decision"]["recommended_next"]
             if recommended is not None:
                 action_argv: list[str] = recommended["argv"]
-                action_host: str | None = recommended["control_host"]
                 recommended["command"]  # type: ignore[typeddict-item]
                 recommended["argv"] = [1]  # type: ignore[list-item]
                 recommended["required_inputs"] = "report_path"  # type: ignore[typeddict-item]
@@ -606,7 +602,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 [{"manifest": {}, "plans": ["/plan"]}], [], root=Path("/workspace"),  # type: ignore[list-item]
             )
 
-            report = experiments._hparam_selection_report(Path("/workspace"), remote=None)
+            report = experiments._hparam_selection_report(Path("/workspace"))
             report["text"]  # type: ignore[index]
             if report is not None:
                 report_path: str = report["path"]

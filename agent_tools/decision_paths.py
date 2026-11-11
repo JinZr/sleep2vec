@@ -14,14 +14,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 import re
-import subprocess  # noqa: F401 -- tests patch decision_paths.subprocess.run (stdlib global)
 from typing import Any
 
-from . import gpu_rules, slurm, transport
+from . import gpu_rules, slurm
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision
 from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, JsonValue, is_full_git_object_id
 
-_EXECUTION_FIELDS = {"host", "path_context", "path_validation", "target", "workdir"}
+_EXECUTION_FIELDS = {"workdir"}
 _RUNTIME_IDENTITY_FIELDS = {"python", "runtime_commit"}
 _RUNTIME_IDENTITY_REQUIRED_FIELDS = {*_RUNTIME_IDENTITY_FIELDS, "workdir"}
 _MULTILABEL_SIDECARS = ("disease_columns_index", "label_index", "has_label_index")
@@ -140,32 +139,6 @@ def execution_contract_issues(
                 f"execution.{field}",
                 "execution.python, execution.runtime_commit, and execution.workdir must be provided together.",
                 None,
-                source_layer,
-            )
-        )
-    target = execution.get("target")
-    if is_slurm:
-        if target not in (None, "local", "ssh"):
-            issues.append(
-                _execution_contract_issue(
-                    "execution.target", "execution.target must be local or ssh.", target, source_layer
-                )
-            )
-        if target == "ssh" and not execution.get("host"):
-            issues.append(
-                _execution_contract_issue(
-                    "execution.host",
-                    "execution.host is required when execution.target=ssh.",
-                    execution.get("host"),
-                    source_layer,
-                )
-            )
-    elif target not in (None, "", "local"):
-        issues.append(
-            _execution_contract_issue(
-                "execution.target",
-                "Explicit runtime identity supports only local execution.",
-                target,
                 source_layer,
             )
         )
@@ -540,7 +513,7 @@ def _required_multilabel_sidecars(
     return ("disease_columns_index",)
 
 
-def _append_remote_survival_sidecar_issues(
+def _append_survival_sidecar_shorthand_issues(
     issues: list[DecisionIssue],
     task: str,
     recipe: dict,
@@ -558,11 +531,7 @@ def _append_remote_survival_sidecar_issues(
         return
     for data_field in ("disease_columns_index", "event_time_index", "is_event_index", "has_label_index"):
         value = survival.get(data_field)
-        if not value:
-            continue
-        context = path_context(recipe, value, relative_to_workdir=True)
-        validation = path_validation(recipe, context)
-        if str(value).startswith("~") or (context == "remote" and validation in {"ssh", "remote"}):
+        if str(value or "").startswith("~"):
             issue = validate_input_path(
                 recipe,
                 f"finetune.survival.{data_field}",
@@ -574,7 +543,7 @@ def _append_remote_survival_sidecar_issues(
                 issues.append(issue)
 
 
-def _append_remote_multilabel_sidecar_issues(
+def _append_multilabel_sidecar_shorthand_issues(
     issues: list[DecisionIssue],
     task: str,
     recipe: dict,
@@ -591,11 +560,7 @@ def _append_remote_multilabel_sidecar_issues(
         return
     for data_field in sidecars:
         value = multilabel.get(data_field)
-        if not value:
-            continue
-        context = path_context(recipe, value, relative_to_workdir=True)
-        validation = path_validation(recipe, context)
-        if str(value).startswith("~") or (context == "remote" and validation in {"ssh", "remote"}):
+        if str(value or "").startswith("~"):
             issue = validate_input_path(
                 recipe,
                 f"finetune.multilabel.{data_field}",
@@ -687,7 +652,7 @@ def path_issues(
                 )
                 if issue is not None:
                     issues.append(issue)
-    _append_remote_survival_sidecar_issues(
+    _append_survival_sidecar_shorthand_issues(
         issues,
         task,
         recipe,
@@ -696,7 +661,7 @@ def path_issues(
         preset_path_recipe_field,
         uses_finetune_config,
     )
-    _append_remote_multilabel_sidecar_issues(
+    _append_multilabel_sidecar_shorthand_issues(
         issues,
         task,
         recipe,
@@ -727,64 +692,6 @@ def validate_input_path(
             {"path": str(raw_path), "preflight_before_workspace": True},
         )
     execution = _execution(recipe)
-    context = path_context(recipe, raw_path, relative_to_workdir=relative_to_workdir)
-    validation = path_validation(recipe, context)
-    if context not in {"local", "remote"}:
-        return DecisionIssue(
-            DecisionStatus.FAIL,
-            "execution.path_context",
-            "execution.path_context must be local or remote.",
-            None,
-            {"path_context": context},
-        )
-    if validation not in {"local", "remote", "defer", "ssh"}:
-        return DecisionIssue(
-            DecisionStatus.FAIL,
-            "execution.path_validation",
-            "execution.path_validation must be local, remote, defer, or ssh.",
-            None,
-            {"path_validation": validation},
-        )
-    if validation == "remote":
-        validation = "ssh"
-    if context == "remote" and validation == "defer":
-        return DecisionIssue(
-            DecisionStatus.WARN,
-            field,
-            f"{_path_label(configured)} path validation deferred for remote path: {raw_path}",
-            None,
-            {"path": str(raw_path), "path_context": "remote", "path_validation": "defer"},
-        )
-    if context == "remote" and validation == "ssh":
-        host = execution.get("host")
-        if not host:
-            return DecisionIssue(
-                DecisionStatus.FAIL,
-                "execution.host",
-                "execution.host is required for remote path validation.",
-                None,
-                {"path": str(raw_path)},
-            )
-        validation_path = raw_path
-        if relative_to_workdir and not Path(str(raw_path)).is_absolute():
-            workdir: JsonValue | Path = execution.get("workdir") or REPO_ROOT
-            if Path(str(workdir)).is_absolute():
-                validation_path = Path(str(workdir)) / str(raw_path)
-        test_flag = "-d" if require_directory else "-f" if require_file else "-e"
-        command = f"test {test_flag} {_sh(validation_path)} && printf 'path-present\\n'"
-        result = transport.run_ssh(str(host), command, text=True, timeout=None)
-        # Some SSH endpoints hide the child exit status; an empty result cannot prove existence.
-        if result.returncode != 0 or result.stdout != "path-present\n":
-            expected = "directory" if require_directory else "file" if require_file else "path"
-            return DecisionIssue(
-                DecisionStatus.FAIL,
-                field,
-                f"{_path_label(configured)} remote {expected} could not be verified: {raw_path}",
-                None,
-                {"path": str(raw_path), "host": str(host), "stderr": result.stderr.strip()},
-            )
-        return None
-
     path = Path(str(raw_path))
     if not relative_to_workdir:
         path = path.expanduser()
@@ -803,7 +710,7 @@ def validate_input_path(
         field,
         f"{_path_label(configured)} {expected} does not exist: {raw_path}",
         None,
-        {"path": str(raw_path), "path_context": "local", "path_validation": validation},
+        {"path": str(raw_path)},
     )
 
 
@@ -861,8 +768,6 @@ def finetune_init_checkpoint_issue(recipe: dict) -> DecisionIssue | None:
         message = "init_checkpoint_path must be an absolute checkpoint file path."
     elif inputs.get("pretrained_backbone_path") not in (None, ""):
         message = "init_checkpoint_path cannot be combined with pretrained_backbone_path."
-    elif (recipe.get("execution") or {}).get("target", "local") != "local":
-        message = "Full-model initialization requires local plan publication on the checkpoint execution host."
     if message is None:
         return None
     return DecisionIssue(
@@ -936,28 +841,5 @@ def _path_label(configured: bool) -> str:
     return "Configured input" if configured else "Required input"
 
 
-def path_context(recipe: dict, raw_path: Any, *, relative_to_workdir: bool = False) -> str:
-    execution = _execution(recipe)
-    explicit = execution.get("path_context")
-    if explicit:
-        return str(explicit)
-    path = Path(str(raw_path))
-    if not relative_to_workdir:
-        path = path.expanduser()
-    if execution.get("target") == "ssh" and (relative_to_workdir or path.is_absolute()):
-        return "remote"
-    return "local"
-
-
-def path_validation(recipe: dict, context: str) -> str:
-    explicit = _execution(recipe).get("path_validation")
-    if explicit:
-        return str(explicit)
-    return "defer" if context == "remote" else "local"
-
-
 def _execution(recipe: dict) -> Mapping[str, JsonValue]:
     return recipe["execution"] if isinstance(recipe.get("execution"), dict) else {}
-
-
-_sh = transport.sh

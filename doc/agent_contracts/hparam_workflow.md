@@ -102,7 +102,7 @@ searched configurations, metric, split and budget, never a global optimum.
 
 Optional `inputs.init_checkpoint_path` is supported for `sleep2vec2` finetune
 and hparam recipes. Supply an absolute full finetune checkpoint path and publish
-locally on its execution host (`execution.target: local`, including Slurm).
+on its execution host, including for Slurm.
 The plan freezes its SHA-256 in the resolved recipe and each run's input
 snapshots; registered-plan reads and the leaf script verify those bytes.
 `inputs.ckpt_path` remains final-evaluation-only for hparam and is not passed
@@ -166,7 +166,7 @@ unique config bytes. Target CLI preflight proves argument parsing, not config
 execution on that target. Neither check proves model construction, checkpoint
 compatibility, forward/backward, GPU execution, or complete candidate-specific
 dataset validation; those operations are not performed.
-The card distinguishes the control transport from the validated preflight host and shows the actual
+The card shows the validated preflight host and the actual
 Python executable/version reported by that target. Variant, runtime module,
 actual config loader, architecture, and channels come from each final generated
 config and are grouped with their run IDs. The card is a projection for audit;
@@ -192,14 +192,14 @@ The optional `execution` block configures the managed launcher.
 - Conda wrapping belongs in `execution.conda_env`, not `execution.python`.
 - Omitted `execution.scheduler` resolves to `{type: direct}`. Direct runs use
   the existing `gpu_pool` / `gpus_per_run` / `max_concurrent` process model.
-- `execution.scheduler.type: slurm` keeps `target` as local/SSH control
-  transport and submits every frozen run as its own single-node allocation. It
+- `execution.scheduler.type: slurm` runs Slurm client commands on the host where
+  agent tools run and submits every frozen run as its own single-node allocation. It
   requires `partition`, `cpus_per_task`, `memory`, and `walltime`; optional scheduler
   fields are `nice`, `nodelist`, and boolean `direct_controller`. The latter
   defaults to false: follow-up commands route to the bound cluster with
   `--clusters`. Set it to true only when the submission endpoint already talks
   directly to that controller and federation routing is unavailable. This
-  topology is never inferred from `target`. `gpus_per_run` is a positive YAML integer,
+  topology is never inferred. `gpus_per_run` is a positive YAML integer,
   defaults to one, and becomes the allocation GPU count plus logical
   `runtime.devices=[0, ..., N-1]`. The allocation wrapper starts one foreground
   `srun` step containing exactly N tasks, one per GPU. `cpus_per_task` applies
@@ -220,11 +220,10 @@ The optional `execution` block configures the managed launcher.
   the scheduler. The allocation wrapper removes ambient generic distributed
   rank and rendezvous variables before starting `srun`, so Slurm task identity
   remains canonical.
-- Only the canonical manager runtime—a local target at `REPO_ROOT` without a
-  conda wrapper—may omit Python and commit identity. Planning then freezes the
-  current manager interpreter and baseline repository HEAD. SSH targets,
-  separate local workdirs, and conda-wrapped targets must author both values
-  explicitly.
+- Only the canonical manager runtime—`REPO_ROOT` without a conda wrapper—may
+  omit Python and commit identity. Planning then freezes the current manager
+  interpreter and baseline repository HEAD. Separate workdirs and conda-wrapped
+  targets must author both values explicitly.
 - With direct scheduling, `hparam-launch` starts one capacity-limited wave and
   `hparam-run-queue --execute` keeps filling that capacity. With Slurm, the
   launch owner submits every launchable leaf job without applying host-global
@@ -243,7 +242,7 @@ and manifest merges, events, status reports, and frozen-run validation are
 unchanged.
 
 Before calculating direct capacity, execute-mode launch refreshes observable
-active blockers from other plans sharing the relevant target, host, and GPU
+active blockers from other plans sharing the relevant GPU
 pool, then commits their status transitions. The full queue fails if a
 current-plan run or relevant cross-plan capacity blocker is `missing_pid`.
 A queue with no eligible slot does not probe the execution snapshot.
@@ -257,7 +256,7 @@ for observation writes and explicit raw-log display.
 `pending` run before any execution identity is bound. It rereads the canonical
 row under the same lock as launch, records `stopped`, the reason, and stop time,
 then updates the existing projections and `run_stopped` event. This applies to
-direct and Slurm plans without process, SSH, sidecar, or scheduler probes.
+direct and Slurm plans without process, sidecar, or scheduler probes.
 Dry-run preview identity does not count; Slurm's plan-owned log path and
 preflight snapshot also do not prove submission. Any partial or complete launch
 identity, launch time, or existing stop request keeps the authenticated runtime
@@ -282,7 +281,7 @@ The snapshot stores the explicit execution environment, normalized supported
 options and digests, and every validated argv vector.
 
 Eligible execute waves live-reprobe the same target, using the configured
-target/workdir/conda/explicit-environment wrapper. Commit and derived CLI-option
+workdir/conda/explicit-environment wrapper. Commit and derived CLI-option
 inventory may advance with a rolling checkout; launch records the actual commit
 and still validates every frozen argv against the live parser. Python, route,
 repository/module origin, explicit environment, clean importable code, and
@@ -325,12 +324,11 @@ removed `trial_*` plans and status files remain unmanaged and read-only.
 
 Run `hparam-select` only after every managed run is terminal; manifest,
 checkpoint inventory, and physical hash evidence come only from successful
-canonical runs on their frozen local or SSH execution target. Compatible plans
+canonical runs. Compatible plans
 in one step must agree on selection metric, mode, and split. Selection replaces
 current-plan keys in shared `reports/ranking.csv`, reranks the complete step,
 and writes deterministic `reports/hparam_selection.md`.
-Unavailable SSH evidence for a canonically successful run fails selection
-before ranking output. Once canonical selection rows bind checkpoint hashes,
+Once canonical selection rows bind checkpoint hashes,
 selector re-entry may only reproduce the same score and checkpoint evidence.
 Deleting `ranking.csv` does not authorize replacement from changed runtime
 evidence; the projection may be rebuilt only from unchanged canonical selection.
@@ -353,7 +351,7 @@ input to [final external-test evaluation](external_test_locking.md#final-externa
 there is no other selected-candidate consumer.
 
 Status validates the canonical ranking; finalization rehashes every ranked
-checkpoint on its frozen target.
+checkpoint.
 The detailed [status read-set](experiment_workspace.md#read-only-status-and-advisory-actions)
 and [final report acceptance](experiment_workspace.md#finalization) have one
 workspace owner, including mixed/all-failed cases and historical completed-read
