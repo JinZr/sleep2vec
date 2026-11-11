@@ -1217,7 +1217,7 @@ def _validate_run_rows(
     Violations raise ValueError; success returns None and does not establish
     registration or runtime completion.
     """
-    validate_managed_run_rows(rows, source=source, cardinality="one_per_run")
+    validate_managed_run_rows(rows, source=source)
     versions = set()
     for index, row in enumerate(rows):
         missing = [field for field in RUN_METADATA_FIELDS if row.get(field) in (None, "")]

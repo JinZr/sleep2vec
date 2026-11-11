@@ -667,6 +667,41 @@ def hparam_run_layouts(recipe: dict[str, Any], out: Path, run_index_offset: int)
     return layouts
 
 
+def hparam_planned_plan_paths(
+    recipe: dict[str, JsonValue], out: Path, *, blocked: bool, unlock_final_test: bool
+) -> list[Path]:
+    """Every path an hparam plan publication may write: the blocked-plan control
+    files when consultation blocks, else the full multi-run bundle."""
+    if blocked:
+        paths = plan_contract.blocked_plan_control_paths(out)
+        evaluation_value = recipe.get("evaluation_policy")
+        evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
+        if final_test_unlocked(evaluation, unlock_final_test):
+            paths.extend([out / "final_external_test.sh", out / FROZEN_FINAL_EVAL_CONFIG_NAME])
+        return paths
+    paths = [
+        out / "plan.json",
+        out / "plan.md",
+        out / "run_all.sh",
+        out / "validation.sh",
+        out / "execution_snapshot.json",
+        out / "recipe.resolved.yaml",
+        out / "config.source.yaml",
+        out / FROZEN_FINAL_EVAL_CONFIG_NAME,
+    ]
+    execution_value = recipe.get("execution")
+    execution = execution_value if isinstance(execution_value, dict) else {}
+    scheduler_value = execution.get("scheduler")
+    scheduler = scheduler_value if isinstance(scheduler_value, dict) else {}
+    for layout in hparam_run_layouts(recipe, out, next_run_index(recipe)):
+        run_dir = layout["run_dir"]
+        paths.extend([run_dir / "launch.sh", run_dir / "config.yaml", run_dir / "run.json", run_dir / "artifacts.json"])
+        if scheduler.get("type") == "slurm":
+            paths.extend([run_dir / "job.sbatch", run_dir / "slurm.log"])
+    paths.append(out / "final_external_test.sh")
+    return paths
+
+
 def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | None:
     evaluation_value = recipe.get("evaluation_policy")
     evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}

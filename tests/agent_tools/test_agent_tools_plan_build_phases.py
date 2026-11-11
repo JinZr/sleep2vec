@@ -8,46 +8,29 @@ from agent_tool_test_helpers import config_payload
 import pytest
 import yaml
 
-from agent_tools import plan_contract, plans, run_artifacts
+from agent_tools import plan_contract, plan_hparam, plans, run_artifacts
 from agent_tools.adapters.base import TaskAdapter
 from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 
 
-class _PrecommitFailureAdapter(TaskAdapter):
-    task = "precommit_failure"
-    materializes_plan = True
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    def write_plan(
-        self,
-        recipe,
-        out,
-        *,
-        write_out=None,
-        run_index_offset=None,
-        unlock_final_test,
-        source_config_bytes,
-        source_config_sha256,
-        final_eval_config,
-    ) -> None:
-        self.calls.append("write")
-        write_out.mkdir(parents=True)
-        (write_out / "plan.json").write_text("{}\n")
-
-
-def test_adapter_precommit_failure_removes_staging_without_publication(tmp_path: Path, monkeypatch):
-    adapter = _PrecommitFailureAdapter()
+def test_hparam_precommit_failure_removes_staging_without_publication(tmp_path: Path, monkeypatch):
+    calls: list[str] = []
     out = tmp_path / "plan"
     staging = tmp_path / ".plan.staging"
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS)
 
+    def write_plan(recipe, plan_out, *, write_out, **_kwargs) -> None:
+        assert (plan_out, write_out) == (out, staging)
+        calls.append("write")
+        write_out.mkdir(parents=True)
+        (write_out / "plan.json").write_text("{}\n")
+
     def fail_preflight(physical_out, *, semantic_out):
         assert (physical_out, semantic_out) == (staging, out)
-        adapter.calls.append("precommit")
+        calls.append("precommit")
         raise ValueError("injected precommit failure")
 
+    monkeypatch.setattr(plan_hparam, "write_hparam_plan", write_plan)
     monkeypatch.setattr(run_artifacts, "preflight_hparam_plan", fail_preflight)
     monkeypatch.setattr(
         run_artifacts,
@@ -55,8 +38,7 @@ def test_adapter_precommit_failure_removes_staging_without_publication(tmp_path:
         lambda *_args, **_kwargs: pytest.fail("failed precommit must not register the plan"),
     )
 
-    result = plans._materialize_adapter_plan(
-        plan_adapter=adapter,
+    result = plans._materialize_hparam_plan(
         recipe={},
         report=report,
         out=out,
@@ -71,7 +53,7 @@ def test_adapter_precommit_failure_removes_staging_without_publication(tmp_path:
     )
 
     assert result.exit_code == 1
-    assert adapter.calls == ["write", "precommit"]
+    assert calls == ["write", "precommit"]
     assert result.blocking_issues()[0].field == "execution.preflight"
     assert result.blocking_issues()[0].message == "injected precommit failure"
     assert not staging.exists()

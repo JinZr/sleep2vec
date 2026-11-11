@@ -494,9 +494,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     )
     if not report.blocking_issues() and doctor_runtime_diagnostics_supported(recipe):
         print("Doctor phase: runtime diagnostics", file=sys.stderr, flush=True)
-        runtime_card = doctor_runtime_card(recipe)
-        if runtime_card is not None:
-            print(runtime_card, file=sys.stderr, flush=True)
+        print(doctor_runtime_card(recipe), file=sys.stderr, flush=True)
     print(report_text(report), flush=True)
     print("Doctor phase: publish outputs", file=sys.stderr, flush=True)
     template = write_doctor_outputs(args.output_dir, recipe, report)

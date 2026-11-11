@@ -66,8 +66,7 @@ Experiment workspace:
 - `experiment_workspace`: `run_manifest.tsv`, the only lifecycle owner, with its lock and managed manifests.
 - `experiment_io`: atomic replace, a sidecar `flock` per file, and `locked_append` under it, plain reads, and the output-path preflight.
 - `research_log`: append-only research notes.
-- `experiment_sources`: checkpoint evidence validation.
-- `experiment_tracking`: status projections, monitor results, and hparam ranking validation.
+- `experiment_tracking`: checkpoint evidence validation, status projections, monitor results, and hparam ranking validation.
 - `manifests`: deterministic JSON, TSV, and text serializers.
 
 Gates owned elsewhere: the complexity ceiling in `utils/complexity_check.py`, the

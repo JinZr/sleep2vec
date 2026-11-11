@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 from typing import Any
@@ -30,9 +31,11 @@ import yaml
 from . import (
     configs,
     decision_rules as task_rules,
+    execution_snapshot,
     experiment_io as exp_io,
     plan_context as context,
     plan_contract,
+    plan_hparam,
     run_artifacts as artifacts,
     schema_map,
 )
@@ -856,9 +859,42 @@ def doctor_runtime_diagnostics_supported(recipe: dict[str, Any]) -> bool:
     return bool(adapter is not None and adapter.supports_doctor_runtime_diagnostics)
 
 
-def doctor_runtime_card(recipe: dict[str, Any]) -> str | None:
-    adapter = get_adapter(recipe.get("task"))
-    return adapter.doctor_runtime_card(recipe) if adapter is not None else None
+def doctor_runtime_card(recipe: dict[str, Any]) -> str:
+    """Read-only target runtime diagnostic for doctor, for tasks that declare
+    ``supports_doctor_runtime_diagnostics``."""
+    execution = recipe.get("execution")
+    if not isinstance(execution, dict):
+        execution = {}
+    python = str(execution.get("python") or sys.executable)
+    program = (
+        "import importlib.metadata, json, socket, sys; "
+        "pl_version = next((dist.version for dist in importlib.metadata.distributions() "
+        "if str(dist.metadata.get('Name', '')).lower() == 'pytorch-lightning'), 'unavailable'); "
+        "print(json.dumps({'host': socket.gethostname(), 'python': sys.executable, "
+        "'python_version': sys.version.split()[0], 'pytorch_lightning_version': pl_version}, sort_keys=True))"
+    )
+    try:
+        result = execution_snapshot.run_execution_command(execution, [python, "-c", program])
+    except subprocess.TimeoutExpired:
+        return "Doctor runtime unavailable: diagnostic probe timed out"
+    except (OSError, ValueError):
+        return "Doctor runtime unavailable: diagnostic probe could not start"
+    if result.returncode != 0:
+        return f"Doctor runtime unavailable: diagnostic probe exited with code {result.returncode}"
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return "Doctor runtime unavailable: malformed diagnostic output"
+    fields = ("host", "python", "python_version", "pytorch_lightning_version")
+    if not isinstance(payload, dict) or any(
+        not isinstance(payload.get(field), str) or not payload[field] for field in fields
+    ):
+        return "Doctor runtime unavailable: incomplete diagnostic output"
+    return (
+        f"Doctor runtime: host={payload['host']}, python={payload['python']}, "
+        f"python_version={payload['python_version']}, "
+        f"pytorch-lightning={payload['pytorch_lightning_version']}"
+    )
 
 
 def write_doctor_outputs(
@@ -929,9 +965,8 @@ def _validate_bound_recipe(
     return None
 
 
-def _materialize_adapter_plan(
+def _materialize_hparam_plan(
     *,
-    plan_adapter: TaskAdapter,
     recipe: dict[str, Any],
     report: DecisionReport,
     out: Path,
@@ -945,15 +980,15 @@ def _materialize_adapter_plan(
     final_eval_config: BoundFinalEvalConfigSnapshot | None,
 ) -> DecisionReport:
     try:
-        plan_adapter.write_plan(
+        plan_hparam.write_hparam_plan(
             recipe,
             out,
             write_out=write_out,
-            run_index_offset=run_index_offset,
             unlock_final_test=unlock_final_test,
             source_config_bytes=validated_config_bytes,
             source_config_sha256=validated_config_sha256,
             final_eval_config=final_eval_config,
+            run_index_offset=run_index_offset,
         )
         try:
             preflight_summary = artifacts.preflight_hparam_plan(write_out, semantic_out=out)
@@ -984,7 +1019,7 @@ def _materialize_adapter_plan(
         shutil.rmtree(write_out)
         return report
 
-    registration_rows = plan_adapter.registration_rows(read_json(write_out / "plan.json"))
+    registration_rows = plan_hparam.hparam_manifest_rows(read_json(write_out / "plan.json"))
     staged_tree_sha256 = artifacts.plan_tree_sha256(write_out)
     plan_tree_entries = frozenset(path.name for path in write_out.iterdir()) if out == experiment_root(recipe) else None
     with plan_publication_lock(out):
@@ -1216,7 +1251,6 @@ def _build_plan(*, request: PlanBuildRequest, loaded_recipe: dict | None) -> Dec
         recipe_path=request.recipe_path,
         output_dir=out,
         user_decisions_path=request.user_decisions_path,
-        allow_unresolved=request.allow_unresolved,
         unlock_final_test=request.unlock_final_test,
         recipe=loaded_recipe,
     )
@@ -1324,8 +1358,7 @@ def _build_plan(*, request: PlanBuildRequest, loaded_recipe: dict | None) -> Dec
     write_out, generated_staging = _prepare_plan_staging(out=out, plan_adapter=plan_adapter)
 
     if plan_adapter is not None and plan_adapter.materializes_plan:
-        return _materialize_adapter_plan(
-            plan_adapter=plan_adapter,
+        return _materialize_hparam_plan(
             recipe=recipe,
             report=report,
             out=out,
@@ -1473,7 +1506,6 @@ def preflight_plan(
     recipe_path: str | Path,
     output_dir: str | Path | None,
     user_decisions_path: str | Path | None = None,
-    allow_unresolved: bool = False,
     unlock_final_test: bool = False,
     recipe: dict | None = None,
 ) -> tuple[dict, ConfigSummaryInput | None, DecisionReport]:
@@ -1489,7 +1521,6 @@ def preflight_plan(
     for these checks; launches no runs. Expected blockers are reported, while
     unhandled loading/I/O errors propagate.
 
-    allow_unresolved permits a blocked draft, never a runnable unresolved plan.
     unlock_final_test is checked against the frozen evaluation policy, not a
     substitute for it. build_plan runs this under its registration lock and
     publishes from this single validation pass.
@@ -1594,7 +1625,6 @@ def preflight_plan(
             report,
             recipe,
             out,
-            allow_unresolved=allow_unresolved,
             unlock_final_test=unlock_final_test,
         )
     return recipe, cfg, report
@@ -1874,7 +1904,7 @@ def _guard_pass_plan_publication(
     recovering_unowned_plan = _is_unowned_published_plan(recipe, out)
     if owners and not owned_by_current_step:
         report = _registered_plan_immutable_report(report, out)
-    planned_paths = _planned_plan_paths(recipe, out, report, False, unlock_final_test)
+    planned_paths = _planned_plan_paths(recipe, out, report, unlock_final_test)
     report = _guard_existing_outputs(
         report,
         planned_paths,
@@ -1897,10 +1927,9 @@ def _guard_blocked_plan_publication(
     recipe: dict,
     out: Path,
     *,
-    allow_unresolved: bool,
     unlock_final_test: bool,
 ) -> DecisionReport:
-    planned_paths = _planned_plan_paths(recipe, out, report, allow_unresolved, unlock_final_test)
+    planned_paths = _planned_plan_paths(recipe, out, report, unlock_final_test)
     blocked_paths = plan_contract.blocked_plan_control_paths(out)
     overwrite_policy = _overwrite_policy(recipe)
     report = _guard_existing_outputs(
@@ -1956,16 +1985,13 @@ def _planned_plan_paths(
     recipe: dict,
     out: Path,
     report: DecisionReport,
-    allow_unresolved: bool,
     unlock_final_test: bool,
 ) -> list[Path]:
     adapter = get_adapter(recipe.get("task"))
-    if adapter is not None:
-        adapter_paths = adapter.planned_plan_paths(
-            recipe, out, report, allow_unresolved=allow_unresolved, unlock_final_test=unlock_final_test
+    if adapter is not None and adapter.materializes_plan:
+        return plan_hparam.hparam_planned_plan_paths(
+            recipe, out, blocked=report.exit_code != 0, unlock_final_test=unlock_final_test
         )
-        if adapter_paths is not None:
-            return adapter_paths
     if report.exit_code != 0:
         return plan_contract.blocked_plan_control_paths(out)
     assert adapter is not None
