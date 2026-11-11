@@ -599,7 +599,7 @@ def _parse_run_manifest(text: str, path: Path) -> list[dict[str, str]]:
         for row in rows
     ):
         raise ValueError(f"Managed run manifest rows must define a non-blank experiment_id: {path}")
-    validate_managed_run_rows(rows, source=str(path), cardinality="one_per_run")
+    validate_managed_run_rows(rows, source=str(path))
     return rows
 
 
@@ -812,9 +812,7 @@ def managed_run_parameters(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def validate_managed_run_rows(rows: Sequence[Mapping[str, Any]], *, source: str, cardinality: str) -> None:
-    if cardinality not in {"one_per_run", "many_per_run"}:
-        raise ValueError(f"Unsupported managed row cardinality for {source}: {cardinality}")
+def validate_managed_run_rows(rows: Sequence[Mapping[str, Any]], *, source: str) -> None:
     seen = set()
     for index, row in enumerate(rows):
         if "trial_id" in row:
@@ -827,7 +825,7 @@ def validate_managed_run_rows(rows: Sequence[Mapping[str, Any]], *, source: str,
             )
         if any(str(row[field]) != str(row[field]).strip() for field in ("step_id", "run_id")):
             raise ValueError(f"{source} row {index} has surrounding whitespace in its managed identity.")
-        if cardinality == "one_per_run" and key in seen:
+        if key in seen:
             raise ValueError(f"Duplicate managed run identity in {source}: {key[0]} / {key[1]}")
         relative_paths = [
             field
@@ -1035,7 +1033,7 @@ def plan_registration_rows_state(
     root = Path(root)
     if not expected_rows:
         raise ValueError(f"{source} must contain at least one run.")
-    validate_managed_run_rows(expected_rows, source=source, cardinality="one_per_run")
+    validate_managed_run_rows(expected_rows, source=source)
     # Explicit validation and read_run_manifest require non-blank managed identities.
     expected_by_key = {cast(tuple[str, str], managed_run_key(row)): row for row in expected_rows}
     existing_rows: list[dict[str, str]] = []
@@ -1149,7 +1147,7 @@ def merge_run_manifest(
     root = Path(root)
     path = root / "run_manifest.tsv"
     experiment_path = root / "experiment.yaml"
-    validate_managed_run_rows(rows, source="incoming run manifest", cardinality="one_per_run")
+    validate_managed_run_rows(rows, source="incoming run manifest")
     incoming_rows = [
         {field: value for field, value in row.items() if field not in MONITOR_OBSERVATION_FIELDS} for row in rows
     ]

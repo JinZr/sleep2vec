@@ -69,7 +69,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | GPU pool partitioning | `gpu_group_plan` in [`agent_tools/gpu_rules.py`](../../agent_tools/gpu_rules.py); live capacity and process placement stay in `managed_scheduler` | scheduler-, planner-, or adapter-local device arithmetic |
 | Registered plan reads | `is_registered_blocked_plan` for exact nested blocked-plan envelopes and strict plan-owned artifacts in root-resident workspaces, `read_registered_plan` for materialized control bundles reusing the static recipe structure owner, and `read_hparam_plan` for stronger local launch-time validation in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | status- or launcher-specific parsing |
 | Public hparam operations | [`agent_tools/hparam_runtime.py`](../../agent_tools/hparam_runtime.py) for launch, queue, monitor, and stop; [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) for selection | direct private cross-module imports |
-| Checkpoint evidence validation | `validate_checkpoint_evidence_rows` in [`agent_tools/experiment_sources.py`](../../agent_tools/experiment_sources.py), re-exported by [`agent_tools/experiment_tracking.py`](../../agent_tools/experiment_tracking.py) for finalization and hparam selection | status-, selection-, or CLI-local checkpoint checks |
+| Checkpoint evidence validation | `validate_checkpoint_evidence_rows` in [`agent_tools/experiment_tracking.py`](../../agent_tools/experiment_tracking.py) for finalization and hparam selection | status-, selection-, or CLI-local checkpoint checks |
 | Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade, including canonical-only `experiment_status`, with I/O/tracking owners behind it | skills or CLI handlers |
 | Index/config/preset summaries | [`agent_tools/domain/`](../../agent_tools/domain/) through stable top-level facades | shell parsing templates |
 | MoE routing and experts | [`sleep2expert/backbones/roformer/moe.py`](../../sleep2expert/backbones/roformer/moe.py) | trainer-local routing branches |
@@ -171,8 +171,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   selected variant's argument validator through `plan_rendering`, including
   every effective hparam candidate before publication. The same bridge resolves
   built-in task flags when a frozen config omits an explicit task block.
-- Keep manifest commits and `plan_controller` binding in `experiment_workspace`, checkpoint evidence validation
-  in `experiment_sources`, and projections/status in `experiment_tracking` behind `experiments`;
+- Keep manifest commits and `plan_controller` binding in `experiment_workspace`, and checkpoint evidence validation
+  and projections/status in `experiment_tracking` behind `experiments`;
   see [canonical state](../agent_contracts/run_manifest.md#canonical-state-and-projections)
   and the [status read-set](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions).
 - Load YAML text with `yaml.load(text, Loader=models.YAML_SAFE_LOADER)` (libyaml); strict managed mappings go
@@ -184,7 +184,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   recipe broadly typed, because contract-blocked early returns precede the freeze check; `_build_plan`
   narrows it to `dict[str, JsonValue]` on its pass path, and the plan functions that write into the frozen
   recipe take that type, as do the `TaskAdapter` recipe hooks it calls (`bind_effective_recipe`,
-  `frozen_commands`, `planned_plan_paths`, `frozen_input_paths`, `configured_input_issues`, `task_issues`).
+  `frozen_commands`, `frozen_input_paths`, `configured_input_issues`, `task_issues`).
   Builder rows whose `rank`, `score` or `epoch` is consumed numerically stay `dict[str, Any]`, and
   `experiment_workspace.resolve_run_row` returns the caller's own row type.
 - Reuse `hparam_selection` for

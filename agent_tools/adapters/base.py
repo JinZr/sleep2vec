@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .. import plan_contract, plan_rendering, slurm
-from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
-from ..models import BoundFinalEvalConfigSnapshot, ConfigSummaryInput, JsonValue, coerce_list
+from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision
+from ..models import ConfigSummaryInput, JsonValue, coerce_list
 from ..plan_contract import CompiledPlanContract, GenericCompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
@@ -117,11 +117,11 @@ class TaskAdapter:
     uses_finetune_config: bool = False
     #: required_channels decision vs config preset_build consistency check.
     enforces_required_channels: bool = False
-    #: Task writes its own complete plan bundle (multi-run) via write_plan;
-    #: the caller skips the generic single-run materialization and the flat
-    #: command-emptiness preflight check, and registers the bundle through
-    #: the hparam registration phase in run_artifacts (preflight_hparam_plan,
-    #: then commit_hparam_plan).
+    #: Task publishes a multi-run hparam plan bundle: plans writes it through
+    #: plan_hparam instead of the generic single-run materialization, skips
+    #: the flat command-emptiness preflight check, and registers the bundle
+    #: through the hparam registration phase in run_artifacts
+    #: (preflight_hparam_plan, then commit_hparam_plan).
     materializes_plan: bool = False
     #: Task accepts a frozen Python/workdir/commit execution identity.
     supports_runtime_identity: bool = False
@@ -133,8 +133,11 @@ class TaskAdapter:
     accepts_pretrain_config: bool = False
     #: Run preflight_issues while consultation choices remain unresolved.
     preflight_on_unresolved: bool = False
-    #: Task owns a read-only target runtime diagnostic for doctor.
+    #: Doctor runs its read-only target runtime diagnostic for this task.
     supports_doctor_runtime_diagnostics: bool = False
+    #: Trainer log directory under execution.workdir that holds each managed
+    #: run's ``<version>/checkpoints``; None records empty runtime/checkpoint dirs.
+    managed_runtime_log_dir: str | None = None
 
     def section_contract_issues(self, recipe: dict[str, Any], *, source_layer: str) -> list[DecisionIssue] | None:
         """Full replacement for the shared per-section recipe contract walk
@@ -180,26 +183,6 @@ class TaskAdapter:
         for doctor."""
         return []
 
-    def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
-        """Return a read-only target runtime diagnostic for doctor."""
-        return None
-
-    def write_plan(
-        self,
-        recipe: dict[str, Any],
-        out: Path,
-        *,
-        write_out: Path | None = None,
-        run_index_offset: int | None = None,
-        unlock_final_test: bool,
-        source_config_bytes: bytes,
-        source_config_sha256: str,
-        final_eval_config: BoundFinalEvalConfigSnapshot | None,
-    ) -> None:
-        """Materialize the full plan bundle; ``out`` is the final semantic
-        root and ``write_out`` may be a physical staging root."""
-        raise NotImplementedError
-
     def registration_rows(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         """Project frozen plan runs into their canonical registration rows."""
         return [
@@ -209,25 +192,6 @@ class TaskAdapter:
             }
             for run in plan["runs"]
         ]
-
-    def planned_plan_paths(
-        self,
-        recipe: dict[str, JsonValue],
-        out: Path,
-        report: DecisionReport,
-        *,
-        allow_unresolved: bool,
-        unlock_final_test: bool,
-    ) -> list[Path] | None:
-        """Full replacement for the shared expected-output path list
-        (both the blocked and success branches); None means use the generic
-        single-run path list."""
-        return None
-
-    def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
-        """Externally-managed runtime directory for a planned managed run;
-        None means the caller records empty runtime/checkpoint dirs."""
-        return None
 
     def required_input_paths(self, recipe: dict[str, Any]) -> list[tuple[str, Any]]:
         """Task-specific required input paths, validated by

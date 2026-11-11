@@ -26,8 +26,8 @@ from ..plan_rendering import (
 )
 from .base import TaskAdapter, config_summary_issues, recipe_inputs
 
-# Byte-compat guard for the sidecar helpers' finetune-config membership, keyed
-# on the recipe's own task string like the pre-adapter kernel sets were.
+# The sidecar helpers' finetune-config membership, keyed on the recipe's own
+# task string rather than the dispatch task.
 _FINETUNE_CONFIG_GUARD_TASKS = frozenset({"finetune", "hparam_tune", "infer"})
 
 _INPUT_FIELDS = frozenset(
@@ -46,8 +46,7 @@ _EVALUATION_FIELDS = frozenset({"external_test_locked", "final_test_unlocked"})
 
 
 def _recipe_preset_field(recipe: dict[str, Any]) -> str | None:
-    # Byte-compat with the pre-adapter kernel: these helpers were keyed on the
-    # recipe's own task string, not the dispatch task.
+    # Keyed on the recipe's own task string, not the dispatch task.
     return "inference_preset_path" if str(recipe.get("task")) == "infer" else None
 
 

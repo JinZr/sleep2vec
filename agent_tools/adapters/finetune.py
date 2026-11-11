@@ -18,7 +18,7 @@ from ..decision_paths import (
     sex_age_pretrained_backbone_issue,
     survival_sidecar_issue,
 )
-from ..models import REPO_ROOT, ConfigSummaryInput, JsonValue, recipe_name
+from ..models import ConfigSummaryInput, JsonValue, recipe_name
 from ..plan_rendering import (
     FINETUNE_RUNTIME_FIELDS,
     finetune_input_cli_args,
@@ -49,6 +49,7 @@ class FinetuneAdapter(TaskAdapter):
     validates_dataset_paths = True
     uses_finetune_config = True
     enforces_required_channels = True
+    managed_runtime_log_dir = "log-finetune"
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         return FINETUNE_RUNTIME_FIELDS
@@ -128,8 +129,7 @@ class FinetuneAdapter(TaskAdapter):
         pretrained_issue = sex_age_pretrained_backbone_issue(recipe)
         if pretrained_issue is not None:
             issues.append(pretrained_issue)
-        # self.task, not the recipe's own task string: the pre-adapter kernel
-        # hard-coded "finetune" for these helpers.
+        # Keyed on the dispatch task (self.task), not the recipe's own task string.
         survival_issue = survival_sidecar_issue(self.task, recipe, config_summary, uses_finetune_config=True)
         if survival_issue is not None:
             issues.append(survival_issue)
@@ -200,12 +200,6 @@ class FinetuneAdapter(TaskAdapter):
         else:
             pieces.append("--no-test-after-fit")
         return [render_command(pieces)]
-
-    def managed_runtime_dir(self, recipe: dict[str, Any], version: str) -> Path | None:
-        execution = recipe.get("execution")
-        if not isinstance(execution, dict):
-            execution = {}
-        return Path(str(execution.get("workdir") or REPO_ROOT)) / "log-finetune" / version
 
 
 FINETUNE_ADAPTER = FinetuneAdapter()

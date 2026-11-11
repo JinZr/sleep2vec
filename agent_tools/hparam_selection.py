@@ -262,7 +262,7 @@ def _validate_existing_hparam_selection(
         inputs.evidence_runs_by_key.get(managed_run_key(row), row) for row in inputs.canonical_rows
     ]
     existing_ranked = read_rows(inputs.out, require_managed_identity=True)
-    validate_managed_run_rows(existing_ranked, source=str(inputs.out), cardinality="one_per_run")
+    validate_managed_run_rows(existing_ranked, source=str(inputs.out))
     for row in existing_ranked:
         canonical = resolve_run_row(inputs.canonical_rows, row)
         if canonical is None:
@@ -372,7 +372,7 @@ def _rank_hparam_selection_candidates(
         raise ValueError(
             "; ".join(checkpoint_errors) or f"No valid {inputs.metric} scores are available for hparam selection."
         )
-    validate_managed_run_rows(step_ranked, source="current ranking", cardinality="one_per_run")
+    validate_managed_run_rows(step_ranked, source="current ranking")
     canonical_step_ranked = [
         row
         for row in inputs.canonical_rows

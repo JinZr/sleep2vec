@@ -524,7 +524,6 @@ def test_managed_rows_reject_historical_identity():
         validate_managed_run_rows(
             [{"step_id": "train", "trial_id": "trial_000", "status": "running"}],
             source="legacy.tsv",
-            cardinality="one_per_run",
         )
 
 
@@ -532,15 +531,7 @@ def test_managed_rows_reject_duplicate_identity():
     row = {"step_id": "train", "run_id": "run-000"}
 
     with pytest.raises(ValueError, match="Duplicate managed run identity"):
-        validate_managed_run_rows([row, dict(row)], source="run_manifest.tsv", cardinality="one_per_run")
-
-
-def test_managed_rows_require_explicit_cardinality_and_allow_many_rows_per_run():
-    row = {"step_id": "train", "run_id": "run-000"}
-
-    validate_managed_run_rows([row, dict(row)], source="checkpoint_manifest.tsv", cardinality="many_per_run")
-    with pytest.raises(ValueError, match="Unsupported managed row cardinality"):
-        validate_managed_run_rows([row], source="run_manifest.tsv", cardinality="unknown")
+        validate_managed_run_rows([row, dict(row)], source="run_manifest.tsv")
 
 
 def test_managed_run_parameters_reject_legacy_prefix():
@@ -1352,7 +1343,6 @@ def test_managed_rows_reject_malformed_runtime_provenance(field: str, commit: ob
         validate_managed_run_rows(
             [{"step_id": "train", "run_id": "run-000", field: commit}],
             source="unit manifest",
-            cardinality="one_per_run",
         )
 
 

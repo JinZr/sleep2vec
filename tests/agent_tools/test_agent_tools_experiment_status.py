@@ -12,7 +12,6 @@ import pytest
 import yaml
 
 from agent_tools import execution_snapshot, experiment_tracking, experiments, plan_contract, plan_hparam, plans
-from agent_tools.adapters import finetune as finetune_adapter
 from agent_tools.adapters.registry import get_adapter
 from agent_tools.experiment_workspace import managed_run_parameters
 from agent_tools.manifests import write_rows
@@ -373,7 +372,6 @@ def test_experiment_status_recompiles_relative_generic_plan_without_controller_h
 
     monkeypatch.setattr(plan_contract, "REPO_ROOT", Path("/controller/repo"))
     monkeypatch.setattr(plan_hparam, "REPO_ROOT", Path("/controller/repo"))
-    monkeypatch.setattr(finetune_adapter, "REPO_ROOT", Path("/controller/repo"))
     monkeypatch.setattr(plan_contract.sys, "executable", "/controller/bin/python")
 
     snapshot = experiments.experiment_status(root)

@@ -267,7 +267,10 @@ def generic_run_contract(
     runtime_recipe.setdefault("inputs", {})["config"] = str(run_dir / "config.yaml")
     runtime_recipe.setdefault("artifacts", {})["version_name"] = identity["version"]
     runtime_recipe.setdefault("execution", {}).setdefault("workdir", context["repo_root"])
-    runtime_dir = adapter.managed_runtime_dir(runtime_recipe, identity["version"])
+    runtime_dir = None
+    if adapter.managed_runtime_log_dir is not None:
+        workdir = Path(str(runtime_recipe["execution"].get("workdir") or REPO_ROOT))
+        runtime_dir = workdir / adapter.managed_runtime_log_dir / identity["version"]
     checkpoint_dir = runtime_dir / "checkpoints" if runtime_dir is not None else None
     run: GenericRunContract = {
         # Plans compile only after consultation resolved experiment.id and step.id as strings.
