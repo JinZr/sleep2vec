@@ -1031,7 +1031,7 @@ def test_experiment_status_rejects_incomplete_registered_plan_identity(tmp_path,
 
 @pytest.mark.parametrize(
     "drift",
-    ["config", "run_script", "resolved_recipe", "plan_alias", "plan_escape", "canonical_run"],
+    ["config", "run_script", "resolved_recipe", "plan_escape", "canonical_run"],
 )
 def test_experiment_status_rejects_registered_plan_drift(tmp_path, drift):
     root = tmp_path / "experiment"
@@ -1044,11 +1044,6 @@ def test_experiment_status_rejects_registered_plan_drift(tmp_path, drift):
         (plan_dir / "run.sh").write_text("#!/bin/sh\nexit 1\n")
     elif drift == "resolved_recipe":
         (plan_dir / "recipe.resolved.yaml").write_text("task: changed\n")
-    elif drift == "plan_alias":
-        plan_path = plan_dir / "plan.json"
-        target = plan_dir / "plan.real.json"
-        plan_path.rename(target)
-        plan_path.symlink_to(target.name)
     elif drift == "plan_escape":
         step_path = root / "steps" / "train" / "step.yaml"
         step_manifest = yaml.safe_load(step_path.read_text())

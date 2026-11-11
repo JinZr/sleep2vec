@@ -120,7 +120,7 @@ def test_slurm_plan_rejects_existing_single_use_artifacts_before_writing(tmp_pat
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-def test_slurm_plan_rejects_scheduler_artifact_symlink_before_writing(tmp_path: Path):
+def test_slurm_plan_rejects_existing_scheduler_artifact_before_writing(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"].update(
@@ -150,7 +150,9 @@ def test_slurm_plan_rejects_scheduler_artifact_symlink_before_writing(tmp_path: 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 1
-    assert "Output artifacts are unsafe" in result.stdout
+    # A pre-existing artifact, even a symlink out of the plan, needs an overwrite decision before anything is written.
+    assert "user_decision_field: overwrite_policy" in result.stdout
+    assert "job.sbatch" in result.stdout
     assert artifact.is_symlink()
     assert target.read_text() == "outside\n"
     assert not (plan_dir / "plan.json").exists()
