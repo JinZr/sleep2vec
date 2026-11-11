@@ -299,11 +299,18 @@ def test_experiment_monitor_reads_one_validated_input_snapshot_then_fresh_commit
 
     assert snapshot_reads == [tmp_path]
     assert commit_reads == [(True, True)]
-    assert commits == [manifest_path]
+    # The status change commits the manifest, then appends its run_status_changed event.
+    assert commits == [manifest_path, tmp_path / "events.jsonl"]
     assert len(snapshots) == 1
     assert snapshots[0][0] == snapshots[0][1]
     assert result["runs"][0]["status"] == "completed"
     assert _read_table(manifest_path)[0]["status"] == "completed"
+    transitions = [
+        (event["from"], event["to"])
+        for event in experiment_workspace.read_experiment_events(tmp_path)
+        if event["event_type"] == "run_status_changed"
+    ]
+    assert transitions == [("running", "completed")]
 
 
 def test_monitor_observation_contains_only_managed_identity_and_status_fields(tmp_path: Path, monkeypatch):
