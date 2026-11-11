@@ -18,7 +18,7 @@ from test_agent_tools_experiment_status import (
 from test_agent_tools_experiment_status import _stub_execution_target  # noqa: F401
 import yaml
 
-from agent_tools import experiment_io, experiment_pipeline, experiment_tracking, experiments, plans
+from agent_tools import experiment_io, experiment_tracking, experiments, plans
 from agent_tools.experiment_workspace import FROZEN_RUN_FIELDS, managed_run_parameters, merge_run_manifest
 from agent_tools.manifests import read_rows, write_rows
 
@@ -118,45 +118,16 @@ def test_experiment_finalize_does_not_downgrade_managed_hparam_evidence_to_legac
     assert not (root / "reports" / "final.md").exists()
 
 
-@pytest.mark.parametrize("controller", ["adaptive", "pipeline"])
-def test_experiment_finalize_preserves_controller_verified_finalization(tmp_path, controller):
+def test_experiment_finalize_preserves_controller_verified_finalization(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    _add_plan(
-        root,
-        step_id="tune" if controller == "adaptive" else "evaluate",
-        task="hparam_tune" if controller == "adaptive" else "finetune",
-        status="completed",
-        adaptive=controller == "adaptive",
-        pipeline=controller == "pipeline",
-    )
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed", adaptive=True)
     report = tmp_path / "controller-report.md"
     report.write_text("# Controller-verified report\n")
 
     target = experiments.finalize_experiment(root, report)
 
     assert target.read_text() == report.read_text()
-
-
-def test_pipeline_facade_callback_can_finalize_controller_verified_report(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="evaluate", status="completed", pipeline=True)
-    report = tmp_path / "pipeline-report.md"
-    report.write_text("# Pipeline report\n")
-    spec = tmp_path / "pipeline.yaml"
-    spec.write_text("pipeline: unit\n")
-
-    def controller(_root, _spec, **kwargs):
-        target = kwargs["finalize_callback"](root, report)
-        return {"status": "completed", "final_report": str(target)}
-
-    monkeypatch.setattr(experiment_pipeline, "run_experiment_pipeline", controller)
-
-    result = experiments.run_experiment_pipeline(root, spec, execute=True)
-
-    assert result == {"status": "completed", "final_report": str(root / "reports" / "final.md")}
-    assert (root / "reports" / "final.md").read_text() == report.read_text()
 
 
 def test_experiment_status_terminal_and_completed_contract(tmp_path):
@@ -257,23 +228,6 @@ def test_experiment_status_requires_combined_report_for_mixed_ordinary_steps(tmp
     assert snapshot["decision"]["manual_choice_required"] is True
     assert snapshot["decision"]["other_legal_actions"][0]["required_inputs"] == ["report_path"]
     assert "combined_report_required" in {blocker["code"] for blocker in snapshot["blockers"]}
-
-
-def test_pipeline_step_prevents_hparam_selection_report_from_becoming_experiment_final(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
-    _add_plan(root, step_id="evaluate", status="completed", pipeline=True)
-    selection_report = _record_hparam_selection(root, write_report=True)
-    combined = tmp_path / "pipeline-combined.md"
-    combined.write_text("# Pipeline combined report\n")
-
-    with pytest.raises(ValueError, match="cannot replace the required combined experiment report"):
-        experiments.finalize_experiment(root, selection_report)
-
-    target = experiments.finalize_experiment(root, combined)
-
-    assert target.read_text() == combined.read_text()
 
 
 def test_experiment_status_all_failed_hparam_requires_failure_report_not_selection(tmp_path):

@@ -5,8 +5,7 @@ task hooks, experiment metadata, and resolved user decisions into one
 ``DecisionReport``.
 
 Holds the task-specific dispatch hoisted out of ``decision_paths`` and reaches
-tasks through the adapter registry. Separately, ``experiment_pipeline`` owns
-the literal ``infer`` task spelling in its frozen jobs and generated recipes.
+tasks through the adapter registry.
 """
 
 from __future__ import annotations

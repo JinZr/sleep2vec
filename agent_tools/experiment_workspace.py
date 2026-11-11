@@ -4,7 +4,7 @@ Layer 0 leaf, and the workspace facade. Owns ``run_manifest.tsv`` -- the
 lifecycle owner for run status -- its managed run lock, the frozen run,
 scheduler, process, and runtime-provenance identity field sets, the phase and
 status vocabularies, and the one-way step ``plan_controller`` binding that
-classifies a plan as ordinary, adaptive, or pipeline.
+classifies a plan as ordinary or adaptive.
 
 ``research_log`` publishes behind this facade rather than writing to the
 workspace directly.
@@ -86,7 +86,7 @@ AdaptiveEventPayload = (
 )
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
-PLAN_CONTROLLERS = {"unassigned", "ordinary", "adaptive", "pipeline"}
+PLAN_CONTROLLERS = {"unassigned", "ordinary", "adaptive"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
 SUCCESS_STATUSES = frozenset({"completed", "finished"})
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
@@ -135,10 +135,6 @@ FROZEN_RUN_FIELDS = (
         "artifacts",
         "runtime_dir",
         "checkpoint_dir",
-        "pipeline_id",
-        "job_id",
-        "attempt",
-        "result_root",
         "terminal_status_owner",
     }
     | EXECUTION_IDENTITY_FIELDS
@@ -154,7 +150,6 @@ MANAGED_RUN_PATH_FIELDS = {
     "pid_path",
     "progress_dir",
     "round_dir",
-    "result_root",
     "run_dir",
     "run_manifest",
     "selection_report",

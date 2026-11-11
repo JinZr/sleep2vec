@@ -38,7 +38,6 @@ def test_single_run_deferred_plan_preserves_frozen_bytes_and_registration_bounda
         staging_dir=staging_dir,
         defer_commit=True,
         registered_recipe_path=registered_recipe_path,
-        plan_controller="pipeline",
         run_index_offset=7,
     )
 

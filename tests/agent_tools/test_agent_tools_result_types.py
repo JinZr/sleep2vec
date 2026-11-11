@@ -14,8 +14,7 @@ def test_result_types_reach_callers(tmp_path: Path):
                 checkpoint_test_results, experiment_tracking,
                 execution_snapshot, experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_selection,
-                managed_scheduler, models, experiment_pipeline, experiment_pipeline_results,
-                experiment_pipeline_cohort_selection, experiment_pipeline_spec,
+                managed_scheduler, models,
                 plan_contract, plan_hparam, run_artifacts, run_evidence, slurm,
             )
 
@@ -64,54 +63,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             for generated_sidecar in (allocation_sidecar, terminal_sidecar):
                 slurm.sidecar_identity(generated_sidecar, "token")
             slurm.terminal_exit_code(terminal_sidecar)
-
-            pipeline_hooks = experiment_pipeline.PipelineHooks(
-                inspect_target=lambda *args, **kwargs: execution_snapshot.inspect_execution_target({}, []),
-                sleep=lambda seconds: None,
-            )
-            pipeline_hooks.sleep = None  # type: ignore[misc]
-            probe_spec: experiment_pipeline_spec.PipelineSpec
-            experiment_pipeline.PipelineHooks(sleep="later")  # type: ignore[arg-type]
-            source_states = experiment_pipeline._inspect_sources(
-                Path("/workspace"), probe_spec, refresh=False, hooks=pipeline_hooks,
-            )
-            source_complete: bool = source_states[0]["complete"]
-            source_states[0]["complete"] = "true"  # type: ignore[typeddict-item]
-            frozen_candidates = experiment_pipeline._select_checkpoint_sources(Path("/workspace"), probe_spec)
-            frozen_score: float = frozen_candidates[0]["score"]
-            frozen_candidates[0]["score"] = "1"  # type: ignore[typeddict-item]
-            checkpoint_key_count: int = frozen_candidates[0]["state_dict_key_count"]
-
-            logical_jobs = experiment_pipeline_results.logical_job_states(probe_spec, [])
-            attempt_count: int = logical_jobs[0]["attempt_count"]
-            logical_jobs[0]["status"] = "ready"  # type: ignore[typeddict-item]
-            for pipeline_result in (
-                experiment_pipeline.run_experiment_pipeline(Path("/workspace"), Path("/spec"), hooks=pipeline_hooks),
-                experiments.run_experiment_pipeline(Path("/workspace"), Path("/spec")),
-            ):
-                pipeline_result["status"] = "unknown"  # type: ignore[arg-type]
-                if "dry_run" not in pipeline_result:
-                    pipeline_result["jobs"][0]["attempt_count"] = "1"  # type: ignore[typeddict-item]
-                    if "missing_pid_blocker" in pipeline_result:
-                        pipeline_result["missing_pid_blocker"]["status"] = "running"  # type: ignore[typeddict-item]
-
-            selection_evidence = experiment_pipeline_results.selection_evidence(Path("/phase"), probe_spec, {})
-            evidence_hash: str = selection_evidence[0]["result_manifest_sha256"]
-            selection_evidence[0]["result_manifest_sha256"] = None  # type: ignore[typeddict-item]
-            _, cohort_decision = experiment_pipeline_cohort_selection.rank_candidates(
-                probe_spec, {}, selection_evidence
-            )
-            cohort_winner = cohort_decision["winner"]
-            if cohort_winner is not None:
-                winner_rank: int = cohort_winner["source_rank"]
-                cohort_winner["source_rank"] = "1"  # type: ignore[typeddict-item]
-                gate_value: int | float = cohort_winner["selection_evidence"][0]["value"]
-                cohort_winner["selection_evidence"][0]["value"] = "1"  # type: ignore[typeddict-item]
-            cohort_decision["winner"] = "none"  # type: ignore[typeddict-item]
-            _, pipeline_metrics = experiment_pipeline_results.build_result_rows(probe_spec, {}, {})
-            scalar_value: int | float | str = pipeline_metrics[0]["value"]
-            pipeline_metrics[0]["value"] = None  # type: ignore[typeddict-item]
-            experiment_pipeline_results.write_rows_atomic(Path("/metrics.csv"), pipeline_metrics)
 
             def snapshot_result(should_write: bool) -> tuple[execution_snapshot.ExecutionSnapshot, bool]:
                 return {}, should_write

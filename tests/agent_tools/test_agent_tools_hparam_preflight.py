@@ -809,7 +809,7 @@ def test_hparam_plan_handles_unowned_publication(
     )
 
 
-@pytest.mark.parametrize("field", ["config", "pipeline_id"])
+@pytest.mark.parametrize("field", ["config", "runtime.foreign"])
 def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, monkeypatch, field: str):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
@@ -819,7 +819,7 @@ def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, 
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     manifest_path = workspace / "run_manifest.tsv"
     rows = read_run_manifest(workspace)
-    rows[0][field] = str(workspace / "foreign.yaml") if field == "config" else "foreign-pipeline"
+    rows[0][field] = str(workspace / "foreign.yaml") if field == "config" else "foreign"
     with manifest_path.open("w", newline="") as file_obj:
         fieldnames = sorted({field for row in rows for field in row})
         writer = csv.DictWriter(file_obj, fieldnames=fieldnames, delimiter="\t")

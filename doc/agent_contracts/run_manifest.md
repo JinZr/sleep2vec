@@ -52,12 +52,10 @@ rows may omit it and retain the default bound-cluster routing. PID and scheduler
 bindings are mutually exclusive. Only the canonical owner may perform each
 trusted first fill.
 
-Pipeline-managed inference rows may additionally freeze `pipeline_id`,
-`job_id`, `attempt`, and `result_root`. Managed rows may freeze
-`terminal_status_owner`. These fields do not change the canonical
-`(step_id, run_id)` key. Older managed rows may omit them and retain their
-existing lifecycle behavior; a present value is immutable and must match all
-later evidence.
+Managed rows may freeze `terminal_status_owner`. This field does not change
+the canonical `(step_id, run_id)` key. Older managed rows may omit it and retain
+their existing lifecycle behavior; a present value is immutable and must match
+all later evidence.
 
 When present, `terminal_status_owner` is exactly `script`, `monitor`, or
 `scheduler_sidecar`. It
@@ -110,7 +108,6 @@ observed evidence, and none of them restores run status.
 | `launch_manifest.tsv`, `run_status.tsv` | Plan directory; adaptive `adaptive/rounds/round_NNN/` | Rewritten from the rows of each successful canonical commit | Projections; never read to restore state |
 | `run_registry.tsv` | `<workflow>/adaptive/` | `hparam-adaptive-init` (round 000), then each registered proposal round | Append-only registration record of adaptive runs and their rounds; one row per run |
 | `incumbents.tsv` | `<workflow>/adaptive/` | `hparam-digest` and `hparam-adaptive-step`, once per digested round | Derived history of each round's best successful run; feeds the optional replacement margin only |
-| `jobs.tsv` | `pipelines/<pipeline-id>/`, `phases/<phase>/` | `experiment-run` | Projection of pipeline job attempts, reconciled on resume; attempt runs remain in `run_manifest.tsv` |
 | `metrics_manifest.tsv`, `wandb/runs.tsv` | `<experiment.root>/` | `experiment-wandb-sync` | Observed W&B evidence; metrics are many rows per run |
 | `checkpoint_manifest.tsv` | `<experiment.root>/` | `experiment-index-checkpoints` | Observed checkpoint evidence; many rows per run; read by `experiment-rank` |
 | `experiment_manifest.tsv` | `<experiment.root>/` | `experiment-init`; `experiment-wandb-sync` fills W&B fields | Optional one-row index that must match `experiment.yaml` |
@@ -161,11 +158,6 @@ test or required artifact writer may publish its existing `status=failed`
 manifest, but never a successful terminal manifest or a partial checkpoint
 matrix. Atomic rewrites read historical cells as text so lexical identities
 such as zero-padded experiment versions remain unchanged.
-
-For a pipeline attempt, `result_root` is a single-use empty directory and the
-runtime manifest beneath it must be unique and match the frozen inference
-inputs. Pipeline projections cannot infer success from files other than that
-validated manifest.
 
 ## Status reducer
 
@@ -277,8 +269,8 @@ after the group has exited.
 
 When monitoring proves corrupt, partial, mismatched, or reused managed process
 identity, it records `process_identity_error` with the canonical status update.
-Any affected non-terminal run remains active `missing_pid`, so queues and
-pipeline runners cannot release its capacity or retry it automatically. A valid
+Any affected non-terminal run remains active `missing_pid`, so queues cannot
+release its capacity or retry it automatically. A valid
 identity whose process group is confirmed dead may still become `failed` under
 the normal terminal-owner rule.
 
@@ -457,8 +449,8 @@ or bypass the canonical stop intent.
 
 `experiment-status` consumes lifecycle only from this canonical table. Step
 controller classification belongs to `steps/<step.id>/step.yaml.plan_controller`,
-not a duplicate table field; pipeline identity columns must agree with it. The
-complete [read-only status and advisory contract](experiment_workspace.md#read-only-status-and-advisory-actions)
+not a duplicate table field. The complete
+[read-only status and advisory contract](experiment_workspace.md#read-only-status-and-advisory-actions)
 owns frozen-plan validation, controller blockers, and the distinction from
 non-launching monitors that write fresh observations.
 

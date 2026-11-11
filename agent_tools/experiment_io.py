@@ -1,9 +1,7 @@
 """Managed file I/O: locked, validated, local-or-remote reads and writes.
 
 Layer 0 leaf. Provides managed path validation, blocking file locks, and
-local/SSH I/O helpers. Pipeline-local spec, state, and report writes also use
-``experiment_pipeline_results.atomic_write_text`` directly; they do not pass
-through this module's validation or locks.
+local/SSH I/O helpers.
 
 Remote uncertainty is preserved rather than collapsed into "missing": an
 unreachable host and an absent artifact reach callers as different outcomes,

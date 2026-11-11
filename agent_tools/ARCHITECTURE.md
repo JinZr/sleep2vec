@@ -18,7 +18,7 @@ order is a DAG rather than a strict ladder.
 | **L0 leaves** | models, decision_models, transport, manifests, schema_map, gpu_rules, repo, plan_rendering, plan_contract, decision_paths, adaptive_proposals, experiment_workspace, experiment_io, execution_snapshot, managed_scheduler, ... | No intra-package deps beyond other L0 leaves; the reusable primitives. |
 | **Bridges below the registry** | configs, plan_hparam, decision_hparam | Mixed bridges that never import the registry or L2. `adapters/hparam_tune` imports both hparam bridges, plan_hparam loads its config summary through configs, and configs reaches the adapters only through `adapters/config_providers`, which pairs the sleep2stat adapter's config-shape summary. |
 | **L1 `adapters/`** | `base` (TaskAdapter protocol), `registry` (get_adapter / all_adapters / composite_adapter / SUPPORTED_TASKS), 6 per-task plugins, `config_providers` | Generic plugin skeleton + domain plugins. The package `__init__` re-exports nothing: import from `adapters.base` and `adapters.registry`. Kernel dispatches through the registry and never hardcodes task names; `run_artifacts` reads it to validate registered plans and owns hparam plan registration. |
-| **L2 kernel** | decision_rules, decisions, plan_context, plans, experiment_pipeline, experiment_pipeline_attempts | Orchestration over lower-layer owners and adapter declarations; authored task recipes remain governed by schema_map. |
+| **L2 kernel** | decision_rules, decisions, plan_context, plans | Orchestration over lower-layer owners and adapter declarations; authored task recipes remain governed by schema_map. |
 | **`domain/`** | sidecar_summaries, finetune_summary, finetune_hparam_profile, sex_age_summary, presets, index_csv | sleep2vec-specific summaries/validators. L0-level leaves that must not be aggregated in `domain/__init__` (would trigger a partial-import cycle via configs). |
 
 `test_agent_layering.py` requires the intra-package import graph, counting the
@@ -36,7 +36,7 @@ ownership claims or accuracy. This section is the
 split a concern between them — that no single docstring can state. When the two
 disagree, the docstring is next to the code and wins; fix this document.
 
-### Kernel — reusable (42, zero domain signal)
+### Kernel — reusable (37, zero domain signal)
 decision_models, transport, python_programs, manifests, schema_map, gpu_rules, repo,
 runtime_lock, runtime_sync,
 experiment_io, research_log, experiment_workspace, experiment_sources,
@@ -45,9 +45,7 @@ run_artifacts, run_evidence, checkpoint_test_results, hparam_runtime, hparam_sel
 adaptive_hparam, adaptive_evidence, adaptive_handshake, adaptive_proposals, adaptive_replacement, adaptive_state,
 recipes, progress,
 markdown, skills,
-decisions, plans, plan_contract, decision_rules, execution_snapshot, managed_scheduler, slurm,
-experiment_pipeline, experiment_pipeline_attempts, experiment_pipeline_cohort_selection,
-experiment_pipeline_results, experiment_pipeline_spec.
+decisions, plans, plan_contract, decision_rules, execution_snapshot, managed_scheduler, slurm.
 
 These must stay domain-free — the layering guard allows them **no** domain
 imports.
@@ -98,13 +96,12 @@ plan-owned config bytes. The hparam adapter's hook delegates to
 `run_artifacts` calls directly.
 
 `experiment_workspace` owns managed manifests, the run-manifest lock, and the
-one-way step `plan_controller` binding used to classify ordinary, adaptive, and
-pipeline plans. `research_log` owns append-only semantic note validation, rendering, and
+one-way step `plan_controller` binding used to classify ordinary and adaptive
+plans. `research_log` owns append-only semantic note validation, rendering, and
 CAS publication behind the workspace facade. `experiment_sources` owns W&B and
 checkpoint evidence acquisition; `experiment_tracking` consumes those sources
-for projections, status advice, and ranking validation. Recipe and canonical
-pipeline fields are only consistency guards, while `run_manifest.tsv` remains
-the lifecycle owner.
+for projections, status advice, and ranking validation. Recipe fields are only
+consistency guards, while `run_manifest.tsv` remains the lifecycle owner.
 
 `managed_scheduler` owns backend selection plus the reusable direct
 GPU-capacity/process lifecycle and Slurm submit/observe lifecycle shared by
@@ -115,18 +112,6 @@ and the Slurm compute wrapper use it directly rather than through the scheduler.
 `slurm` owns scheduler resource/script contracts, CLI
 transport, machine-readable job and sidecar identity parsing, state
 normalization, compute-wrapper execution, and cancellation primitives.
-`experiment_pipeline` owns the managed external-matrix and cohort-selection
-state machines and exposes them through the `experiments` facade.
-`experiment_pipeline_attempts` owns attempt preparation behind it: recipe
-freezing, registration preflight, attempt materialization and registration,
-jobs-table projection, pipeline-event reconciliation, and retry creation.
-`experiment_pipeline_spec` validates declared pipeline fields, runtime and execution
-settings, source-plan containment, and selection/report contracts before publication,
-narrowing the parsed mapping to its `PipelineSpec` TypedDict.
-`experiment_pipeline_cohort_selection` owns pure candidate-matrix expansion and
-the frozen target-gate decision. `experiment_pipeline_results` owns terminal
-job reduction, result-manifest validation, and final aggregation behind that
-orchestrator.
 
 ### Domain — sleep2vec-specific
 `domain/` (sidecar_summaries, finetune_summary, finetune_hparam_profile,
@@ -160,20 +145,19 @@ runtime identity.
 The guard freezes this set: adding a module here requires updating `layering.py`
 and this table, so a module can't silently slide into "mixed".
 
-## CLI command triage (40 subcommands)
+## CLI command triage (39 subcommands)
 
 `test_agent_tools_cli_contract.py` freezes the command names and checks this
 three-way ownership partition against the parser, including counts and duplicates.
 
-- **Kernel (29)**: repo-summary, runtime-sync, collect-runs, hparam-launch, infer-launch, infer-stop,
+- **Kernel (28)**: repo-summary, runtime-sync, collect-runs, hparam-launch, infer-launch, infer-stop,
   preset-launch, preset-stop,
   hparam-run-queue,
   hparam-monitor, hparam-stop, hparam-select, hparam-checkpoint-scan,
   hparam-digest, hparam-suggest, hparam-adaptive-init, hparam-adaptive-step,
   hparam-adaptive-loop, progress, experiment-init, experiment-note,
   experiment-register-step, experiment-finalize, experiment-wandb-sync,
-  experiment-index-checkpoints, experiment-monitor, experiment-status, experiment-rank,
-  experiment-run.
+  experiment-index-checkpoints, experiment-monitor, experiment-status, experiment-rank.
 - **Domain (7)**: config-summary, index-summary, preset-summary,
   hparam-external-eval, hparam-export-logits, hparam-threshold, hparam-ensemble.
 - **Mixed (4)**: skills, doctor, context, plan — generic orchestration whose

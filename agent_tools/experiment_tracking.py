@@ -4,9 +4,8 @@ Layer 0 leaf. Consumes ``experiment_sources`` observations plus the run
 manifest and produces the experiment status snapshot, monitor results, the
 hparam-selection lifecycle view, and candidate ranking.
 
-Recipe and canonical pipeline fields are consistency guards here;
-``run_manifest.tsv`` remains the lifecycle owner, so nothing in this module
-advances a run's status.
+Recipe fields are consistency guards here; ``run_manifest.tsv`` remains the
+lifecycle owner, so nothing in this module advances a run's status.
 """
 
 from __future__ import annotations
@@ -898,7 +897,7 @@ def experiment_status_snapshot(
             raise ValueError("Completed experiment metadata conflicts with stopped runs missing stop_reason.")
         if plan_blockers:
             raise ValueError(
-                "Completed experiment metadata cannot be verified for adaptive or pipeline plans, or for "
+                "Completed experiment metadata cannot be verified for adaptive plans, or for "
                 "unmaterialized registered steps."
             )
         has_terminal_report_binding = experiment.get("final_report_sha256") not in (None, "")
@@ -1584,7 +1583,7 @@ def _plan_advice(
         manifest = registered["manifest"]
         step_id = str(manifest["step"]["id"])
         plan_controller = manifest["plan_controller"]
-        if plan_controller in {"adaptive", "pipeline"}:
+        if plan_controller == "adaptive":
             code = f"{plan_controller}_phase_deferred"
             message = (
                 f"Experiment-status cannot verify {plan_controller} controller completion or interpret its eligibility."

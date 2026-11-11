@@ -851,49 +851,6 @@ def test_managed_scheduler_observe_run_preserves_artifact_context(tmp_path: Path
     assert observed["checkpoint_count"] == 2
 
 
-def test_managed_scheduler_validates_result_root_against_explicit_output_root(tmp_path: Path):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
-    runtime_workdir = tmp_path / "immutable-runtime"
-    runtime_workdir.mkdir()
-    result_root = tmp_path / "pipelines" / "external" / "results" / "job" / "attempt-001"
-    plan = json.loads((tmp_path / "plan.json").read_text())
-    run = plan["runs"][0]
-    run["result_root"] = str(result_root)
-    merge_run_manifest(
-        tmp_path,
-        [
-            {
-                "step_id": run["step_id"],
-                "run_id": run["run_id"],
-                "result_root": str(result_root),
-                "terminal_status_owner": "script",
-            }
-        ],
-    )
-    starts = []
-    hooks = managed_scheduler.SchedulerHooks(
-        validated_snapshot=lambda *_args, **_kwargs: (None, False),
-        start_process=lambda _execution, command: starts.append(command) or "launched",
-    )
-
-    result = managed_scheduler.launch_managed_runs(
-        tmp_path,
-        tmp_path,
-        [run],
-        {"target": "local", "workdir": str(runtime_workdir)},
-        {},
-        dry_run=False,
-        default_script_commits_terminal_status=True,
-        runtime_output_fields=("result_root",),
-        runtime_output_root=tmp_path,
-        hooks=hooks,
-    )
-
-    assert len(starts) == 1
-    assert result.committed_rows[0]["status"] == "launched"
-    assert rows[0]["run_id"] == "run-000"
-
-
 @pytest.mark.parametrize(
     ("checkpoint_fields", "expected"),
     [

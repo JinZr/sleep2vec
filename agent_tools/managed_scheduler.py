@@ -220,9 +220,6 @@ class LaunchOptions:
 
     dry_run: bool
     fail_on_missing_pid_blocker: bool
-    default_script_commits_terminal_status: bool
-    runtime_output_fields: tuple[str, ...]
-    runtime_output_root: str | Path | None
     projection_writer: Callable[[LaunchResult], None] | None
     hooks: SchedulerHooks
 
@@ -291,7 +288,6 @@ def observe_runs(
     *,
     dry_run: bool,
     health: bool = False,
-    default_script_commits_terminal_status: bool = False,
 ) -> StatusChanges:
     refreshed: dict[RunKey, Mapping[str, JsonValue]] = {}
     changes: dict[RunKey, tuple[JsonValue, JsonValue]] = {}
@@ -302,13 +298,7 @@ def observe_runs(
         if dry_run or previous.get("target") in (None, ""):
             refreshed[key] = previous
             continue
-        observed = observe_run(
-            run_dir,
-            previous,
-            previous,
-            health=health,
-            default_script_commits_terminal_status=default_script_commits_terminal_status,
-        )
+        observed = observe_run(run_dir, previous, previous, health=health)
         refreshed[key] = observed
         if observed.get("status") != previous.get("status"):
             changes[key] = (previous.get("status"), observed.get("status"))
@@ -432,9 +422,6 @@ def launch_managed_runs(
     *,
     dry_run: bool = True,
     fail_on_missing_pid_blocker: bool = False,
-    default_script_commits_terminal_status: bool = False,
-    runtime_output_fields: tuple[str, ...] = ("runtime_dir", "checkpoint_dir"),
-    runtime_output_root: str | Path | None = None,
     projection_writer: Callable[[LaunchResult], None] | None = None,
     hooks: SchedulerHooks | None = None,
     lock_held: bool = False,
@@ -444,9 +431,6 @@ def launch_managed_runs(
     options = LaunchOptions(
         dry_run=dry_run,
         fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
-        default_script_commits_terminal_status=default_script_commits_terminal_status,
-        runtime_output_fields=runtime_output_fields,
-        runtime_output_root=runtime_output_root,
         projection_writer=projection_writer,
         hooks=hooks or SchedulerHooks(),
     )
@@ -487,7 +471,6 @@ def _launch_managed_runs(
         workspace_by_key,
         expected_keys,
         dry_run=options.dry_run,
-        default_script_commits_terminal_status=options.default_script_commits_terminal_status,
     )
     refreshed = observed.rows_by_key
     groups = gpu_groups(execution, runtime)
@@ -543,14 +526,10 @@ def _launch_managed_runs(
             runtime_roots = [
                 Path(str(row[field]))
                 for _index, row in launchable
-                for field in options.runtime_output_fields
+                for field in ("runtime_dir", "checkpoint_dir")
                 if row.get(field) not in (None, "")
             ]
-            runtime_root = (
-                Path(options.runtime_output_root)
-                if options.runtime_output_root is not None
-                else Path(str(execution.get("workdir") or REPO_ROOT))
-            )
+            runtime_root = Path(str(execution.get("workdir") or REPO_ROOT))
             remote_host = str(execution["host"]) if target == "ssh" else None
             exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote_host)
             validated_snapshot = options.hooks.validated_snapshot or exec_snapshot.validated_execution_snapshot
@@ -675,10 +654,6 @@ def _prepare_direct_launch_rows(
                 "artifacts",
                 "runtime_dir",
                 "checkpoint_dir",
-                "pipeline_id",
-                "job_id",
-                "attempt",
-                "result_root",
                 "terminal_status_owner",
             )
             if field in run
@@ -1036,14 +1011,10 @@ def _launch_slurm_runs(
         runtime_roots = [
             Path(str(run[field]))
             for run in launchable
-            for field in options.runtime_output_fields
+            for field in ("runtime_dir", "checkpoint_dir")
             if run.get(field) not in (None, "")
         ]
-        runtime_root = (
-            Path(options.runtime_output_root)
-            if options.runtime_output_root is not None
-            else Path(str(execution.get("workdir") or REPO_ROOT))
-        )
+        runtime_root = Path(str(execution.get("workdir") or REPO_ROOT))
         exp_io.validate_managed_output_paths(runtime_root, runtime_roots, remote=remote)
         frozen_paths = [
             Path(str(run[field]))

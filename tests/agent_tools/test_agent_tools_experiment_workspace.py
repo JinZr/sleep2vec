@@ -1425,21 +1425,27 @@ def test_read_run_manifest_rejects_aliased_canonical_table(tmp_path: Path, alias
         read_run_manifest(tmp_path)
 
 
-def test_read_step_manifest_rejects_invalid_phase(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("phase", "controller", "match"),
+    [("invalid", "unassigned", "step.phase"), ("train", "pipeline", "invalid plan_controller: pipeline")],
+)
+def test_read_step_manifest_rejects_invalid_phase_or_controller(
+    tmp_path: Path, phase: str, controller: str, match: str
+):
     path = tmp_path / "steps" / "train" / "step.yaml"
     path.parent.mkdir(parents=True)
     path.write_text(
         "step:\n"
         "  id: train\n"
-        "  phase: invalid\n"
+        f"  phase: {phase}\n"
         "  purpose: Train the model.\n"
         "experiment_id: unit\n"
-        "plan_controller: unassigned\n"
+        f"plan_controller: {controller}\n"
         "recipe_path: ''\n"
         "plans: []\n"
     )
 
-    with pytest.raises(ValueError, match="step.phase"):
+    with pytest.raises(ValueError, match=match):
         read_step_manifest(tmp_path, "train")
 
 
@@ -3083,7 +3089,7 @@ def test_step_manifest_merge_rejects_metadata_drift():
         merge_step_manifest(existing, {"step": {"phase": "analyze"}})
 
 
-@pytest.mark.parametrize("controller", ["ordinary", "adaptive", "pipeline"])
+@pytest.mark.parametrize("controller", ["ordinary", "adaptive"])
 def test_step_manifest_plan_controller_binds_once(controller: str):
     existing = {
         "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
@@ -3103,7 +3109,7 @@ def test_step_manifest_plan_controller_binds_once(controller: str):
     bound = merge_step_manifest(existing, incoming)
 
     assert bound["plan_controller"] == controller
-    conflicting = ({"ordinary", "adaptive", "pipeline"} - {controller}).pop()
+    conflicting = ({"ordinary", "adaptive"} - {controller}).pop()
     for replacement in ("unassigned", conflicting):
         with pytest.raises(ValueError, match="plan_controller differs"):
             merge_step_manifest(bound, {**incoming, "plan_controller": replacement})
@@ -3531,14 +3537,14 @@ def test_single_run_plan_handles_unowned_publication(
     assert len(created) == 1
 
 
-@pytest.mark.parametrize("field", ["config", "pipeline_id"])
+@pytest.mark.parametrize("field", ["config", "runtime.foreign"])
 def test_complete_registration_recovery_rejects_foreign_canonical_row(tmp_path: Path, field: str):
     recipe = write_finetune_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     manifest_path = tmp_path / "run_manifest.tsv"
     rows = read_run_manifest(tmp_path)
-    rows[0][field] = str(tmp_path / "foreign.yaml") if field == "config" else "foreign-pipeline"
+    rows[0][field] = str(tmp_path / "foreign.yaml") if field == "config" else "foreign"
     with manifest_path.open("w", newline="") as file_obj:
         writer = csv.DictWriter(file_obj, fieldnames=sorted(rows[0]), delimiter="\t")
         writer.writeheader()

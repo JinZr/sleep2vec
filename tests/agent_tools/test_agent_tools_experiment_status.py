@@ -48,7 +48,6 @@ def _add_plan(
     status: str = "planned",
     task: str = "finetune",
     adaptive: bool = False,
-    pipeline: bool = False,
     host: str | None = None,
 ) -> tuple[Path, dict[str, str]]:
     experiment = yaml.safe_load((root / "experiment.yaml").read_text())["experiment"]
@@ -178,8 +177,6 @@ def _add_plan(
     plan_controller = "ordinary"
     if adaptive:
         plan_controller = "adaptive"
-    if pipeline:
-        plan_controller = "pipeline"
     step_dir = root / "steps" / step_id
     step_dir.mkdir(parents=True)
     (step_dir / "step.yaml").write_text(
@@ -199,16 +196,6 @@ def _add_plan(
         "status": status,
         "parameter_summary": run.get("parameter_summary", "single resolved recipe"),
     }
-    if pipeline:
-        canonical.update(
-            {
-                "pipeline_id": "pipeline-unit",
-                "job_id": "job-unit",
-                "attempt": "1",
-                "result_root": str(root / "pipeline-results" / "job-unit" / "attempt-001"),
-                "terminal_status_owner": "script",
-            }
-        )
     existing = _read_manifest_rows(root)
     write_rows(root / "run_manifest.tsv", [*existing, canonical])
     return plan_dir, canonical

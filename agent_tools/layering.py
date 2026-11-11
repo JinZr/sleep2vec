@@ -11,8 +11,7 @@ Layering (imports point down: L2 -> L1 -> L0, with domain/ a L0-level domain
 leaf):
   L0 leaves      -- models, decision_models, transport, ...
   L1 adapters/   -- TaskAdapter protocol + registry (generic) + per-task plugins
-  L2 kernel      -- decision_rules, decisions, plan_context, plans, experiment_pipeline,
-                    experiment_pipeline_attempts
+  L2 kernel      -- decision_rules, decisions, plan_context, plans
   domain/        -- sleep2vec summary/validator leaves
 
 configs and the hparam bridges (plan_hparam, decision_hparam) sit below the
@@ -47,11 +46,6 @@ KERNEL_MODULES: frozenset[str] = frozenset(
         "experiment_workspace",
         "experiment_sources",
         "experiment_tracking",
-        "experiment_pipeline",
-        "experiment_pipeline_attempts",
-        "experiment_pipeline_cohort_selection",
-        "experiment_pipeline_results",
-        "experiment_pipeline_spec",
         "experiments",
         "run_artifacts",
         "run_evidence",
@@ -120,8 +114,6 @@ L2_MODULES: frozenset[str] = frozenset(
     {
         "decision_rules",
         "decisions",
-        "experiment_pipeline",
-        "experiment_pipeline_attempts",
         "plan_context",
         "plans",
     }

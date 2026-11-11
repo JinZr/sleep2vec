@@ -49,7 +49,6 @@ from .experiments import (
     monitor_experiment,
     rank_experiment_candidates,
     register_experiment_step,
-    run_experiment_pipeline,
     stop_infer_run,
     stop_preset_run,
     sync_wandb_runs,
@@ -410,7 +409,7 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     experiment_step = _command(
         sub,
         "experiment-register-step",
-        "Register a pipeline step and its plans in the experiment workspace.",
+        "Register an experiment step and its plans in the experiment workspace.",
     )
     experiment_step.add_argument("--run-dir", required=True, help="Experiment workspace root to register into.")
     experiment_step.add_argument(
@@ -434,32 +433,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     )
     _add_workspace_remote(experiment_finalize)
     experiment_finalize.set_defaults(func=_cmd_experiment_finalize)
-
-    experiment_run = _command(
-        sub,
-        "experiment-run",
-        "Run a managed evaluation pipeline for an experiment step. "
-        "Dry run unless --execute is given; --execute is an explicit launching action.",
-    )
-    experiment_run.add_argument("--run-dir", required=True, help="Experiment workspace root to run.")
-    experiment_run.add_argument("--spec", required=True, help="YAML spec declaring the pipeline step to run.")
-    experiment_run.add_argument(
-        "--unlock-final-test",
-        action="store_true",
-        help="Authorize the pipeline's external/final test stage.",
-    )
-    _add_dry_run_or_execute(
-        experiment_run,
-        subject="pipeline",
-        execute_help="Actually run the pipeline; enables launching and state changes.",
-    )
-    experiment_run.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume an interrupted pipeline instead of starting a new attempt.",
-    )
-    experiment_run.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between polls.")
-    experiment_run.set_defaults(func=_cmd_experiment_run)
 
     experiment_wandb = _command(sub, "experiment-wandb-sync", "Sync W&B run history into the experiment workspace.")
     experiment_wandb.add_argument("--run-dir", required=True, help="Experiment workspace root to sync into.")
@@ -968,19 +941,6 @@ def _cmd_experiment_finalize(args: argparse.Namespace) -> int:
     path = finalize_experiment(args.run_dir, args.report, remote=args.remote)
     print(f"Wrote {path}")
     return 0
-
-
-def _cmd_experiment_run(args: argparse.Namespace) -> int:
-    result = run_experiment_pipeline(
-        args.run_dir,
-        args.spec,
-        unlock_final_test=args.unlock_final_test,
-        execute=args.execute,
-        resume=args.resume,
-        poll_seconds=args.poll_seconds,
-    )
-    _emit(result, as_json=True)
-    return 1 if args.execute and result.get("status") in {"blocked", "failed"} else 0
 
 
 def _cmd_experiment_wandb_sync(args: argparse.Namespace) -> int:

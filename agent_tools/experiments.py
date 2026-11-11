@@ -1,14 +1,12 @@
 """Facade for the experiment lifecycle commands the CLI drives.
 
 Domain-free kernel facade: init, note, register-step, finalize, W&B sync, checkpoint
-indexing, monitor, status, rank, the pipeline entrypoint, and the preset/infer
-launch and stop paths.
+indexing, monitor, status, rank, and the preset/infer launch and stop paths.
 
 A facade, not a second implementation: lifecycle rules live in
-``experiment_workspace``, evidence in ``experiment_tracking``, and the pipeline
-state machines in ``experiment_pipeline``. What stays here is the sequencing a
-command performs across those owners -- most visibly in
-``finalize_experiment``.
+``experiment_workspace`` and evidence in ``experiment_tracking``. What stays
+here is the sequencing a command performs across those owners -- most visibly
+in ``finalize_experiment``.
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ import yaml
 from . import (
     execution_snapshot,
     experiment_io as exp_io,
-    experiment_pipeline,
     experiment_tracking as tracking,
     experiment_workspace,
     managed_scheduler,
@@ -407,26 +404,6 @@ def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
             append_event(workspace, "run_stopped", {"step_id": key[0], "run_id": key[1], "reason": reason})
         write_status_report(workspace)
     return workspace / "run_manifest.tsv"
-
-
-def run_experiment_pipeline(
-    run_dir: str | Path,
-    spec_path: str | Path,
-    *,
-    unlock_final_test: bool = False,
-    execute: bool = False,
-    resume: bool = False,
-    poll_seconds: float = 60,
-) -> experiment_pipeline.PipelineResult:
-    return experiment_pipeline.run_experiment_pipeline(
-        run_dir,
-        spec_path,
-        unlock_final_test=unlock_final_test,
-        execute=execute,
-        resume=resume,
-        poll_seconds=poll_seconds,
-        finalize_callback=lambda root, report: finalize_experiment(root, report),
-    )
 
 
 def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str | None = None) -> Path:

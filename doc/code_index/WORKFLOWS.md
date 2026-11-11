@@ -165,8 +165,7 @@ Inference reuses finetune config, model, loader, metric, and prediction owners:
 6. optionally log the same artifact family to W&B.
 
 `--results-root` redirects that complete artifact family without changing its
-schema. Managed pipeline attempts use one fresh root each and accept only the
-unique terminal `run_manifest.json` below it.
+schema.
 
 Checkpoint averaging is a runtime policy and must preserve the task contract.
 AHI and arousal reject averaging when thresholds are checkpoint-specific.
@@ -279,16 +278,6 @@ receipt only when successful completion is recorded; incomplete, conflicting,
 or uncommitted launch evidence remains fail closed, and monitors never gain
 launch authority. Older replays also require ordered successful completion for
 every later committed proposal round.
-External matrices use [`experiment-run`](../agent_contracts/experiment_pipeline.md#invocation-and-frozen-state)
-over [registered-ranking-selected checkpoints](../agent_contracts/experiment_pipeline.md#source-and-checkpoint-gates),
-with [managed attempts](../agent_contracts/experiment_pipeline.md#managed-attempts-and-results)
-and [completion gates](../agent_contracts/experiment_pipeline.md#completion-and-finalization).
-When declared internal or external cohorts must gate a candidate set, use the same command's
-[`cohort_selection` contract](../agent_contracts/experiment_pipeline.md#cohort-selection-and-report-only-boundary):
-complete the frozen candidate-by-selection-cohort matrix, freeze the
-internal-rank winner, and only then materialize any declared external report-only
-jobs. External selection provenance remains explicit; selection-only pipelines
-can finalize without a separate report-only cohort.
 Recurring follow-up starts from the workspace's
 [short heartbeat guidance](../agent_contracts/experiment_workspace.md#short-heartbeat-maintenance).
 

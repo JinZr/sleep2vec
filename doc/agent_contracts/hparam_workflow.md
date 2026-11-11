@@ -267,9 +267,7 @@ The tool also validates managed output topology on the frozen execution host
 and inspects the target Python, repository commit, module origin, supported CLI
 options, and every final argv. Only a complete pass permits atomic publication,
 step/controller registration, canonical run-row merge, and the `plan_created`
-event. Pipeline-derived attempts use the same target and topology checks once
-per scheduler group before any attempt in that group is published or
-registered.
+event.
 
 `agent_tools plan --validate-only` exposes that exact staged path for an
 ordinary `hparam_tune` recipe, then discards the staging directory. PASS, FAIL,
@@ -497,8 +495,7 @@ The detailed [status read-set](experiment_workspace.md#read-only-status-and-advi
 and [final report acceptance](experiment_workspace.md#finalization) have one
 workspace owner, including mixed/all-failed cases and historical completed-read
 compatibility. Final test authorization belongs to
-[external_test_locking.md](external_test_locking.md); managed evaluation pipelines
-belong to [experiment_pipeline.md](experiment_pipeline.md).
+[external_test_locking.md](external_test_locking.md).
 
 ## Adaptive workflow
 

@@ -41,7 +41,6 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
         status="unknown_scheduler",
         adaptive=True,
     )
-    _add_plan(root, step_id="evaluate", pipeline=True)
     before = _workspace_files(root)
 
     def unexpected(*_args, **_kwargs):
@@ -77,10 +76,6 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
     (root / "events.jsonl").write_text("not-json\n")
     (root / "wandb").mkdir()
     (root / "wandb" / "runs.tsv").write_text("status\ncompleted\n")
-    pipeline_root = root / "pipelines" / "pipeline-unit"
-    pipeline_root.mkdir(parents=True)
-    (pipeline_root / "pipeline.json").write_text("{\n")
-    (pipeline_root / "jobs.tsv").write_text("status\ncompleted\n")
     (root / "adaptive").mkdir()
     (root / "adaptive" / "workflow.json").write_text('{"completed": true}\n')
 
