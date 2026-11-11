@@ -1,13 +1,9 @@
-"""Diagnostic context bundles: what an agent is shown before any plan exists.
+"""Plan-time index summary checks and the plan/blocked-plan Markdown renderings.
 
-Layer 2 kernel, mixed bridge -- it imports ``domain.presets`` and
-``domain.index_csv`` directly. Both summaries run for every task with one
-implementation, so they stay direct imports rather than per-task adapter hooks;
-adapters only vary their inputs (``effective_preset_path``,
-``index_summary_inputs_override``).
-
-Everything it emits is diagnostic. A context bundle never authorizes a runnable
-command; only ``plans`` publication does.
+Layer 2 kernel, mixed bridge -- it imports ``domain.index_csv`` directly. The
+index summary runs for every task with one implementation, so it stays a direct
+import rather than a per-task adapter hook; adapters only vary its inputs
+(``index_summary_inputs_override``).
 """
 
 from __future__ import annotations
@@ -15,78 +11,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, TypedDict
 
-from . import plan_rendering as rendering
-from .adapters.registry import all_adapters, get_adapter
+from .adapters.registry import all_adapters
 from .configs import runtime_path_base, skips_local_path_validation
 from .decision_models import DecisionIssue, DecisionReport, DecisionStatus
 from .domain.index_csv import IndexSummary, index_summary
-from .domain.presets import PresetSummary, preset_summary
-from .markdown import ConsultationQuestion
-from .models import CONFIG_FINETUNE_SECTION, SUPPORTED_VARIANTS, ConfigSummary, ConfigSummaryInput, coerce_list
-from .repo import RepoSummary
-from .skills import list_skills
+from .models import CONFIG_FINETUNE_SECTION, ConfigSummaryInput, coerce_list
 
 
 class SummaryFailure(TypedDict):
     blocking_issues: list[str]
-
-
-class ContextSkill(TypedDict):
-    name: Any
-    path: Any
-    owners: Any
-
-
-class ContextPayload(TypedDict):
-    task: str
-    status: str
-    can_generate_commands: bool
-    consultation_required: bool
-    questions: list[ConsultationQuestion]
-    repo: RepoSummary
-    skill: ContextSkill
-    owners: Any
-    relevant_docs: Any
-    inputs: dict[str, Any]
-    config_summary: ConfigSummary | None
-    index_summary: IndexSummary | SummaryFailure | None
-    preset_summary: PresetSummary | SummaryFailure | None
-    expected_artifacts: list[dict[str, str]]
-    recommended_commands: list[str]
-    validation_commands: list[str]
-    warnings: list[str]
-    blocking_issues: list[str]
-
-
-def validation_commands(recipe: dict) -> list[str]:
-    adapter = get_adapter(recipe.get("task"))
-    if adapter is not None:
-        override = adapter.validation_commands(recipe)
-        if override is not None:
-            return override
-    inputs = recipe["inputs"] if isinstance(recipe.get("inputs"), dict) else {}
-    commands = []
-    if inputs.get("config"):
-        # Name the variant the generated run command uses. `check_configs` otherwise infers one
-        # from the config's path and contents, and an out-of-tree config can infer a different
-        # loader than the run will call -- validation passes, the run fails at config load.
-        variant = recipe.get("variant")
-        check = ["python", "utils/check_configs.py"]
-        if variant in SUPPORTED_VARIANTS:
-            check += ["--variant", variant]
-        commands.append(rendering.render_command([*check, inputs["config"]]))
-    commands.append(rendering.render_command(["python", "-m", "agent_tools", "skills", "--validate"]))
-    return commands
-
-
-def skill_context(task: str) -> tuple[ContextSkill, Any]:
-    for skill in list_skills():
-        if task in skill.get("task_types", []):
-            return (
-                {"name": skill.get("name"), "path": skill.get("path"), "owners": skill.get("owners", [])},
-                skill.get("relevant_index", []),
-            )
-    return {"name": None, "path": None, "owners": []}, []
 
 
 def context_index_summary(
@@ -167,55 +100,6 @@ def index_summary_issues(
     ]
 
 
-def context_preset_summary(recipe: dict, cfg: ConfigSummaryInput | None) -> PresetSummary | SummaryFailure | None:
-    preset_path = effective_preset_path(recipe, cfg)
-    if preset_path in (None, ""):
-        return None
-    try:
-        return preset_summary(preset_path, local_path_base=runtime_path_base(recipe))
-    except Exception as exc:
-        return {"blocking_issues": [f"Failed to summarize preset: {exc}"]}
-
-
-def effective_preset_path(recipe: dict, cfg: ConfigSummaryInput | None) -> Any:
-    adapter = get_adapter(recipe.get("task"))
-    return adapter.effective_preset_path(recipe, cfg) if adapter is not None else None
-
-
-def expected_context_artifacts(
-    recipe: dict, cfg: ConfigSummaryInput | None, out: Path, report: DecisionReport
-) -> list[dict[str, str]]:
-    artifacts = recipe["artifacts"] if isinstance(recipe.get("artifacts"), dict) else {}
-    expected = [
-        {"name": name, "path": str(path)}
-        for name, path in artifacts.items()
-        if path not in (None, "") and isinstance(path, (str, Path))
-    ]
-    adapter = get_adapter(recipe.get("task"))
-    if adapter is not None:
-        expected.extend(adapter.expected_artifacts(recipe, cfg))
-    expected.extend({"name": path.name, "path": str(path)} for path in planned_context_paths(out, report))
-    return expected
-
-
-def context_markdown(payload: ContextPayload) -> str:
-    lines = [f"# Agent Context: {payload['task']}", "", f"Status: {payload['status']}", ""]
-    if payload["consultation_required"]:
-        lines.extend(
-            [
-                "## User input required before continuing",
-                "",
-                "The agent must ask the user these questions before generating runnable commands.",
-                "",
-            ]
-        )
-        for question in payload["questions"]:
-            lines.append(f"- {question['field']}: {question.get('question') or question.get('message')}")
-    else:
-        lines.extend(["## Command plan", "", *[f"- `{cmd}`" for cmd in payload["recommended_commands"]]])
-    return "\n".join(lines) + "\n"
-
-
 def blocked_plan_markdown(
     report: DecisionReport,
     allow_unresolved: bool,
@@ -246,12 +130,3 @@ def plan_markdown(report: DecisionReport, commands: list[str]) -> str:
     lines = ["# Agent Plan", "", f"Status: {report.status.value}", "", "## Commands", ""]
     lines.extend(f"```bash\n{command}\n```" for command in commands)
     return "\n\n".join(lines) + "\n"
-
-
-def planned_context_paths(out: Path, report: DecisionReport) -> list[Path]:
-    paths = [out / "context.json", out / "context.md"]
-    if report.blocking_issues():
-        paths.extend([out / "questions.json", out / "questions.md", out / "commands.blocked.sh"])
-    elif report.exit_code == 0:
-        paths.extend([out / "commands.sh", out / "validation.sh"])
-    return paths

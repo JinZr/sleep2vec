@@ -12,7 +12,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             from agent_tools import (
                 experiment_tracking,
                 execution_snapshot, experiments,
-                experiment_io, experiment_sources, experiment_workspace, hparam_selection,
+                experiment_io, experiment_workspace, hparam_selection,
                 managed_scheduler, models,
                 plan_contract, plan_hparam, run_artifacts, run_evidence, slurm,
             )
@@ -112,23 +112,13 @@ def test_result_types_reach_callers(tmp_path: Path):
             sample_count: int = preset["samples"]
             preset["source_counts"] = {"source": "1"}  # type: ignore[dict-item]
             preset["sidecar_manifest"] = ["unvalidated", 1]
-            for summary in (
-                plan_context.context_index_summary({}, None),
-                plan_context.context_preset_summary({}, None),
-            ):
-                if summary is not None:
-                    errors: list[str] = summary["blocking_issues"]
-                    errors = summary["blocking_issues"][0]  # type: ignore[assignment]
+            summary = plan_context.context_index_summary({}, None)
+            if summary is not None:
+                errors: list[str] = summary["blocking_issues"]
+                errors = summary["blocking_issues"][0]  # type: ignore[assignment]
             questions = markdown.questions_payload(DecisionReport(status=DecisionStatus.FAIL))
             question_text: str | None = questions[0]["question"]
             questions[0]["field"] = 1  # type: ignore[typeddict-item]
-
-            def consume_context(context: plan_context.ContextPayload) -> str:
-                allowed: bool = context["can_generate_commands"]
-                commands: list[str] = context["recommended_commands"]
-                context["questions"][0]["message"] = 1  # type: ignore[typeddict-item]
-                context["recommended_commands"] = [1]  # type: ignore[list-item]
-                return plan_context.context_markdown(context)
 
             def diagnostic_contracts() -> None:
                 from agent_tools import configs
@@ -169,13 +159,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                         sidecar["issues"] = [1]  # type: ignore[list-item]
                         sidecar["output_dim"] = ["unvalidated"]
 
-            def discovery_context(context: plan_context.ContextPayload) -> None:
-                available: bool = context["repo"]["git"]["available"]
-                context["repo"]["python"]["version"] = 1  # type: ignore[typeddict-item]
-                context["skill"]["unexpected"] = "owner"  # type: ignore[typeddict-unknown-key]
-                if context["config_summary"] is not None:
-                    context["config_summary"]["warnings"] = [1]  # type: ignore[list-item]
-
             minimal_snapshot: execution_snapshot.ExecutionSnapshot = {
                 "module": "runtime_cli", "module_origin": "/runtime_cli.py",
             }
@@ -186,37 +169,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                 {}, Path("script"), "log", "pid", [],
                 execution_snapshot={"module": 1},  # type: ignore[arg-type]
             )
-
-            wandb_payload = experiment_sources.wandb_run_payload(None, entity="entity", project="project")
-            history_filename: str = wandb_payload["history_filename"]
-            wandb_payload["history_file"]  # type: ignore[typeddict-item]
-            wandb_payload["summary_line"] = []  # type: ignore[typeddict-item]
-            wandb_row = wandb_payload["run_row"]
-            wandb_row["wandb_run_id"] = 1  # type: ignore[typeddict-item]
-            wandb_row["status"] = None  # type: ignore[typeddict-item]
-            if "experiment_id" in wandb_row:
-                wandb_experiment: str = wandb_row["experiment_id"]
-            metric_row = wandb_payload["metric_rows"][0]
-            metric_row["metric_scope"] = 1  # type: ignore[typeddict-item]
-            metric_row["epoch"] = 1  # type: ignore[typeddict-item]
-            metric_row["metric_name"]  # type: ignore[typeddict-item]
-            metric_row["value"] = "0.750"
-            metric_row["updated_at"] = None  # type: ignore[typeddict-item]
-            experiment_tracking.wandb_run_observations([], [wandb_row])
-            experiment_tracking.managed_metric_rows([], [metric_row])
-            checkpoint_observations = experiment_tracking.checkpoint_rows(Path("/workspace"))
-            checkpoint_observation = checkpoint_observations[0]
-            observed_checkpoint_path: str = checkpoint_observation["checkpoint_path"]
-            checkpoint_observation["mtime"] = 1.0  # type: ignore[typeddict-item]
-            checkpoint_observation["is_last"] = True  # type: ignore[typeddict-item]
-            checkpoint_observation["checkpoint"]  # type: ignore[typeddict-item]
-            experiment_sources.validate_checkpoint_evidence_rows([], checkpoint_observations)
-            experiment_workspace.validate_managed_run_rows(
-                checkpoint_observations, source="checkpoint scan", cardinality="many_per_run",
-            )
-            checkpoint_metric = experiment_tracking.best_metric_for_checkpoint(checkpoint_observation, [])
-            checkpoint_metric["value"] = 1.0  # type: ignore[typeddict-item]
-            checkpoint_observation.update(checkpoint_metric)
 
             direct_health = run_evidence.health_fields(Path("/run"), {}, {}, None, None, "running", None)
             health_count: int | Literal[""] = direct_health["checkpoint_count"]
@@ -242,7 +194,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             monitor_result["report"] = Path("/report")  # type: ignore[typeddict-item]
             monitor_result["decision"]  # type: ignore[typeddict-item]
             monitor_result["runs"][0]["status"] = None  # type: ignore[assignment]
-            canonical_rows = experiment_tracking.experiment_run_rows(Path("/workspace"))
+            canonical_rows = experiment_workspace.read_run_manifest(Path("/workspace"))
             canonical_status: str = canonical_rows[0]["status"]
             canonical_rows[0]["status"] = None  # type: ignore[assignment]
             monitored_row = experiment_tracking.monitor_run_row(Path("/workspace"), canonical_rows[0], canonical_rows)
@@ -268,13 +220,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             resolved_observed = experiment_workspace.resolve_run_row([monitored_row], experiment_events[0])
             if resolved_observed is not None:
                 resolved_observed_text: str = resolved_observed["status"]  # type: ignore[assignment]
-            candidate_metrics = experiment_tracking.candidate_rows(canonical_rows, canonical_rows, "score")
-            ranked_candidates = experiment_tracking.rank_candidates(candidate_metrics, canonical_rows, mode="max")
-            candidate_value: models.JsonValue = ranked_candidates[0]["value"]
-            candidate_score: float = ranked_candidates[0]["value"]  # type: ignore[assignment]
-            experiment_tracking.rank_candidates(
-                candidate_metrics, [{"checkpoint_path": 1}], mode="max",  # type: ignore[dict-item]
-            )
 
             planned: execution_snapshot.PlannedArgv = {"run_id": "run-000", "args": ["--value", "ok"]}
             planned["args"] = [1]  # type: ignore[list-item]

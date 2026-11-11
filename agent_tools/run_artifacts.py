@@ -1282,84 +1282,6 @@ def metric_value(manifest: dict[str, Any], metric: str) -> float | str:
     return ""
 
 
-def fixed_checkpoint_path(manifest: dict[str, Any], checkpoint_dir: Path) -> str:
-    """Resolve manifest checkpoint hints to a local file under checkpoint_dir.
-
-    Uses best_model_path before checkpoint_path, interpreting its basename in
-    the supplied directory. Prefers epoch= files over best-epoch= aliases, uses
-    a valid manifest epoch to resolve conflicts, and can retain a physical
-    best-epoch= file when no fixed file was found and either its epoch matches
-    or a completed or skipped-test manifest without an epoch names it. Epoch
-    searches choose the first matching name in sorted order. A completed or
-    skipped-test manifest without an epoch may explicitly bind physical best.ckpt.
-
-    Returns an empty string for an unusable directory, invalid authored epoch,
-    or unresolved hint. Selected files must be non-symlink files resolving
-    directly inside the directory. Reads filesystem metadata, not checkpoint
-    contents; a result does not verify weights or ownership. I/O errors may
-    propagate, and no artifacts are rewritten.
-    """
-    if checkpoint_dir.is_symlink() or not checkpoint_dir.is_dir():
-        return ""
-    resolved_dir = checkpoint_dir.resolve()
-    raw_epoch = manifest.get("epoch")
-    manifest_epoch = epoch_number(raw_epoch)
-    if raw_epoch not in (None, "") and manifest_epoch is None:
-        return ""
-    raw = manifest.get("best_model_path") or manifest.get("checkpoint_path") or ""
-    if raw:
-        path = Path(str(raw))
-        if (
-            path.name == "best.ckpt"
-            and manifest_epoch is None
-            and manifest.get("status") in {"completed", "skipped_test"}
-        ):
-            best = checkpoint_dir / path.name
-            return (
-                str(best) if not best.is_symlink() and best.is_file() and best.resolve().parent == resolved_dir else ""
-            )
-        if path.name.startswith("best-epoch="):
-            fixed = checkpoint_dir / path.name.removeprefix("best-")
-            if manifest_epoch is not None and epoch_number_from_checkpoint_name(fixed.name) != manifest_epoch:
-                matched = checkpoint_for_epoch_in_dir(checkpoint_dir, manifest_epoch)
-                return str(matched) if matched else ""
-            # Lexical containment is insufficient when the checkpoint entry itself is an alias.
-            if not fixed.is_symlink() and fixed.is_file() and fixed.resolve().parent == resolved_dir:
-                return str(fixed)
-            matched = checkpoint_for_epoch_in_dir(checkpoint_dir, epoch_number_from_checkpoint_name(fixed.name))
-            if matched:
-                return str(matched)
-            best = checkpoint_dir / path.name
-            # Training manifests carry no epoch; a successful one still binds the alias it names,
-            # e.g. after early stopping before any periodic epoch= checkpoint was saved.
-            if (
-                (manifest_epoch is not None or manifest.get("status") in {"completed", "skipped_test"})
-                and not best.is_symlink()
-                and best.is_file()
-                and best.resolve().parent == resolved_dir
-            ):
-                return str(best)
-            return ""
-        if path.name.startswith("epoch="):
-            fixed = checkpoint_dir / path.name
-            if manifest_epoch is not None and epoch_number_from_checkpoint_name(fixed.name) != manifest_epoch:
-                matched = checkpoint_for_epoch_in_dir(checkpoint_dir, manifest_epoch)
-                return str(matched) if matched else ""
-            return (
-                str(fixed)
-                if not fixed.is_symlink() and fixed.is_file() and fixed.resolve().parent == resolved_dir
-                else ""
-            )
-        matched = checkpoint_for_epoch_in_dir(checkpoint_dir, manifest_epoch)
-        if matched:
-            return str(matched)
-        return ""
-    if manifest_epoch is not None:
-        matched = checkpoint_for_epoch_in_dir(checkpoint_dir, manifest_epoch)
-        return str(matched) if matched else ""
-    return ""
-
-
 def fixed_checkpoint_path_from_names(
     manifest: dict[str, Any], checkpoint_dir: str | Path, checkpoint_names: list[str]
 ) -> str:
@@ -1426,22 +1348,6 @@ def fixed_checkpoint_path_from_names(
                 return str(checkpoint_dir / candidate)
         return ""
     return ""
-
-
-def checkpoint_for_epoch_in_dir(ckpt_dir: Path, epoch: int | None) -> Path | None:
-    if epoch is None or ckpt_dir.is_symlink() or not ckpt_dir.is_dir():
-        return None
-    resolved_dir = ckpt_dir.resolve()
-    for path in sorted(ckpt_dir.glob("epoch=*.ckpt")):
-        if (
-            not path.name.startswith("best-")
-            and not path.is_symlink()
-            and path.is_file()
-            and path.resolve().parent == resolved_dir
-            and epoch_number_from_checkpoint_name(path.name) == epoch
-        ):
-            return path
-    return None
 
 
 def epoch_from_checkpoint_name(name: str) -> str:

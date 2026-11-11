@@ -1,7 +1,7 @@
 """Facade for the experiment lifecycle commands the CLI drives.
 
-Domain-free kernel facade: init, note, register-step, finalize, W&B sync, checkpoint
-indexing, monitor, status, rank, and the preset/infer launch and stop paths.
+Domain-free kernel facade: init, note, finalize, monitor, status, and the
+preset/infer launch and stop paths.
 
 A facade, not a second implementation: lifecycle rules live in
 ``experiment_workspace`` and evidence in ``experiment_tracking``. What stays
@@ -41,7 +41,6 @@ from .experiment_workspace import (
     append_event,
     append_research_log,
     canonical_local_experiment_root,
-    commit_step_manifest,
     experiment_metadata_issues,
     experiment_readme_text,
     experiment_root,
@@ -56,7 +55,6 @@ from .experiment_workspace import (
     stopped_runs_without_reason,
     validate_existing_experiment_manifest,
     validate_frozen_run_update,
-    validate_managed_run_rows,
     validated_run_key,
     write_initial_experiment_manifest,
     write_status_report,
@@ -317,8 +315,8 @@ def _infer_slurm_workspace(plan_dir: Path) -> Path:
     # holder, so callers read workspace state through _read_infer_slurm_plan under the run lock.
     initial = read_json(plan_dir / "plan.json")
     recipe = initial.get("recipe")
-    if not isinstance(recipe, dict) or recipe.get("task") not in {"infer", "evaluate"}:
-        raise ValueError("infer-launch and infer-stop require an ordinary infer/evaluate plan.")
+    if not isinstance(recipe, dict) or recipe.get("task") != "infer":
+        raise ValueError("infer-launch and infer-stop require an ordinary infer plan.")
     issues = experiment_metadata_issues(recipe)
     if issues:
         raise ValueError("Invalid inference workspace binding: " + "; ".join(issue["message"] for issue in issues))
@@ -338,7 +336,7 @@ def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPl
                 continue
             if (
                 registered["manifest"]["plan_controller"] != "ordinary"
-                or plan["task"] not in {"infer", "evaluate"}
+                or plan["task"] != "infer"
                 or len(plan["runs"]) != 1
                 or scheduler_type(plan["runs"][0]) != "slurm"
             ):
@@ -502,46 +500,6 @@ def append_experiment_note(
         remote=remote,
     )
     return {"path": str(path), "entry_id": entry_id, "appended": appended}
-
-
-def register_experiment_step(run_dir: str | Path, spec_path: str | Path, *, remote: str | None = None) -> Path:
-    root = _target_root(run_dir, remote)
-    _managed_rows(root, remote=remote)
-    experiment_text = exp_io.read_text_at(root / "experiment.yaml", remote=remote)
-    experiment_manifest = (
-        read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}")
-        if experiment_text
-        else {}
-    )
-    experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
-    if not isinstance(experiment, dict):
-        raise ValueError("experiment.yaml is missing. Initialize the experiment first.")
-    raw = read_managed_yaml_mapping(Path(spec_path).read_text(), source=f"Step spec {spec_path}")
-    step = raw.get("step") if isinstance(raw, dict) and isinstance(raw.get("step"), dict) else raw
-    if not isinstance(step, dict):
-        raise ValueError("Step spec must be a YAML mapping.")
-    for field in ("id", "phase", "purpose", "inputs", "outputs"):
-        if step.get(field) in (None, "", "ASK_USER"):
-            raise ValueError(f"step.{field} is required.")
-    issues = experiment_metadata_issues({"experiment": experiment, "step": step}, allow_step_io=True)
-    if issues:
-        raise ValueError("; ".join(issue["message"] for issue in issues))
-    path = root / "steps" / str(step["id"]) / "step.yaml"
-    exp_io.validate_managed_output_paths(root, [path, root / "events.jsonl"], remote=remote)
-    _merged, created = commit_step_manifest(
-        root,
-        {
-            "step": step,
-            "experiment_id": experiment["id"],
-            "plan_controller": "unassigned",
-            "recipe_path": "",
-            "plans": [],
-        },
-        remote=remote,
-    )
-    if created:
-        exp_io.append_event_at(root, "step_registered", {"step_id": step["id"], "phase": step["phase"]}, remote=remote)
-    return path
 
 
 def _validate_hparam_checkpoints(
@@ -758,99 +716,6 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     return target
 
 
-def sync_wandb_runs(
-    run_dir: str | Path,
-    *,
-    entity: str,
-    project: str,
-    group: str | None = None,
-    remote: str | None = None,
-) -> Path:
-    root = _target_root(run_dir, remote)
-    managed_rows = _managed_rows(root, remote=remote)
-    existing_metrics = exp_io.read_rows_at(root / "metrics_manifest.tsv", remote=remote, require_managed_identity=True)
-    _validate_evidence_rows(managed_rows, existing_metrics, "metrics_manifest.tsv")
-    blocked = root / "reports" / "wandb_blocked.md"
-    exp_io.validate_managed_output_paths(
-        root,
-        [
-            blocked,
-            root / "wandb" / "summaries.jsonl",
-            root / "wandb" / "runs.tsv",
-            root / "metrics_manifest.tsv",
-            root / "experiment_manifest.tsv",
-            root / "reports" / "wandb.md",
-            root / "run_manifest.tsv",
-            root / "run_matrix.csv",
-            root / "reports" / "run_matrix.md",
-            root / "events.jsonl",
-        ],
-        remote=remote,
-    )
-    try:
-        runs = tracking.wandb_runs(entity, project, group)
-    except Exception as exc:
-        exp_io.write_text_at(blocked, f"# W&B Sync Blocked\n\n{type(exc).__name__}: {exc}\n", remote=remote)
-        raise RuntimeError(f"W&B sync blocked; wrote {blocked}") from exc
-
-    payloads = [tracking.wandb_run_payload(run, entity=entity, project=project) for run in runs]
-    run_rows = [payload["run_row"] for payload in payloads]
-    metric_rows = [row for payload in payloads for row in payload["metric_rows"]]
-    summary_lines = [payload["summary_line"] for payload in payloads]
-    observations = tracking.wandb_run_observations(managed_rows, run_rows)
-    managed_metrics = tracking.managed_metric_rows(managed_rows, metric_rows)
-    merged_metrics = tracking.merge_rows(existing_metrics, managed_metrics)
-    exp_io.validate_managed_output_paths(
-        root,
-        [root / "wandb" / "history" / payload["history_filename"] for payload in payloads],
-        remote=remote,
-    )
-
-    exp_io.mkdir_experiment_dirs(root, remote=remote)
-    for payload in payloads:
-        tracking.write_history_csv(
-            root / "wandb" / "history" / payload["history_filename"],
-            payload["history_rows"],
-            remote=remote,
-        )
-
-    exp_io.write_text_at(
-        root / "wandb" / "summaries.jsonl",
-        "\n".join(summary_lines) + ("\n" if summary_lines else ""),
-        remote=remote,
-    )
-    exp_io.write_rows_at(root / "wandb" / "runs.tsv", [dict(row) for row in run_rows], remote=remote)
-    metrics_path = root / "metrics_manifest.tsv"
-    if merged_metrics:
-        exp_io.write_rows_at(metrics_path, merged_metrics, remote=remote)
-    else:
-        exp_io.write_text_at(metrics_path, "step_id\trun_id\n", remote=remote)
-    tracking.update_experiment_wandb(root, entity=entity, project=project, group=group or "", remote=remote)
-    tracking.write_wandb_report(root, run_rows, remote=remote)
-    merge_run_manifest(root, observations, remote=remote)
-    return root / "wandb" / "runs.tsv"
-
-
-def index_checkpoints(run_dir: str | Path, *, remote: str | None = None) -> Path:
-    root = _target_root(run_dir, remote)
-    managed_rows = _managed_rows(root, remote=remote)
-    metrics_path = root / "metrics_manifest.tsv"
-    checkpoint_path = root / "checkpoint_manifest.tsv"
-    # Workspace location proves evidence ownership only when the table path is not an alias.
-    exp_io.validate_managed_output_paths(root, [metrics_path, checkpoint_path], remote=remote)
-    metrics = exp_io.read_rows_at(metrics_path, remote=remote, require_managed_identity=True)
-    _validate_evidence_rows(managed_rows, metrics, "metrics_manifest.tsv")
-    rows = tracking.checkpoint_rows(root, remote=remote)
-    for row in rows:
-        row.update(tracking.best_metric_for_checkpoint(row, metrics))
-    validate_managed_run_rows(rows, source="checkpoint_manifest.tsv", cardinality="many_per_run")
-    if rows:
-        exp_io.write_rows_at(checkpoint_path, [dict(row) for row in rows], remote=remote)
-    else:
-        exp_io.write_text_at(checkpoint_path, "step_id\trun_id\n", remote=remote)
-    return root / "checkpoint_manifest.tsv"
-
-
 def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> tracking.ExperimentMonitorResult:
     """Observe managed runs once and commit their current status without launching work.
 
@@ -1018,44 +883,6 @@ def _hparam_selection_report(root: Path, *, remote: str | None) -> tracking.Hpar
     }
 
 
-def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, remote: str | None = None) -> Path:
-    root = _target_root(run_dir, remote)
-    managed_rows = _managed_rows(root, remote=remote)
-    out = root / "reports" / "experiment_ranking.csv"
-    exp_io.validate_managed_output_paths(
-        root,
-        [
-            out,
-            root / "reports" / "experiment_ranking.md",
-            root / "metrics_manifest.tsv",
-            root / "checkpoint_manifest.tsv",
-        ],
-        remote=remote,
-    )
-    metric_rows = exp_io.read_rows_at(root / "metrics_manifest.tsv", remote=remote, require_managed_identity=True)
-    checkpoint_rows = exp_io.read_rows_at(
-        root / "checkpoint_manifest.tsv", remote=remote, require_managed_identity=True
-    )
-    _validate_evidence_rows(managed_rows, metric_rows, "metrics_manifest.tsv")
-    _validate_evidence_rows(
-        managed_rows,
-        checkpoint_rows,
-        "checkpoint_manifest.tsv",
-        checkpoint_evidence=True,
-        remote=remote,
-    )
-    run_rows = tracking.experiment_run_rows(root, remote=remote)
-    rows = tracking.candidate_rows(run_rows, metric_rows, metric)
-    ranked = tracking.rank_candidates(rows, checkpoint_rows, mode=mode)
-    validate_managed_run_rows(ranked, source="experiment_ranking.csv", cardinality="one_per_run")
-    if ranked:
-        exp_io.write_rows_at(out, ranked, remote=remote)
-    else:
-        exp_io.write_text_at(out, "step_id,run_id\n", remote=remote)
-    tracking.write_rank_report(root, metric, mode, ranked, remote=remote)
-    return out
-
-
 def _target_root(run_dir: str | Path, remote: str | None) -> Path:
     root = Path(run_dir)
     if remote:
@@ -1183,22 +1010,3 @@ def _managed_workspace(
         if row["experiment_id"] != experiment["id"]:
             raise ValueError("run_manifest.tsv contains a run owned by a different experiment.")
     return experiment, rows
-
-
-def _validate_evidence_rows(
-    managed_rows: list[dict[str, str]],
-    evidence_rows: list[dict[str, str]],
-    source: str,
-    *,
-    checkpoint_evidence: bool = False,
-    remote: str | None = None,
-) -> None:
-    validate_managed_run_rows(evidence_rows, source=source, cardinality="many_per_run")
-    managed_by_key = {managed_run_key(row): row for row in managed_rows}
-    for row in evidence_rows:
-        managed = managed_by_key.get(managed_run_key(row))
-        if managed is None:
-            raise ValueError(f"{source} contains a run outside the canonical manifest.")
-        validate_frozen_run_update(managed, row)
-    if checkpoint_evidence:
-        tracking.validate_checkpoint_evidence_rows(managed_rows, evidence_rows, remote=remote)

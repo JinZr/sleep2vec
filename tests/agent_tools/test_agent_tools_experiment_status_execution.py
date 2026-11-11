@@ -225,7 +225,7 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
             {
                 "step": {"id": "evaluate", "phase": "evaluate", "purpose": "Run external evaluation."},
                 "experiment_id": "status-unit",
-                "plan_controller": "unassigned",
+                "plan_controller": "ordinary",
                 "recipe_path": "",
                 "plans": [],
             },

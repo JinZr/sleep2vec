@@ -25,14 +25,14 @@ from agent_tools.models import REPO_ROOT
     ("variant", "task", "mode", "direct_controller", "expected_exit", "scheduler_state", "expected_status"),
     [
         ("sleep2vec", "infer", "success", False, 0, "COMPLETED", "completed"),
-        ("sleep2vec2", "evaluate", "nonzero", True, 17, "FAILED", "failed"),
+        ("sleep2vec2", "infer", "nonzero", True, 17, "FAILED", "failed"),
         ("sleep2expert", "infer", "inner-kill", False, 137, "TIMEOUT", "failed"),
-        ("sex_age_baseline", "evaluate", "success", True, 0, "COMPLETED", "completed"),
+        ("sex_age_baseline", "infer", "success", True, 0, "COMPLETED", "completed"),
         ("sleep2vec", "infer", "topology", True, 2, "FAILED", "failed"),
-        ("sleep2vec2", "evaluate", "rolling-runtime", False, 0, "COMPLETED", "completed"),
+        ("sleep2vec2", "infer", "rolling-runtime", False, 0, "COMPLETED", "completed"),
         ("sleep2expert", "infer", "outer-kill", True, -9, "TIMEOUT", "unknown_scheduler"),
         ("sleep2vec", "infer", "success", False, 0, "MISSING", "completed"),
-        ("sleep2vec2", "evaluate", "nonzero", True, 17, "MISSING", "failed"),
+        ("sleep2vec2", "infer", "nonzero", True, 17, "MISSING", "failed"),
     ],
 )
 @pytest.mark.usefixtures("_runtime_probe")

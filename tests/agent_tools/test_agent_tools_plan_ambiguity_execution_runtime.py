@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -18,7 +17,6 @@ import yaml
 from agent_tools import experiments, plan_contract, plan_hparam, plans
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
-from agent_tools.plans import collect_runs
 
 
 def test_plan_normalizes_scalar_runtime_devices(tmp_path: Path):
@@ -120,19 +118,6 @@ def test_hparam_plan_and_launch_use_merged_effective_recipe(tmp_path: Path):
     with (output_dir / "launch_manifest.tsv").open(newline="") as file_obj:
         launch_rows = list(csv.DictReader(file_obj, delimiter="\t"))
     assert launch_rows[0]["gpus"] == "4"
-
-
-def test_context_rejects_symlink_output_root_before_writing(tmp_path: Path):
-    target = tmp_path / "context-target"
-    target.mkdir()
-    output_dir = tmp_path / "context-alias"
-    output_dir.symlink_to(target, target_is_directory=True)
-
-    report = plans.build_context(task="pretrain", variant="sleep2vec", config=None, output_dir=output_dir)
-
-    assert report.exit_code == 1
-    assert any(issue.field == "output_artifacts" for issue in report.blocking_issues())
-    assert list(target.iterdir()) == []
 
 
 def test_plan_rejects_symlink_output_root_before_writing(tmp_path: Path):
@@ -590,140 +575,6 @@ def test_remote_deferred_config_must_be_locally_freezable_before_hparam_workspac
     assert not (tmp_path / "events.jsonl").exists()
 
 
-def test_collect_runs_only_reads_managed_manifest_paths(tmp_path: Path):
-    runtime_dir = tmp_path / "runtime" / "run-000"
-    runtime_dir.mkdir(parents=True)
-    (runtime_dir / "run_manifest.json").write_text(
-        json.dumps(
-            {
-                "version": "runtime-version",
-                "config_path": "/runtime/config.yaml",
-                "status": "finished",
-                "command": "runtime command",
-                "epoch": 4,
-                "metrics": {"score": 0.8},
-            }
-        )
-    )
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tversion\tconfig\tcommand\truntime_dir\tstatus\n"
-        f"unit\ttrain\trun-000\tmanaged-version\t/managed/config.yaml\tmanaged command\t{runtime_dir}\tfailed\n"
-    )
-    historical = tmp_path / "historical"
-    historical.mkdir()
-    (historical / "run_manifest.json").write_text(json.dumps({"version": "historical-version"}))
-    (historical / "trial_status.tsv").write_text("trial_id\tstatus\ntrial_000\tfinished\n")
-    output = tmp_path / "collected.csv"
-
-    collect_runs(tmp_path, "score", output)
-
-    with output.open(newline="") as file_obj:
-        rows = list(csv.DictReader(file_obj))
-    assert len(rows) == 1
-    assert rows[0]["run_id"] == "run-000"
-    assert rows[0]["version"] == "managed-version"
-    assert rows[0]["config"] == "/managed/config.yaml"
-    assert rows[0]["command"] == "managed command"
-    assert rows[0]["status"] == "failed"
-    assert rows[0]["epoch"] == "4"
-    assert rows[0]["score"] == "0.8"
-    assert "runtime-version" not in output.read_text()
-    assert "historical-version" not in output.read_text()
-
-
-def test_collect_runs_reads_canonical_rows_only_under_run_lock(tmp_path: Path, monkeypatch):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    (tmp_path / "run_manifest.tsv").write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tfailed\n")
-    output = tmp_path / "collected.csv"
-    read = plans.read_run_manifest
-    reads = []
-
-    # The output alias check stats run_manifest.tsv before the read, so probe the lock at the read itself.
-    def read_locked_manifest(root):
-        with (root / "run_manifest.tsv.lock").open("a+") as contender:
-            with pytest.raises(BlockingIOError):
-                fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        reads.append(root)
-        return read(root)
-
-    monkeypatch.setattr(plans, "read_run_manifest", read_locked_manifest)
-
-    collect_runs(tmp_path, None, output)
-
-    assert reads == [tmp_path]
-    with output.open(newline="") as file_obj:
-        assert [row["run_id"] for row in csv.DictReader(file_obj)] == ["run-000"]
-
-
-def test_collect_runs_rejects_invalid_runtime_manifest_without_overwriting_output(tmp_path: Path):
-    runtime_dir = tmp_path / "runtime" / "run-000"
-    runtime_dir.mkdir(parents=True)
-    manifest = runtime_dir / "run_manifest.json"
-    manifest.write_text("{")
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\truntime_dir\tstatus\n" f"unit\ttrain\trun-000\t{runtime_dir}\tfailed\n"
-    )
-    output = tmp_path / "collected.csv"
-    output.write_bytes(b"existing output\n")
-
-    with pytest.raises(ValueError, match="run manifest"):
-        collect_runs(tmp_path, "score", output)
-
-    assert output.read_bytes() == b"existing output\n"
-
-
-def test_collect_runs_rejects_missing_canonical_manifest_without_overwriting_output(tmp_path: Path):
-    output = tmp_path / "collected.csv"
-    output.write_bytes(b"existing output\n")
-
-    try:
-        collect_runs(tmp_path, None, output)
-    except FileNotFoundError:
-        pass
-    else:
-        raise AssertionError("collect_runs must require run_manifest.tsv")
-
-    assert output.read_bytes() == b"existing output\n"
-
-
-def test_collect_runs_rejects_canonical_manifest_output_alias_without_writing(tmp_path: Path):
-    manifest = tmp_path / "run_manifest.tsv"
-    original = b"step_id\trun_id\n"
-    manifest.write_bytes(original)
-
-    with pytest.raises(ValueError, match="cannot overwrite canonical run_manifest.tsv"):
-        collect_runs(tmp_path, None, manifest)
-
-    assert manifest.read_bytes() == original
-
-
-def test_collect_runs_rejects_unsafe_output_topology_without_writing(tmp_path: Path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    manifest = workspace / "run_manifest.tsv"
-    original_manifest = b"step_id\trun_id\n"
-    manifest.write_bytes(original_manifest)
-    sentinel = tmp_path / "sentinel.csv"
-    sentinel.write_bytes(b"keep me\n")
-    output = workspace / "collected.csv"
-    output.hardlink_to(sentinel)
-
-    with pytest.raises(ValueError, match="Managed output paths"):
-        collect_runs(workspace, None, output)
-
-    assert manifest.read_bytes() == original_manifest
-    assert sentinel.read_bytes() == b"keep me\n"
-
-
-def test_collect_runs_allows_header_only_canonical_manifest(tmp_path: Path):
-    (tmp_path / "run_manifest.tsv").write_text("step_id\trun_id\n")
-    output = tmp_path / "collected.csv"
-
-    collect_runs(tmp_path, None, output)
-
-    assert output.read_text() == "version\n"
-
-
 def test_hparam_run_all_rejects_tampered_leaf_before_execution(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     output_dir = tmp_path / "plan"
@@ -747,7 +598,7 @@ def test_hparam_run_all_rejects_tampered_leaf_before_execution(tmp_path: Path):
     assert not marker.exists()
 
 
-@pytest.mark.parametrize("task", ["finetune", "infer", "evaluate", "preset_prepare", "sleep2stat"])
+@pytest.mark.parametrize("task", ["finetune", "infer", "preset_prepare", "sleep2stat"])
 @pytest.mark.parametrize("cwd_kind", ["plan", "outside"])
 def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
     tmp_path: Path,
@@ -768,7 +619,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
         "purpose": "Exercise managed non-hparam lifecycle.",
     }
     recipe["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
-    if task in {"infer", "evaluate"}:
+    if task == "infer":
         recipe["evaluation_policy"] = {"external_test_locked": True}
         recipe["artifacts"] = {"overwrite": False}
     elif task == "preset_prepare":

@@ -369,17 +369,6 @@ class TaskAdapter:
             )
         return contract
 
-    def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:
-        """Full replacement for the kernel's generic validation command list;
-        None means use the generic path."""
-        return None
-
-    def expected_artifacts(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
-    ) -> list[dict[str, str]]:
-        """Expected output artifacts for context/plan documents."""
-        return []
-
     def effective_preset_path(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> Any:
         """The preset this task actually loads: the recipe's declared
         ``preset_path_recipe_field`` override when concrete, else the config's
@@ -409,7 +398,7 @@ class TaskAdapter:
         task-keyed ones (registration order is the probing order).
 
         The default covers the finetune-family config shape shared by finetune,
-        hparam_tune, infer, and evaluate: an effective preset carries its own
+        hparam_tune, and infer: an effective preset carries its own
         records, so no index path is reported; otherwise the config's
         ``finetune_data_index`` applies. Tasks that do not read that config
         claim nothing.

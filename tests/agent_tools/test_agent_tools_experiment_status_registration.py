@@ -394,19 +394,10 @@ def test_experiment_status_rejects_aliased_registered_blocked_plan(tmp_path, ali
         experiments.experiment_status(root)
 
 
-def test_experiment_status_preserves_registered_step_io_metadata(tmp_path):
+def test_experiment_status_rejects_step_metadata_drift_from_registered_plan(tmp_path):
     root = tmp_path / "experiment"
     recipe = write_finetune_recipe(root)
     recipe_payload = yaml.safe_load(recipe.read_text())
-    step_spec = write_yaml(
-        root / "step-spec.yaml",
-        {
-            **recipe_payload["step"],
-            "inputs": ["config.yaml"],
-            "outputs": ["reports/ranking.csv"],
-        },
-    )
-    experiments.register_experiment_step(root, step_spec)
     plan_dir = root / "plans" / "train"
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     before = _workspace_files(root)
@@ -417,9 +408,6 @@ def test_experiment_status_preserves_registered_step_io_metadata(tmp_path):
     assert _workspace_files(root) == before
     step_path = root / "steps" / recipe_payload["step"]["id"] / "step.yaml"
     step_manifest = yaml.safe_load(step_path.read_text())
-    assert step_manifest["step"]["inputs"] == ["config.yaml"]
-    assert step_manifest["step"]["outputs"] == ["reports/ranking.csv"]
-
     step_manifest["step"]["purpose"] = "Different purpose."
     step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
     with pytest.raises(ValueError, match="step metadata differs"):

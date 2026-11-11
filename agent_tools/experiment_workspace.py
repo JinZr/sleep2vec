@@ -4,7 +4,7 @@ Layer 0 leaf, and the workspace facade. Owns ``run_manifest.tsv`` -- the
 lifecycle owner for run status -- its managed run lock, the frozen run,
 scheduler, process, and runtime-provenance identity field sets, the phase and
 status vocabularies, and the one-way step ``plan_controller`` binding that
-moves a step from unassigned to ordinary when its first plan registers.
+makes a step ordinary when its first plan registers.
 
 ``research_log`` publishes behind this facade rather than writing to the
 workspace directly.
@@ -48,7 +48,7 @@ class StepManifest(TypedDict):
 
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
-PLAN_CONTROLLERS = {"unassigned", "ordinary"}
+PLAN_CONTROLLERS = {"ordinary"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
 SUCCESS_STATUSES = frozenset({"completed", "finished"})
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
@@ -142,7 +142,6 @@ def experiment_metadata_issues(
     *,
     require_values: bool = True,
     source_layer: str | None = None,
-    allow_step_io: bool = False,
 ) -> list[dict[str, Any]]:
     experiment = recipe.get("experiment")
     step = recipe.get("step")
@@ -228,10 +227,7 @@ def experiment_metadata_issues(
                 }
             )
         return issues
-    step_fields = {"id", "phase", "purpose"}
-    if allow_step_io:
-        step_fields.update({"inputs", "outputs"})
-    for field in sorted(set(step) - step_fields):
+    for field in sorted(set(step) - {"id", "phase", "purpose"}):
         issues.append(
             {
                 "status": "FAIL",
@@ -451,21 +447,9 @@ def merge_step_manifest(
         if path not in plans:
             plans.append(path)
 
-    existing_controller = existing.get("plan_controller")
-    incoming_controller = incoming.get("plan_controller")
-    if existing_controller not in (None, "", "unassigned") and incoming_controller not in (
-        None,
-        "",
-        existing_controller,
-    ):
-        raise ValueError("Step plan_controller differs from the existing step manifest.")
-    if existing_controller in (None, "", "unassigned"):
-        controller = incoming_controller or existing_controller or ""
-    else:
-        controller = existing_controller
+    # Both payloads were checked against PLAN_CONTROLLERS above, so a set controller cannot differ.
+    controller = existing.get("plan_controller") or incoming.get("plan_controller") or ""
     recipe_path = existing.get("recipe_path") or incoming.get("recipe_path") or ""
-    if controller == "unassigned" and (recipe_path or plans):
-        raise ValueError("Unassigned step manifests cannot register a recipe or plan.")
 
     return {
         "step": merged_step,
@@ -482,11 +466,7 @@ def _validated_step_manifest(text: str, path: Path, step_id: str) -> dict[str, A
     if normalized != payload:
         raise ValueError(f"Managed step manifest has an incomplete canonical envelope: {path}")
     step = payload["step"]
-    step_issues = experiment_metadata_issues(
-        {"step": step},
-        require_values=False,
-        allow_step_io=True,
-    )
+    step_issues = experiment_metadata_issues({"step": step}, require_values=False)
     if step_issues:
         raise ValueError(
             f"Managed step manifest has invalid step metadata: {path}: "
@@ -934,15 +914,6 @@ def resolve_run_row(rows: Sequence[_Row], evidence: Mapping[str, Any]) -> _Row |
             return matched
 
     return None
-
-
-def resolve_external_run_row(rows: Sequence[_Row], evidence: Mapping[str, Any]) -> _Row | None:
-    if evidence.get("experiment_id") in (None, ""):
-        return resolve_run_row(rows, {"version": evidence.get("version")})
-    matched = resolve_run_row(rows, evidence)
-    if matched is None or str(matched.get("experiment_id") or "") != str(evidence["experiment_id"]):
-        return None
-    return matched
 
 
 def next_run_index(recipe: dict[str, Any]) -> int:

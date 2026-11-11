@@ -216,11 +216,9 @@ def test_finetune_lock_does_not_silently_disable_default_test_after_fit(tmp_path
     assert not (output_dir / "run.sh").exists()
 
 
-@pytest.mark.parametrize("task", ["infer", "evaluate"])
 @pytest.mark.parametrize("external_test_locked", [False, True, None], ids=["unlocked", "locked", "omitted"])
-def test_direct_test_evaluation_requires_external_test_unlock(
-    tmp_path: Path, task: str, external_test_locked: bool | None
-):
+def test_direct_test_evaluation_requires_external_test_unlock(tmp_path: Path, external_test_locked: bool | None):
+    task = "infer"
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("checkpoint")
     config = yaml.safe_load(write_finetune_recipe(tmp_path).read_text())["inputs"]["config"]

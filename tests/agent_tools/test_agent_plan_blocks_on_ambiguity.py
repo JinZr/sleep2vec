@@ -673,80 +673,6 @@ def test_hparam_blocked_plan_retry_rejects_same_output_dir_even_with_overwrite(t
     assert not (blocked_dir / "runs").exists()
 
 
-def test_context_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
-    _recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
-    output_dir = tmp_path / "context"
-
-    result = run_cli(
-        "context",
-        "--task",
-        "finetune",
-        "--variant",
-        "sleep2vec",
-        "--label-name",
-        "incident_cox",
-        "--config",
-        str(config),
-        "--output-dir",
-        str(output_dir),
-    )
-
-    assert result.returncode in {1, 2}
-    assert not (output_dir / "decisions.yaml").exists()
-    assert (output_dir / "commands.blocked.sh").exists()
-    assert not (output_dir / "commands.sh").exists()
-    context = json.loads((output_dir / "context.json").read_text())
-    assert any("survival key values missing from sidecars" in issue for issue in context["blocking_issues"])
-
-
-def test_context_writes_questions_and_blocked_script(tmp_path: Path):
-    config = yaml.safe_load(write_finetune_recipe(tmp_path).read_text())["inputs"]["config"]
-    output_dir = tmp_path / "context"
-
-    result = run_cli("context", "--task", "finetune", "--config", config, "--output-dir", str(output_dir))
-
-    assert result.returncode == 2
-    assert (output_dir / "questions.md").exists()
-    assert (output_dir / "commands.blocked.sh").exists()
-    assert not (output_dir / "commands.sh").exists()
-    context = json.loads((output_dir / "context.json").read_text())
-    assert context["skill"]["name"] == "finetuning"
-    assert "runtime-orchestrator" in context["owners"]
-    assert context["relevant_docs"] == ["doc/code_index/WORKFLOWS.md"]
-    assert context["index_summary"]["rows"] == 1
-    assert context["preset_summary"] is None
-    assert context["expected_artifacts"]
-
-
-def test_context_writes_questions_for_mixed_fail_and_user_input(tmp_path: Path):
-    recipe = write_finetune_recipe(tmp_path, include_label=False)
-    config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
-    payload = yaml.safe_load(config.read_text())
-    payload["data"]["finetune_data_index"] = None
-    payload["data"]["finetune_preset_path"] = str(tmp_path / "missing preset.pkl")
-    write_yaml(config, payload)
-    output_dir = tmp_path / "context"
-
-    result = run_cli(
-        "context",
-        "--task",
-        "finetune",
-        "--variant",
-        "sleep2vec",
-        "--config",
-        str(config),
-        "--output-dir",
-        str(output_dir),
-    )
-
-    assert result.returncode == 1
-    context = json.loads((output_dir / "context.json").read_text())
-    assert context["consultation_required"] is True
-    assert (output_dir / "questions.md").exists()
-    assert (output_dir / "commands.blocked.sh").exists()
-    assert not (output_dir / "commands.sh").exists()
-
-
 def test_plan_blocks_user_decision_test_after_fit_when_finetune_lock_stays_resolved(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     decisions = write_yaml(
@@ -762,18 +688,6 @@ def test_plan_blocks_user_decision_test_after_fit_when_finetune_lock_stays_resol
     assert result.returncode == 2
     assert "test_after_fit=true would evaluate test" in result.stdout
     assert not (output_dir / "run.sh").exists()
-
-
-def test_context_without_workspace_writes_blocked_script(tmp_path: Path):
-    output_dir = tmp_path / "context"
-
-    result = run_cli("context", "--task", "pretrain", "--variant", "sleep2vec", "--output-dir", str(output_dir))
-
-    assert result.returncode == 1
-    assert "Unsupported task: pretrain" in json.loads((output_dir / "context.json").read_text())["blocking_issues"]
-    assert (output_dir / "commands.blocked.sh").exists()
-    assert not (output_dir / "commands.sh").exists()
-    assert not (output_dir / "validation.sh").exists()
 
 
 def test_importing_decisions_does_not_import_torch_or_lightning(monkeypatch):

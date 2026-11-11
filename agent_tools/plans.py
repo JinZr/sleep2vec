@@ -1,4 +1,4 @@
-"""Recipe evaluation, doctor reports, context bundles, and frozen plan publication.
+"""Recipe evaluation, doctor reports, and frozen plan publication.
 
 Layer 2 kernel. Adds authored/base/local layer orchestration and
 policy-dependent decision validation on top of the structural contract in
@@ -6,9 +6,6 @@ policy-dependent decision validation on top of the structural contract in
 lock.
 
 ``doctor`` reports consultation results without publishing runnable commands.
-On a passing report, ``build_context`` also emits ``recommended_commands`` and
-an executable ``commands.sh`` in its output directory. These are
-diagnostic outputs, not a frozen registered plan or authorization to execute.
 """
 
 from __future__ import annotations
@@ -16,7 +13,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 import copy
-import csv
 from dataclasses import dataclass
 import hashlib
 import json
@@ -35,18 +31,13 @@ from . import (
     configs,
     decision_rules as task_rules,
     experiment_io as exp_io,
-    experiment_workspace,
     plan_context as context,
     plan_contract,
-    plan_rendering as rendering,
-    repo as repo_tools,
     run_artifacts as artifacts,
-    run_evidence,
     schema_map,
 )
 from .adapters.base import TaskAdapter
 from .adapters.registry import SUPPORTED_TASKS, composite_adapter, get_adapter
-from .configs import config_summary
 from .decision_models import USER_DECISIONS_FILENAME
 from .decisions import (
     DecisionIssue,
@@ -74,7 +65,6 @@ from .experiment_workspace import (
     plan_registration_rows_state,
     read_experiment_events,
     read_registered_steps,
-    read_run_manifest,
     read_step_manifest,
     validate_existing_experiment_manifest,
     validate_plan_output,
@@ -82,7 +72,6 @@ from .experiment_workspace import (
 from .manifests import read_json, write_json, write_text
 from .markdown import questions_markdown, questions_payload
 from .models import (
-    REPO_ROOT,
     YAML_SAFE_LOADER,
     BoundFinalEvalConfigSnapshot,
     ConfigSummaryInput,
@@ -946,128 +935,6 @@ def write_doctor_outputs(
         return write_user_decision_template(out, recipe, report, preserve_existing=True)
 
 
-def build_context(
-    *,
-    task: str,
-    config: str | Path | None,
-    output_dir: str | Path,
-    label_name: str | None = None,
-    variant: str | None = None,
-    user_decisions_path: str | Path | None = None,
-) -> DecisionReport:
-    recipe: dict[str, Any] = {
-        "name": Path(str(output_dir)).name,
-        "task": task,
-        "variant": variant,
-        "inputs": {"config": str(config) if config else None, "label_name": label_name},
-        "evaluation_policy": {},
-        "artifacts": {"output_dir": str(output_dir)},
-    }
-    source_recipe = copy.deepcopy(recipe)
-    policy = load_consultation_policy()
-    user_decisions = load_user_decisions(user_decisions_path)
-    contract_issues = consultation_contract_issues(
-        task,
-        {"decisions": user_decisions},
-        policy,
-        source_layer="user",
-    )
-    if contract_issues:
-        return DecisionReport(status=merge_status(contract_issues), issues=contract_issues, decisions={})
-    recipe_decisions_value = recipe.get("decisions")
-    recipe_decisions = recipe_decisions_value if isinstance(recipe_decisions_value, dict) else {}
-    materialization_issues = _materialize_decisions(recipe, recipe_decisions)
-    materialization_issues.extend(_materialize_decisions(recipe, user_decisions, user_supplied=True))
-    _materialize_task_defaults(recipe, policy, user_decisions)
-    effective_config = (recipe.get("inputs") or {}).get("config")
-    cfg = config_summary(effective_config, variant=variant) if effective_config else None
-    recipe_adapter = get_adapter(task)
-    binding_issues = (
-        recipe_adapter.bind_effective_recipe(recipe, cfg, source_recipe=source_recipe)
-        if recipe_adapter is not None
-        else []
-    )
-    _normalize_runtime_commit(recipe)
-    report = evaluate_consultation_gates(
-        task,
-        recipe,
-        cfg,
-        {"label_name": label_name, "user_decisions": user_decisions},
-        policy,
-        require_experiment=True,
-    )
-    report = _append_issues(report, materialization_issues)
-    report = _append_issues(report, binding_issues)
-    out = Path(output_dir)
-    if report.exit_code == 0:
-        workspace_issue = validate_plan_output(recipe, out)
-        if workspace_issue:
-            report = _append_issues(
-                report,
-                [DecisionIssue(DecisionStatus.FAIL, "experiment.root", workspace_issue, None, {})],
-            )
-    index_payload = context.context_index_summary(recipe, cfg)
-    report = _append_issues(
-        report,
-        context.index_summary_issues(recipe, cfg, index_payload=index_payload),
-    )
-    commands = _commands_for_recipe(recipe, cfg) if report.exit_code == 0 else []
-    if report.exit_code == 0 and not commands:
-        report = _unsupported_command_report(report, task)
-    report = _guard_existing_outputs(
-        report,
-        context.planned_context_paths(out, report),
-        _overwrite_policy(recipe),
-        root=out,
-    )
-    if _has_output_artifact_issue(report):
-        return report
-    skill, relevant_docs = context.skill_context(task)
-    payload: context.ContextPayload = {
-        "task": task,
-        "status": report.status.value,
-        "can_generate_commands": report.exit_code == 0,
-        "consultation_required": any(issue.status == DecisionStatus.NEEDS_USER_INPUT for issue in report.issues),
-        "questions": questions_payload(report),
-        "repo": repo_tools.repo_summary(),
-        "skill": skill,
-        "owners": skill.get("owners", []),
-        "relevant_docs": relevant_docs,
-        "inputs": recipe["inputs"],
-        "config_summary": cfg,
-        "index_summary": index_payload,
-        "preset_summary": context.context_preset_summary(recipe, cfg),
-        "expected_artifacts": context.expected_context_artifacts(recipe, cfg, out, report),
-        "recommended_commands": commands if report.exit_code == 0 else [],
-        "validation_commands": context.validation_commands(recipe),
-        "warnings": [issue.message for issue in report.issues if issue.status == DecisionStatus.WARN],
-        "blocking_issues": [issue.message for issue in report.blocking_issues()],
-    }
-    write_json(out / "context.json", payload)
-    write_text(out / "context.md", context.context_markdown(payload))
-    if report.blocking_issues():
-        _write_questions(out, report)
-        write_text(out / "commands.blocked.sh", rendering.blocked_script(), executable=True)
-    elif report.exit_code == 0:
-        write_text(
-            out / "commands.sh",
-            "\n".join(
-                rendering.script_lines(
-                    _commands_for_recipe(recipe, cfg),
-                    run_cwd=REPO_ROOT,
-                )
-            )
-            + "\n",
-            executable=True,
-        )
-        write_text(
-            out / "validation.sh",
-            "\n".join(rendering.script_lines(context.validation_commands(recipe), run_cwd=REPO_ROOT)) + "\n",
-            executable=True,
-        )
-    return report
-
-
 def _validate_bound_recipe(
     cfg: ConfigSummaryInput | None,
     report: DecisionReport,
@@ -1829,76 +1696,6 @@ def preflight_plan(
             unlock_final_test=unlock_final_test,
         )
     return recipe, cfg, report
-
-
-def collect_runs(root: str | Path, metric: str | None, output: str | Path) -> None:
-    """Write a local CSV summary of the canonical run_manifest.tsv rows at root.
-
-    Reads only registered runtime paths, without discovering runs or refreshing
-    lifecycle state. Each row combines recorded metadata with runtime manifest
-    fields and a local W&B summary. For metric, an existing runtime metrics entry
-    wins over the W&B value, even if null; W&B fields also use a wandb. prefix.
-    W&B summary loading failures yield no summary, while invalid runtime
-    manifests and unhandled input errors propagate.
-
-    Expands '~' in output and anchors relative outputs to the current directory.
-    Rejects unsafe output paths and aliases of the canonical manifest. After
-    collecting inputs, creates parents and overwrites the CSV; an empty manifest
-    produces a version-only header. Returns None. This export does not validate
-    successful completion, select candidates or update canonical status. Input
-    collection failures leave the output untouched; write failures may leave a
-    partial CSV.
-    """
-    rows: list[dict[str, Any]] = []
-    root_path = Path(root)
-    output_path = Path(output).expanduser()
-    if not output_path.is_absolute():
-        output_path = Path.cwd() / output_path
-    canonical_manifest = root_path / "run_manifest.tsv"
-    if output_path.resolve() == canonical_manifest.resolve() or (
-        output_path.exists() and canonical_manifest.exists() and output_path.samefile(canonical_manifest)
-    ):
-        raise ValueError("collect-runs output cannot overwrite canonical run_manifest.tsv.")
-    # The report may live outside the experiment, so validate its complete absolute topology from the filesystem root.
-    exp_io.validate_managed_output_paths(Path(output_path.anchor), [output_path])
-    with experiment_workspace.managed_run_lock(root_path):
-        managed_rows = read_run_manifest(root_path)
-    for managed in managed_rows:
-        runtime_dir = Path(managed["runtime_dir"]) if managed.get("runtime_dir") else None
-        manifest = run_evidence.find_run_manifest(managed)
-        data = read_json(manifest) if manifest is not None else {}
-        wandb_summary = _wandb_summary_for_run(runtime_dir) if runtime_dir is not None else {}
-        row = {
-            "kind": "managed_run",
-            **managed,
-            "best checkpoint": data.get("best_model_path"),
-            "best monitor": data.get("monitor"),
-            "monitor mode": data.get("monitor_mode"),
-            "epoch": data.get("epoch"),
-            "timestamps": data.get("finished_at_utc") or data.get("created_at_utc"),
-        }
-        if metric:
-            row[metric] = (data.get("metrics") or {}).get(metric, wandb_summary.get(metric))
-        for key, value in wandb_summary.items():
-            row[f"wandb.{key}"] = value
-        rows.append(row)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = sorted({key for row in rows for key in row}) if rows else ["version"]
-    with output_path.open("w", newline="") as file_obj:
-        writer = csv.DictWriter(file_obj, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _wandb_summary_for_run(run_dir: Path) -> dict[str, Any]:
-    candidates = sorted(run_dir.glob("wandb/*/files/wandb-summary.json"))
-    if not candidates:
-        return {}
-    try:
-        data = yaml.load(candidates[-1].read_text(), Loader=YAML_SAFE_LOADER)
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _commands_for_recipe(recipe: dict, cfg: ConfigSummaryInput | None = None) -> list[str]:

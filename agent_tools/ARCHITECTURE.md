@@ -78,11 +78,11 @@ plan-owned config bytes. The hparam adapter's hook delegates to
 `run_artifacts` calls directly.
 
 `experiment_workspace` owns managed manifests, the run-manifest lock, and the
-one-way step `plan_controller` binding that moves a step from unassigned to
-ordinary when its first plan registers. `research_log` owns append-only semantic note validation, rendering, and
-CAS publication behind the workspace facade. `experiment_sources` owns W&B and
-checkpoint evidence acquisition; `experiment_tracking` consumes those sources
-for projections, status advice, and ranking validation. Recipe fields are only
+one-way step `plan_controller` binding that makes a step ordinary when its
+first plan registers. `research_log` owns append-only semantic note validation, rendering, and
+CAS publication behind the workspace facade. `experiment_sources` owns
+checkpoint evidence validation; `experiment_tracking` re-exports it and owns
+projections, status advice, and hparam ranking validation. Recipe fields are only
 consistency guards, while `run_manifest.tsv` remains the lifecycle owner.
 
 `managed_scheduler` owns backend selection plus the reusable direct
@@ -98,7 +98,7 @@ normalization, compute-wrapper execution, and cancellation primitives.
 ### Domain — sleep2vec-specific
 `domain/` (sidecar_summaries, finetune_summary, sex_age_summary, presets,
 index_csv) and the per-task adapters
-sleep2stat / preset_prepare / finetune / infer_evaluate / hparam_tune /
+sleep2stat / preset_prepare / finetune / infer / hparam_tune /
 embedding_extraction.
 
 ### Mixed bridges (8) — generic orchestration with tolerated domain coupling
@@ -110,26 +110,25 @@ embedding_extraction.
 | `decision_paths` | survival / multilabel sidecar validation and the sex_age_baseline pretrained-backbone rejection (highest domain signal among L0). |
 | `decision_hparam` | hparam decision contract; depends on decision_paths' multilabel and sex_age_baseline backbone checks. |
 | `plan_hparam` | hparam plan materialization over the domain-aware primitives. |
-| `plan_context` | Imports `domain.presets` + `domain.index_csv`. |
+| `plan_context` | Imports `domain.index_csv`. |
 | `cli` | Forwards domain commands. |
 
 The guard freezes this set: adding a module here requires updating `layering.py`
 and this table, so a module can't silently slide into "mixed".
 
-## CLI command triage (29 subcommands)
+## CLI command triage (23 subcommands)
 
 `test_agent_tools_cli_contract.py` freezes the command names and checks this
 three-way ownership partition against the parser, including counts and duplicates.
 
-- **Kernel (22)**: repo-summary, runtime-sync, collect-runs, hparam-launch, infer-launch, infer-stop,
+- **Kernel (17)**: repo-summary, runtime-sync, hparam-launch, infer-launch, infer-stop,
   preset-launch, preset-stop,
   hparam-run-queue,
   hparam-monitor, hparam-stop, hparam-select,
   progress, experiment-init, experiment-note,
-  experiment-register-step, experiment-finalize, experiment-wandb-sync,
-  experiment-index-checkpoints, experiment-monitor, experiment-status, experiment-rank.
+  experiment-finalize, experiment-monitor, experiment-status.
 - **Domain (3)**: config-summary, index-summary, preset-summary.
-- **Mixed (4)**: skills, doctor, context, plan — generic orchestration whose
+- **Mixed (3)**: skills, doctor, plan — generic orchestration whose
   domain knowledge is injected through adapters.
 
 ## Reverse edges (kernel/mixed → domain)
@@ -142,8 +141,7 @@ The same guard scans every `adapters/` module and rejects imports into the
 | Source → Target | Layer | Why tolerated | Future removal |
 |---|---|---|---|
 | `configs → domain.finetune_summary` | mixed → domain | configs shell delegates the generic finetune summary body | Would need a `config_providers` entry for the finetune-family summary |
-| `plan_context → domain.presets` | L2 → domain | preset summary in plan context; task-independent with one implementation, adapters vary only its inputs via `effective_preset_path` | None planned: a per-task hook would only forward to the same function |
-| `plan_context → domain.index_csv` | L2 → domain | index summary in plan context; task-independent with one implementation, adapters vary only its inputs via `index_summary_inputs_override` | None planned: a per-task hook would only forward to the same function |
+| `plan_context → domain.index_csv` | L2 → domain | index summary at plan time; task-independent with one implementation, adapters vary only its inputs via `index_summary_inputs_override` | None planned: a per-task hook would only forward to the same function |
 | `cli → domain.presets` | mixed → domain | `preset-summary` command | Domain CLI split |
 | `cli → domain.index_csv` | mixed → domain | `index-summary` command | Domain CLI split |
 | `domain.index_csv → configs` | domain → mixed | index_csv is a config-summary consumer, not a leaf; configs never imports it back, so the edge is one-way | Would need index summary to take config_summary as an argument |

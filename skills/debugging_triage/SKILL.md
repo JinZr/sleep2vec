@@ -45,7 +45,7 @@ before deciding whether another attempt is appropriate.
 
 An evidence-backed diagnosis that distinguishes confirmed failures, possible
 causes, and remaining unknowns. Include questions only for unresolved decisions
-that actually require user input; a context bundle is optional diagnostic evidence.
+that actually require user input; a `doctor` report is optional diagnostic evidence.
 
 ## Validation gates
 

@@ -549,7 +549,7 @@ def test_user_decision_file_requires_decisions_mapping_before_output(tmp_path: P
 
 def test_user_task_cannot_override_explicit_recipe_task(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
-    decisions = _write_decisions(tmp_path, {"task": {"value": "evaluate", "source": "explicit_user"}})
+    decisions = _write_decisions(tmp_path, {"task": {"value": "infer", "source": "explicit_user"}})
 
     effective, _cfg, report = evaluate_recipe(recipe, decisions)
 
@@ -664,7 +664,7 @@ def test_doctor_writes_task_template_for_explicit_ask_user_sentinel(tmp_path: Pa
         "value": "ASK_USER",
         "source": "explicit_user",
         "question": (
-            "Which task should be performed: preset_prepare, finetune, infer, evaluate, "
+            "Which task should be performed: preset_prepare, finetune, infer, "
             "hparam_tune, sleep2stat, or embedding_extraction?"
         ),
     }

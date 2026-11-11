@@ -724,7 +724,7 @@ def test_plan_uses_index_path_as_missing_source_fallback(tmp_path: Path):
     assert report.exit_code == 0
 
 
-@pytest.mark.parametrize("task", ["finetune", "infer", "evaluate"])
+@pytest.mark.parametrize("task", ["finetune", "infer"])
 def test_other_model_tasks_keep_unresolved_config_in_consultation(tmp_path: Path, task: str):
     recipe, plan_dir, payload = _write_recipe(tmp_path)
     payload.update({"task": task, "inputs": {"config": "ASK_USER"}})

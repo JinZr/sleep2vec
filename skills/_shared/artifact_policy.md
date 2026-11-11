@@ -10,4 +10,4 @@ and the current canonical manifests before acting. Append an evidence-backed
 decision, conclusion, or correction—not for unchanged monitor polls.
 `run_manifest.tsv` remains the only lifecycle owner.
 
-Diagnostic-only context bundles may still use ignored `artifacts/agent_context/` paths.
+Diagnostic-only `doctor --output-dir` reports may still use ignored `artifacts/agent_context/` paths.

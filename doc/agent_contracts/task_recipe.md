@@ -112,8 +112,7 @@ commands. Missing, ambiguous, conflicting, or `ASK_USER` high-impact decisions
 require user input, not an inferred value recorded as explicit. For hparam
 selection this includes the split, metric, and mode. Resolve generated questions
 through [user decisions](user_decisions.md); a blocked-plan retry uses a fresh
-output directory. [Context bundles](context_bundle.md) are diagnostic-only and
-do not authorize runnable commands.
+output directory.
 
 `doctor` emits its PID and synchronous phase on stderr before potentially slow
 probes. For an unblocked hparam recipe it separately reports the target host,
@@ -179,7 +178,7 @@ canonicalization, step registration, and lifecycle ownership belong to
 | `sleep2stat` | omitted or `null` | `python -m sleep2stat` |
 | `preset_prepare` | `sleep2vec`, `sleep2vec2`, `sleep2expert` | package-local `preprocess/save_dataset_presets.py` |
 | `finetune`, `hparam_tune` | `sleep2vec`, `sleep2vec2`, `sleep2expert`, `sex_age_baseline` | `<variant>.finetune` |
-| `infer`, `evaluate` | `sleep2vec`, `sleep2vec2`, `sleep2expert`, `sex_age_baseline` | `<variant>.infer` |
+| `infer` | `sleep2vec`, `sleep2vec2`, `sleep2expert`, `sex_age_baseline` | `<variant>.infer` |
 | `embedding_extraction` | `sleep2vec`, `sleep2vec2`, `sleep2expert` | `<variant>.extract_embeddings` |
 
 Preset preparation routes each variant to its package-local script. Variant
@@ -258,7 +257,7 @@ it never substitutes the status reader's host environment.
 
 ## Non-hparam runtime identity
 
-`preset_prepare`, `infer`, and `evaluate` accept `execution.python` and
+`preset_prepare` and `infer` accept `execution.python` and
 `execution.runtime_commit`. Declaring either turns the otherwise-common
 `execution.workdir` into an all-or-none local/default-local runtime identity.
 Python is one executable name or path without whitespace, arguments, or `~`
@@ -339,7 +338,7 @@ restart them.
 
 ### Managed ordinary inference
 
-Ordinary `infer` and `evaluate` plans may declare `execution.scheduler.type:
+Ordinary `infer` plans may declare `execution.scheduler.type:
 slurm`. They reuse the existing single-node Slurm resource fields and protected
 environment rules in [Launch and queue](hparam_workflow.md#launch-and-queue), with explicit
 `execution.workdir`, `execution.python`, and a full 40-character planned/baseline

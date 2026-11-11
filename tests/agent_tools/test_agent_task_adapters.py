@@ -29,7 +29,6 @@ ALL_TASKS = (
     "embedding_extraction",
     "preset_prepare",
     "infer",
-    "evaluate",
     "finetune",
     "hparam_tune",
 )

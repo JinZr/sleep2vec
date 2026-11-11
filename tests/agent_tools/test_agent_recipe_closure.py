@@ -184,18 +184,20 @@ def test_recipe_rejects_unknown_fields_in_existing_owner_sections(
     assert issue.evidence["preflight_before_workspace"] is True
 
 
-def test_recipe_rejects_unregistered_task_at_the_recipe_boundary(tmp_path: Path):
+# evaluate was a removed alias of infer; it must stay an unknown task rather than route anywhere.
+@pytest.mark.parametrize("task", ["not_registered", "evaluate"])
+def test_recipe_rejects_unregistered_task_at_the_recipe_boundary(tmp_path: Path, task: str):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
-    payload["task"] = "not_registered"
-    payload["decisions"]["task"] = {"value": "not_registered", "source": "explicit_recipe"}
+    payload["task"] = task
+    payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
     _recipe, _cfg, report = evaluate_recipe(recipe)
 
     issue = next(issue for issue in report.blocking_issues() if issue.field == "task")
     assert report.exit_code == 1
-    assert issue.message == "Unsupported task: not_registered"
+    assert issue.message == f"Unsupported task: {task}"
     assert issue.evidence["source_layer"] == "effective"
     assert issue.evidence["preflight_before_workspace"] is True
 
@@ -292,15 +294,9 @@ def test_non_identity_tasks_accept_absolute_execution_workdir(tmp_path: Path, ta
     assert all(issue.field != "execution.workdir" for issue in report.blocking_issues())
 
 
-@pytest.mark.parametrize("task", ["infer", "evaluate"])
-def test_infer_evaluate_accepts_complete_execution_identity(tmp_path: Path, task: str):
+def test_infer_accepts_complete_execution_identity(tmp_path: Path):
     recipe = _write_infer_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
-    payload["task"] = task
-    payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
-    if task == "evaluate":
-        payload["evaluation_policy"]["final_test_unlocked"] = True
-        payload["decisions"]["final_eval_unlock"] = {"value": True, "source": "explicit_recipe"}
     payload["execution"] = {
         "target": "local",
         "workdir": str(tmp_path / "runtime"),
@@ -314,15 +310,9 @@ def test_infer_evaluate_accepts_complete_execution_identity(tmp_path: Path, task
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
 
 
-@pytest.mark.parametrize("task", ["infer", "evaluate"])
-def test_infer_evaluate_accepts_workdir_without_runtime_identity(tmp_path: Path, task: str):
+def test_infer_accepts_workdir_without_runtime_identity(tmp_path: Path):
     recipe = _write_infer_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
-    payload["task"] = task
-    payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
-    if task == "evaluate":
-        payload["evaluation_policy"]["final_test_unlocked"] = True
-        payload["decisions"]["final_eval_unlock"] = {"value": True, "source": "explicit_recipe"}
     payload["execution"] = {"workdir": str(tmp_path / "runtime")}
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
@@ -677,7 +667,7 @@ def test_infer_configured_relative_index_is_summarized_from_execution_workdir(tm
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
 
 
-@pytest.mark.parametrize("task", ["infer", "evaluate", "preset_prepare"])
+@pytest.mark.parametrize("task", ["infer", "preset_prepare"])
 @pytest.mark.parametrize("missing_field", ["python", "runtime_commit", "workdir"])
 def test_execution_identity_is_all_or_none(tmp_path: Path, task: str, missing_field: str):
     recipe = _write_infer_recipe(tmp_path)
@@ -949,37 +939,6 @@ def test_user_decision_file_has_a_closed_task_aware_contract(tmp_path: Path, pay
 
     assert result.returncode == 1
     assert field in result.stdout + result.stderr
-
-
-def test_context_rejects_invalid_user_decisions_before_writing_bundle(tmp_path: Path):
-    recipe = write_finetune_recipe(tmp_path / "source")
-    config = yaml.safe_load(recipe.read_text())["inputs"]["config"]
-    decisions = tmp_path / "decisions.yaml"
-    decisions.write_text(
-        yaml.safe_dump(
-            {"decisions": {"unknown_decision": {"value": True, "source": "explicit_user"}}},
-            sort_keys=False,
-        )
-    )
-    output_dir = tmp_path / "context"
-
-    result = run_cli(
-        "context",
-        "--task",
-        "finetune",
-        "--variant",
-        "sleep2vec",
-        "--config",
-        str(config),
-        "--user-decisions",
-        str(decisions),
-        "--output-dir",
-        str(output_dir),
-    )
-
-    assert result.returncode == 1
-    assert "unknown_decision" in result.stdout + result.stderr
-    assert not output_dir.exists()
 
 
 def test_plan_closure_failure_does_not_create_or_mutate_workspace(tmp_path: Path):

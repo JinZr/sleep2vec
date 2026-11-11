@@ -166,7 +166,7 @@ def test_experiment_status_human_output_scopes_same_code_blockers(tmp_path):
                 {
                     "step": {"id": step_id, "phase": "evaluate", "purpose": f"Run {step_id}."},
                     "experiment_id": "status-unit",
-                    "plan_controller": "unassigned",
+                    "plan_controller": "ordinary",
                     "recipe_path": "",
                     "plans": [],
                 },

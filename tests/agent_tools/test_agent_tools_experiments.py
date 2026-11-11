@@ -11,7 +11,7 @@ import threading
 from agent_tool_test_helpers import call_while_run_lock_holder_commits
 import pytest
 
-from agent_tools import experiment_io, experiment_tracking, experiment_workspace, experiments
+from agent_tools import experiment_io, experiment_workspace, experiments
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -35,6 +35,22 @@ def _experiment_spec(tmp_path: Path) -> Path:
         "  rationale: Unit fixture.\n"
     )
     return path
+
+
+def _write_step(root: Path) -> None:
+    step_dir = root / "steps" / "train-model"
+    step_dir.mkdir(parents=True)
+    (step_dir / "step.yaml").write_text(
+        json.dumps(
+            {
+                "step": {"id": "train-model", "phase": "train", "purpose": "Train a candidate."},
+                "experiment_id": "unit",
+                "plan_controller": "ordinary",
+                "recipe_path": "",
+                "plans": [],
+            }
+        )
+    )
 
 
 def _workspace_files(root: Path) -> dict[Path, bytes]:
@@ -254,15 +270,7 @@ def test_experiment_note_appends_correction_without_rewriting_superseded_entry(t
 def test_experiment_note_validates_step_and_run_scope(tmp_path: Path):
     root = tmp_path / "workspace"
     experiments.init_experiment(root, _experiment_spec(tmp_path))
-    step = tmp_path / "step.yaml"
-    step.write_text(
-        "id: train-model\n"
-        "phase: train\n"
-        "purpose: Train a candidate.\n"
-        "inputs: [data]\n"
-        "outputs: [checkpoint]\n"
-    )
-    experiments.register_experiment_step(root, step)
+    _write_step(root)
     (root / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain-model\trun-001\tcompleted\n"
     )
@@ -307,15 +315,7 @@ def test_experiment_note_validates_step_and_run_scope(tmp_path: Path):
 def test_experiment_note_rejects_same_id_with_ambiguously_rendered_run_ids(tmp_path: Path):
     root = tmp_path / "workspace"
     experiments.init_experiment(root, _experiment_spec(tmp_path))
-    step = tmp_path / "step.yaml"
-    step.write_text(
-        "id: train-model\n"
-        "phase: train\n"
-        "purpose: Train a candidate.\n"
-        "inputs: [data]\n"
-        "outputs: [checkpoint]\n"
-    )
-    experiments.register_experiment_step(root, step)
+    _write_step(root)
     (root / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tstatus\n"
         "unit\ttrain-model\ta`, `b\tcompleted\n"
@@ -495,15 +495,7 @@ def test_experiment_note_rejects_invalid_closed_schema_without_writing(
 def test_experiment_note_rejects_aliased_scoped_step_before_reading_it(tmp_path: Path):
     root = tmp_path / "workspace"
     experiments.init_experiment(root, _experiment_spec(tmp_path))
-    step = tmp_path / "step.yaml"
-    step.write_text(
-        "id: train-model\n"
-        "phase: train\n"
-        "purpose: Train a candidate.\n"
-        "inputs: [data]\n"
-        "outputs: [checkpoint]\n"
-    )
-    experiments.register_experiment_step(root, step)
+    _write_step(root)
     step_manifest = root / "steps" / "train-model" / "step.yaml"
     step_manifest.unlink()
     os.link(root / "run_manifest.tsv", step_manifest)
@@ -767,31 +759,6 @@ def test_experiment_mutation_rejects_duplicate_workspace_ownership_without_writi
     assert _workspace_files(tmp_path) == before
 
 
-@pytest.mark.parametrize(
-    ("filename", "header", "operation"),
-    [
-        ("metrics_manifest.tsv", "trial_id\n", "index"),
-        ("checkpoint_manifest.tsv", "run_id\n", "rank"),
-    ],
-)
-def test_experiment_mutation_rejects_header_only_invalid_managed_table_before_writing(
-    tmp_path: Path, filename: str, header: str, operation: str
-):
-    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
-    (tmp_path / filename).write_text(header)
-    before = _workspace_files(tmp_path)
-
-    with pytest.raises(ValueError):
-        if operation == "monitor":
-            experiments.monitor_experiment(tmp_path)
-        elif operation == "index":
-            experiments.index_checkpoints(tmp_path)
-        else:
-            experiments.rank_experiment_candidates(tmp_path, metric="val_auroc", mode="max")
-
-    assert _workspace_files(tmp_path) == before
-
-
 def test_experiment_init_validates_existing_tables_before_writing(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     experiments.init_experiment(tmp_path, spec)
@@ -853,20 +820,9 @@ def test_experiment_finalize_rejects_report_alias_before_writing(tmp_path: Path)
     assert _workspace_files(tmp_path) == before
 
 
-def test_experiment_registers_step_and_finalizes_completed_workspace(tmp_path: Path):
+def test_experiment_finalizes_completed_workspace(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
     assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
-    step = tmp_path.parent / "step.yaml"
-    step.write_text(
-        "id: analyze-results\n"
-        "phase: analyze\n"
-        "purpose: Summarize selected validation results.\n"
-        "inputs: [reports/ranking.csv]\n"
-        "outputs: [reports/final.md]\n"
-    )
-    registered = _run("experiment-register-step", "--run-dir", str(tmp_path), "--spec", str(step))
-    assert registered.returncode == 0, registered.stderr
-    assert (tmp_path / "steps" / "analyze-results" / "step.yaml").exists()
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tfinished\n"
     )
@@ -885,11 +841,11 @@ def test_experiment_registers_step_and_finalizes_completed_workspace(tmp_path: P
     assert "experiment_finalized" not in {event["event_type"] for event in events}
 
 
-@pytest.mark.parametrize("reader", ["status", "finalize_snapshot", "run_rows", "checkpoint_rows"])
+@pytest.mark.parametrize("reader", ["status", "finalize_snapshot"])
 def test_experiment_commands_read_canonical_rows_only_under_run_lock(tmp_path: Path, monkeypatch, reader: str):
     experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
-    # Status needs registered steps and checkpoint scans need artifact paths, so those keep the empty manifest.
-    if reader in {"finalize_snapshot", "run_rows"}:
+    # Status needs registered steps, so it keeps the empty manifest.
+    if reader == "finalize_snapshot":
         (tmp_path / "run_manifest.tsv").write_text(
             "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tcompleted\n"
         )
@@ -902,8 +858,6 @@ def test_experiment_commands_read_canonical_rows_only_under_run_lock(tmp_path: P
     readers = {
         "status": lambda: experiments.experiment_status(tmp_path, remote=None)["runs"],
         "finalize_snapshot": lambda: experiments.finalize_experiment(tmp_path, report),
-        "run_rows": lambda: experiment_tracking.experiment_run_rows(tmp_path),
-        "checkpoint_rows": lambda: experiment_tracking.checkpoint_rows(tmp_path),
     }
 
     result = call_while_run_lock_holder_commits(monkeypatch, tmp_path, readers[reader])
@@ -912,7 +866,7 @@ def test_experiment_commands_read_canonical_rows_only_under_run_lock(tmp_path: P
         assert result == tmp_path / "reports" / "final.md"
         assert "status: completed" in (tmp_path / "experiment.yaml").read_text()
     else:
-        assert [row["run_id"] for row in result] == (["run-000"] if reader == "run_rows" else [])
+        assert result == []
 
 
 def test_experiment_finalize_records_preparation_before_manifest_conflict(tmp_path: Path, monkeypatch):
@@ -973,65 +927,6 @@ def test_interrupted_finalization_preserves_complete_experiment_manifest(tmp_pat
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("experiment_finalization_prepared") == 1
     assert "experiment_finalized" not in {event["event_type"] for event in events}
-
-
-@pytest.mark.parametrize(
-    "existing",
-    [
-        "",
-        "null\n",
-        "{}\n",
-        (
-            "step:\n"
-            "  id: analyze-results\n"
-            "  phase: analyze\n"
-            "  phase: train\n"
-            "  purpose: Summarize selected validation results.\n"
-            "experiment_id: unit\n"
-            "recipe_path: ''\n"
-            "plans: []\n"
-        ),
-    ],
-)
-def test_experiment_register_step_rejects_corrupt_existing_manifest_without_writing(tmp_path: Path, existing: str):
-    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
-    step = tmp_path.parent / "step.yaml"
-    step.write_text(
-        "id: analyze-results\n"
-        "phase: analyze\n"
-        "purpose: Summarize selected validation results.\n"
-        "inputs: [reports/ranking.csv]\n"
-        "outputs: [reports/final.md]\n"
-    )
-    target = tmp_path / "steps" / "analyze-results" / "step.yaml"
-    target.parent.mkdir(parents=True)
-    target.write_text(existing)
-    before = _workspace_files(tmp_path)
-
-    with pytest.raises(ValueError, match="step manifest"):
-        experiments.register_experiment_step(tmp_path, step)
-
-    assert _workspace_files(tmp_path) == before
-
-
-def test_experiment_register_step_rejects_duplicate_spec_keys_before_writing(tmp_path: Path):
-    root = tmp_path / "workspace"
-    experiments.init_experiment(root, _experiment_spec(tmp_path))
-    spec = tmp_path / "duplicate_step.yaml"
-    spec.write_text(
-        "id: analyze-results\n"
-        "phase: train\n"
-        "phase: analyze\n"
-        "purpose: Summarize selected validation results.\n"
-        "inputs: [reports/ranking.csv]\n"
-        "outputs: [reports/final.md]\n"
-    )
-    before = _workspace_files(root)
-
-    with pytest.raises(ValueError, match="duplicate key: phase"):
-        experiments.register_experiment_step(root, spec)
-
-    assert _workspace_files(root) == before
 
 
 def test_experiment_finalize_rejects_missing_pid_status(tmp_path: Path):
@@ -1125,16 +1020,10 @@ def test_experiment_finalize_validates_manifest_before_writing_report(tmp_path: 
     assert not (tmp_path / "reports" / "final.md").exists()
 
 
-def test_experiment_mutations_require_initialized_workspace_before_side_effects(tmp_path: Path, monkeypatch):
-    wandb_calls = []
-    monkeypatch.setattr(experiments.tracking, "wandb_runs", lambda *_args: wandb_calls.append(True) or [])
+def test_experiment_mutations_require_initialized_workspace_before_side_effects(tmp_path: Path):
     actions = (
-        lambda root: experiments.register_experiment_step(root, root / "missing-step.yaml"),
         lambda root: experiments.finalize_experiment(root, root / "missing-report.md"),
-        lambda root: experiments.sync_wandb_runs(root, entity="entity", project="project"),
-        lambda root: experiments.index_checkpoints(root),
         lambda root: experiments.monitor_experiment(root),
-        lambda root: experiments.rank_experiment_candidates(root, metric="val_auroc", mode="max"),
     )
 
     for index, action in enumerate(actions):
@@ -1144,8 +1033,6 @@ def test_experiment_mutations_require_initialized_workspace_before_side_effects(
         with pytest.raises(ValueError, match="experiment.yaml is missing"):
             action(root)
         assert _workspace_files(root) == before
-
-    assert wandb_calls == []
 
 
 def test_experiment_mutation_rejects_empty_legacy_table_without_writing(tmp_path: Path):
@@ -1185,7 +1072,7 @@ def test_experiment_mutation_rejects_experiment_manifest_alias_before_writing(tm
     observation_calls = []
     monkeypatch.setattr(
         experiments.tracking,
-        "experiment_run_rows",
+        "monitor_run_row",
         lambda *_args, **_kwargs: observation_calls.append(True) or [],
     )
     before = _workspace_files(tmp_path)
@@ -1241,56 +1128,6 @@ def test_experiment_monitor_preflights_canonical_outputs_before_observation(tmp_
         experiments.monitor_experiment(tmp_path)
 
     assert observation_calls == []
-    assert _workspace_files(tmp_path) == before
-
-
-@pytest.mark.parametrize(
-    ("operation", "table"),
-    [
-        ("index", "metrics_manifest.tsv"),
-        ("rank", "checkpoint_manifest.tsv"),
-    ],
-)
-def test_experiment_rejects_aliased_evidence_before_scan_or_rank(
-    tmp_path: Path, monkeypatch, operation: str, table: str
-):
-    experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
-    experiment_io.write_rows_at(
-        tmp_path / "run_manifest.tsv",
-        [{"experiment_id": "unit", "step_id": "train-model", "run_id": "run-000", "status": "running"}],
-    )
-    outside = tmp_path / "outside.tsv"
-    if table == "metrics_manifest.tsv":
-        experiment_io.write_rows_at(
-            outside,
-            [{"step_id": "train-model", "run_id": "run-000", "metric": "val_auroc", "value": "0.9"}],
-        )
-    else:
-        experiment_io.write_rows_at(
-            outside,
-            [{"step_id": "train-model", "run_id": "run-000", "checkpoint_path": "/tmp/epoch=1.ckpt"}],
-        )
-    (tmp_path / table).symlink_to(outside)
-    calls = []
-    monkeypatch.setattr(
-        experiments.tracking,
-        "checkpoint_rows",
-        lambda *_args, **_kwargs: calls.append("checkpoint") or [],
-    )
-    monkeypatch.setattr(
-        experiments.tracking,
-        "experiment_run_rows",
-        lambda *_args, **_kwargs: calls.append("rank") or [],
-    )
-    before = _workspace_files(tmp_path)
-
-    with pytest.raises(ValueError, match="independent regular files"):
-        if operation == "index":
-            experiments.index_checkpoints(tmp_path)
-        else:
-            experiments.rank_experiment_candidates(tmp_path, metric="val_auroc", mode="max")
-
-    assert calls == []
     assert _workspace_files(tmp_path) == before
 
 

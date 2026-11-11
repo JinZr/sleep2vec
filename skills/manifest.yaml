@@ -31,7 +31,7 @@ skills:
       - doc/code_index/WORKFLOWS.md
   inference_evaluation:
     path: skills/inference_evaluation/SKILL.md
-    task_types: [infer, evaluate]
+    task_types: [infer]
     owners: [runtime-orchestrator, agent-tooling-maintainer]
     relevant_index:
       - doc/code_index/WORKFLOWS.md

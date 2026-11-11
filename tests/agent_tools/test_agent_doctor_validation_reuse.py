@@ -467,12 +467,11 @@ def test_static_hparam_ownership_blocks_before_heavy_reads(
     recipe_path.write_text(yaml.safe_dump(payload))
     expected = experiment_workspace.experiment_metadata_issues(payload)
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    for name in ("context_index_summary", "context_preset_summary"):
-        monkeypatch.setattr(
-            plan_context,
-            name,
-            lambda *_args, **_kwargs: pytest.fail("Static ownership consultation reached data diagnostics"),
-        )
+    monkeypatch.setattr(
+        plan_context,
+        "context_index_summary",
+        lambda *_args, **_kwargs: pytest.fail("Static ownership consultation reached data diagnostics"),
+    )
     monkeypatch.setattr(
         plans.exp_io,
         "read_managed_output_texts_at",
@@ -978,17 +977,3 @@ def test_doctor_still_validates_sidecar_rows_absent_from_main_index(tmp_path, ki
     assert report.exit_code == 2
     assert cfg["finetune"][kind]["valid"] is False
     assert cfg["finetune"][kind]["issues"]
-
-
-def test_build_context_keeps_its_independent_validation(tmp_path, csv_reads):
-    _sidecar_recipe(tmp_path, "survival")
-
-    plans.build_context(
-        task="finetune",
-        config=tmp_path / "config.yaml",
-        output_dir=tmp_path / "context",
-        label_name="incident_cox",
-        variant="sleep2vec",
-    )
-
-    assert csv_reads == {"event_time.csv": 3, "is_event.csv": 2, "has_label.csv": 2, "index.csv": 1}

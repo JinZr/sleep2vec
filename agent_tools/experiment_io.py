@@ -62,7 +62,7 @@ def blocking_file_lock(path: str | Path) -> Iterator[None]:
 
 
 def mkdir_experiment_dirs(root: Path, *, remote: str | None = None) -> None:
-    dirs = [root / "reports", root / "wandb" / "history"]
+    dirs = [root / "reports"]
     if remote:
         command = "mkdir -p " + " ".join(transport.sh(path) for path in dirs) + " && printf 'true\\n'"
         result = transport.run_ssh(remote, command, text=True, check=True)

@@ -123,9 +123,9 @@ bash utils/style_check.sh
 ## Agent Stop-And-Consult Policy
 Agents must not silently guess high-impact experiment decisions.
 
-Before generating runnable commands for preset preparation, finetuning, inference, evaluation, embedding extraction, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`. `agent_tools context` is diagnostic-only and does not authorize runnable commands.
+Before generating runnable commands for preset preparation, finetuning, inference, evaluation, embedding extraction, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`.
 
-If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. When `doctor --output-dir` or a safely published blocked `plan` emits `decisions.yaml`, fill only user-authorized values and pass that file back with `--user-decisions`. A blocked-plan retry must use a fresh output directory. A doctor retry may reuse its output directory only while the existing `decisions.yaml` already contains every currently requested decision and matches every currently resolved concrete value; newly exposed or changed concrete decisions require a fresh doctor output directory. `context` remains diagnostic-only and does not emit this template. While required decisions remain unresolved, do not generate executable experiment scripts, run training, or evaluate external test data. After consultation passes, follow the publication and launch authorization boundaries below; passing consultation alone does not authorize execution.
+If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. When `doctor --output-dir` or a safely published blocked `plan` emits `decisions.yaml`, fill only user-authorized values and pass that file back with `--user-decisions`. A blocked-plan retry must use a fresh output directory. A doctor retry may reuse its output directory only while the existing `decisions.yaml` already contains every currently requested decision and matches every currently resolved concrete value; newly exposed or changed concrete decisions require a fresh doctor output directory. While required decisions remain unresolved, do not generate executable experiment scripts, run training, or evaluate external test data. After consultation passes, follow the publication and launch authorization boundaries below; passing consultation alone does not authorize execution.
 
 Generated runtime commands must respect recipe `variant`; do not route `sleep2vec2` or `sleep2expert` recipes through root `sleep2vec` entrypoints.
 
@@ -245,9 +245,9 @@ python -m pytest -q tests/runtime/test_checkpoints.py tests/config/test_config_l
 
 #### `agent-tooling-maintainer`
 - Owns: `skills/`, `agent_tools/`, `recipes/`, `agent_policies/`, `doc/agent_contracts/`, and agent-facing workflow examples.
-- Responsibilities: task playbooks, machine-readable recipe schemas, context bundle generation, command-plan generation, managed scheduling, skill validation, run-manifest conventions, agent documentation consistency, stop-and-consult policy enforcement, external-test unlock checks, and a self-documenting `agent_tools` CLI.
+- Responsibilities: task playbooks, machine-readable recipe schemas, consultation diagnostics, command-plan generation, managed scheduling, skill validation, run-manifest conventions, agent documentation consistency, stop-and-consult policy enforcement, external-test unlock checks, and a self-documenting `agent_tools` CLI.
 - CLI help is a contract, not a nicety: agents discover `agent_tools` through `--help`, so a new subcommand needs a one-line summary and every new option needs `help=` text. Register subcommands with `cli._command(sub, name, summary)` so the `--help` listing entry and the subcommand's own description stay in sync. `test_agent_tools_cli_contract.py` fails on a bare `add_parser` or `add_argument`. State the dry-run/execute default and any non-launching guarantee in the summary, since the stop-and-consult policy depends on both.
-- Invoke when: adding or changing agent skills, recipe schemas, context-gathering tools, run-plan generators, consultation policies, user-decision files, or agent-facing documentation.
+- Invoke when: adding or changing agent skills, recipe schemas, consultation diagnostics, run-plan generators, consultation policies, user-decision files, or agent-facing documentation.
 - Must not be split from: `runtime-orchestrator` when the change affects training/inference command semantics; `preset-pipeline` when the change affects preset preparation; `regression-guard` when adding new agent-tool contracts.
 - For localized changes, select the relevant behavioral tests; documentation-only edits need link/command checks and any affected documentation-contract tests.
 - Full integration gate for changes spanning agent-tool contracts or final integration (CI splits this coverage using `.github/workflows/unit_tests.yml`):
@@ -270,7 +270,7 @@ python utils/type_check.py
 - If a task changes model forward paths, head/loss contracts, LoRA, or layer-mix behavior, route first to `model-integration`.
 - If a task changes entrypoints, checkpoints, metrics, callbacks, diagnostics, or inference/export behavior, route first to `runtime-orchestrator`.
 - If a task changes preprocessing scripts or preset generation logic, route first to `preset-pipeline`.
-- If a task changes agent-facing skills, recipes, context bundles, command plans, consultation gates, or user-decision schemas, route first to `agent-tooling-maintainer`.
+- If a task changes agent-facing skills, recipes, command plans, consultation gates, or user-decision schemas, route first to `agent-tooling-maintainer`.
 - If a task touches `sleep2expert/`, `sleep2vec2/`, `configs/sleep2expert/`, or `configs/sleep2vec2/`, require `variant-maintainer` review before completion.
 - If a task changes a contract already covered by tests, or should be covered but is not, involve `regression-guard`.
 

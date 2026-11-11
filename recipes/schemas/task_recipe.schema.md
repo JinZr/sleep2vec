@@ -61,7 +61,7 @@ Every task accepts `name`, `task`, `variant`, `experiment`, `step`, and `decisio
 | task | additional top-level fields |
 | --- | --- |
 | `preset_prepare` | `execution`, `inputs`, `preset` |
-| `finetune`, `infer`, `evaluate` | `artifacts`, `evaluation_policy`, `execution`, `inputs`, `runtime` |
+| `finetune`, `infer` | `artifacts`, `evaluation_policy`, `execution`, `inputs`, `runtime` |
 | `embedding_extraction` | `artifacts`, `evaluation_policy`, `extraction`, `inputs`, `runtime` |
 | `hparam_tune` | `artifacts`, `base_recipe`, `evaluation_policy`, `execution`, `inputs`, `runtime`, `search` |
 | `sleep2stat` | `artifacts`, `evaluation_policy`, `execution`, `inputs`, `runtime` |
@@ -69,38 +69,38 @@ Every task accepts `name`, `task`, `variant`, `experiment`, `step`, and `decisio
 The closed section fields are:
 
 - `experiment`: `id`, `title`, `objective`, `root`, `baseline`. `baseline` remains an opaque description rather than a deeply enumerated schema.
-- Recipe `step`: `id`, `phase`, `purpose`. The separate experiment step-registration command also owns `inputs` and `outputs`; those are not recipe-step fields.
+- Recipe `step`: `id`, `phase`, `purpose`.
 - `inputs`:
   - `preset_prepare`: `config`, `dataset_name`, `index`.
   - `finetune`: `ckpt_path`, `config`, `data_backend`, `label_name`, `pretrained_backbone_path`, `init_checkpoint_path`.
-  - `infer` / `evaluate`: `ckpt_path`, `config`, `data_backend`, `eval_split`, `inference_preset_path`, `label_name`, `override_dataset_names`, `pretrained_backbone_path`.
+  - `infer`: `ckpt_path`, `config`, `data_backend`, `eval_split`, `inference_preset_path`, `label_name`, `override_dataset_names`, `pretrained_backbone_path`.
   - `hparam_tune`: `ckpt_path`, `config`, `data_backend`, `final_eval_config_path`, `inference_preset_path`, `label_name`, `override_dataset_names`, `pretrained_backbone_path`, `init_checkpoint_path`. For hparam recipes, `ckpt_path` selects the final-evaluation checkpoint and is not passed to tuning runs. Optional `init_checkpoint_path` initializes full weights for `sleep2vec2` only; see the [initialization contract](../../doc/agent_contracts/hparam_workflow.md#full-model-weights-only-initialization).
   - `sleep2stat`: `config`, `split`.
   - `embedding_extraction`: `config`, `ckpt_path`, `data_index`, `eval_split`.
 - `runtime`:
   - `finetune`: `accumulate_grad_batches`, `batch_size`, `check_val_every_n_epoch`, `ckpt_every_n_epochs`, `device`, `devices`, `epochs`, `gradient_clip_val`, `lr`, `lr_scheduler`, `lr_decay_floor`, `lr_decay_shape`, `lr_decay_ratio`, `lr_plateau_factor`, `lr_plateau_patience`, `num_workers`, `patience`, `precision`, `warmup_steps`, `wandb_mode`, `weight_decay`.
-  - `infer` / `evaluate`: `accelerator`, `avg_ckpt_dir`, `avg_ckpts`, `batch_size`, `device`, `devices`, `lr`, `num_workers`, `precision`, `results_root`, `seed`, `wandb_mode`, `weight_decay`.
+  - `infer`: `accelerator`, `avg_ckpt_dir`, `avg_ckpts`, `batch_size`, `device`, `devices`, `lr`, `num_workers`, `precision`, `results_root`, `seed`, `wandb_mode`, `weight_decay`.
   - `hparam_tune`: the explicit union of finetune and inference runtime fields, because managed runs use the former and final evaluation uses the latter.
   - `sleep2stat`: `batch_size`, `device`, `dry_run`, `limit_records`, `num_workers`, `plot_adjust_covariates`, `plot_cohort_after_run`, `plot_group_column`, `plot_stage_source`, `summarize_after_run`.
   - `embedding_extraction`: `device`, `num_workers`.
-- `infer` / `evaluate` checkpoint averaging rejects AHI; `avg_ckpts` is a positive integer and `ckpt_path=best/last` requires `avg_ckpt_dir`, whose explicit directory is resolved from the runtime workdir.
+- `infer` checkpoint averaging rejects AHI; `avg_ckpts` is a positive integer and `ckpt_path=best/last` requires `avg_ckpt_dir`, whose explicit directory is resolved from the runtime workdir.
 - Checkpoint, pretrained-backbone, index, manifest, preset, and sidecar inputs are files. Kaldi finetune/inference additionally requires `kaldi_data_root` as a directory and rejects effective NPZ preset paths. NPZ runtime presets suppress label-sidecar reopening except for multilabel `disease_columns_index`, which names per-disease outputs; `preset_prepare` requires survival or multilabel sidecars to build them. Runtime-semantic input paths reject leading `~`; use an absolute or workdir-relative path.
 - `artifacts`:
   - `finetune`: `overwrite`, `results_csv_path`, `version_name`.
-  - `infer` / `evaluate`: `overwrite`.
+  - `infer`: `overwrite`.
   - `hparam_tune`: `overwrite`, `results_csv_path`.
   - `sleep2stat`: `overwrite`, `run_dir`.
   - `embedding_extraction`: `embedding_dir`, `overwrite`.
 - `evaluation_policy`:
   - `finetune`: `external_test_locked`, `selection_metric`, `selection_mode`, `selection_split`, `test_after_fit`.
-  - `infer` / `evaluate`: `external_test_locked`, `final_test_unlocked`.
+  - `infer`: `external_test_locked`, `final_test_unlocked`.
   - `hparam_tune`: `external_test_locked`, `final_eval_split`, `final_test_unlocked`, `require_manual_unlock_for_final_test`, `selection_metric`, `selection_mode`, `selection_split`, `test_after_fit`.
   - `sleep2stat`: `external_test_locked`.
   - `embedding_extraction`: `external_test_locked`, `final_test_unlocked`.
   - For `finetune` and `hparam_tune`, omitted `test_after_fit` is materialized as `true` with source `policy_default` before consultation and frozen in the resolved recipe. Generated commands always render `--test-after-fit` or `--no-test-after-fit`; set `test_after_fit: false` explicitly to opt out.
   - `selection_split` is required and must be `val`: the test split is never a selection split, and recipe validation rejects `selection_split: test`.
   - Concrete `external_test_locked` values must be YAML booleans; strings and numbers are not coerced.
-- Non-hparam `execution`: `embedding_extraction` rejects the entire block and uses the current local checkout. Every other non-hparam task accepts `host`, `path_context`, `path_validation`, `target`, and an absolute `workdir` used for cwd/PYTHONPATH. Relative runtime-semantic paths are validated from that workdir, or `REPO_ROOT` when it is omitted; local relative `inputs.config` remains a planning-source locator under `REPO_ROOT`. `preset_prepare`, `infer`, and `evaluate` additionally accept `python` and `runtime_commit`; declaring either creates an all-or-none local runtime identity with `workdir`, where `python` is one executable name or path without whitespace, arguments, or `~` shorthand and `runtime_commit` is a full 40-character planned/baseline Git commit ID. Authored hexadecimal is case-insensitive and freezes lowercase. Only absolute Python paths are independent of launcher PATH. Other non-hparam tasks reject these two inert identity fields.
+- Non-hparam `execution`: `embedding_extraction` rejects the entire block and uses the current local checkout. Every other non-hparam task accepts `host`, `path_context`, `path_validation`, `target`, and an absolute `workdir` used for cwd/PYTHONPATH. Relative runtime-semantic paths are validated from that workdir, or `REPO_ROOT` when it is omitted; local relative `inputs.config` remains a planning-source locator under `REPO_ROOT`. `preset_prepare` and `infer` additionally accept `python` and `runtime_commit`; declaring either creates an all-or-none local runtime identity with `workdir`, where `python` is one executable name or path without whitespace, arguments, or `~` shorthand and `runtime_commit` is a full 40-character planned/baseline Git commit ID. Authored hexadecimal is case-insensitive and freezes lowercase. Only absolute Python paths are independent of launcher PATH. Other non-hparam tasks reject these two inert identity fields.
 - New `preset_prepare` plans without authored Python/commit identity default to the current manager interpreter, baseline Git HEAD, and `REPO_ROOT` only for local/default-local execution at the exact manager checkout without remote path context. Other workdirs or remote path context require a complete explicit local identity; preset plans do not provide recipe-driven SSH execution. Missing manager Git identity fails before workspace creation. Partial identities fail instead of receiving defaults. Historical registered plans without identity keep their original commands without rebinding.
 - Preset `execution.scheduler` accepts only `{type: direct}` and is materialized for new effective recipes. These plans use execution-host local `preset-launch` / `preset-stop` and freeze script-owned terminal status; launch defaults to dry-run and requires `--execute` to start. No Slurm resource fields, alternate scheduler type, or new SSH transport is accepted. Historical plans without this declaration retain their original scripts and cannot be launched through the new entrypoint; see [managed preset preparation](../../doc/agent_contracts/task_recipe.md#managed-preset-preparation).
 - Hparam `execution`: `conda_env`, `env`, `gpu_pool`, `gpus_per_run`, `host`, `max_concurrent`, `path_context`, `path_validation`, `python`, `runtime_commit`, `scheduler`, `target`, `wandb_group`, `wandb_project`, `workdir`. `python` is one target executable name or path without whitespace, arguments, or `~` shorthand and `runtime_commit` is a full 40-character planned/baseline Git commit ID; authored hexadecimal is case-insensitive and freezes lowercase. Conda wrapping belongs in `conda_env`. They may be omitted only for a local target at `REPO_ROOT` without `conda_env`; planning then freezes the current manager interpreter and baseline manager repository HEAD. SSH targets, separate local workdirs, and conda-wrapped targets require both fields explicitly. `env` has dynamic environment-variable names but may not duplicate `PYTHONPATH` or the explicit W&B fields. Local relative `final_eval_config_path` remains a planning-source locator under `REPO_ROOT` before it is frozen.
@@ -113,7 +113,7 @@ The closed section fields are:
 
 Removed names such as `runtime.data_backend`, `inputs.preset_path`, `preset.regenerate`, `search.max_trials`, `search.profile`, `execution.gpus_per_trial`, and the `adaptive` block are rejected rather than translated. Keep regeneration intent in `decisions.preset_regeneration`; `preset.overwrite` is the actual `--overwrite` behavior. Use `inputs.data_backend`, `inputs.inference_preset_path`, `search.max_runs` and `execution.gpus_per_run` for the other replacements; a further tuning round is a new plan.
 
-The supported task values are `preset_prepare`, `finetune`, `infer`, `evaluate`, `embedding_extraction`, `hparam_tune`, and `sleep2stat`. Embedding extraction supports `sleep2vec`, `sleep2vec2`, and `sleep2expert`; it requires an explicit NPZ index and a RoFormer config with `model.cls.embedding_type: bert`, rejects `data_backend`, preset/Kaldi inputs, dataset source overrides, `runtime.batch_size`, and `execution`, and requires any config-owned dataset-source filter to retain every selected index row. A missing or blank row `source` uses the authored index path. Its fresh absolute `embedding_dir` must not overlap its plan or occupy experiment-managed `plans`, `reports`, or `steps` namespaces. Other model tasks use `sleep2vec`, `sleep2vec2`, `sleep2expert`, or `sex_age_baseline` as applicable; `sleep2stat` omits `variant` or sets it to `null`.
+The supported task values are `preset_prepare`, `finetune`, `infer`, `embedding_extraction`, `hparam_tune`, and `sleep2stat`. Embedding extraction supports `sleep2vec`, `sleep2vec2`, and `sleep2expert`; it requires an explicit NPZ index and a RoFormer config with `model.cls.embedding_type: bert`, rejects `data_backend`, preset/Kaldi inputs, dataset source overrides, `runtime.batch_size`, and `execution`, and requires any config-owned dataset-source filter to retain every selected index row. A missing or blank row `source` uses the authored index path. Its fresh absolute `embedding_dir` must not overlap its plan or occupy experiment-managed `plans`, `reports`, or `steps` namespaces. Other model tasks use `sleep2vec`, `sleep2vec2`, `sleep2expert`, or `sex_age_baseline` as applicable; `sleep2stat` omits `variant` or sets it to `null`.
 
 Hparam `execution.target` is `local` or `ssh`; `host` is required for SSH. `workdir`, GPU allocation, W&B settings, and optional environment/conda wrapping are consumed by the managed launcher.
 

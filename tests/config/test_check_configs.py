@@ -392,15 +392,6 @@ def test_check_config_file_fails_an_expert_only_field_under_a_declared_base_vari
         check_config_file(path, "sleep2vec")
 
 
-def test_validation_command_names_the_declared_variant():
-    """`check_configs` must be told the variant the generated run command uses."""
-    from agent_tools.plan_context import validation_commands
-
-    for variant in DECLARABLE_VARIANTS:
-        commands = validation_commands({"task": "finetune", "variant": variant, "inputs": {"config": "c.yaml"}})
-        assert any(f"utils/check_configs.py --variant {variant} c.yaml" in command for command in commands), commands
-
-
 def test_the_baseline_is_inferred_from_its_model_name_and_declarable(tmp_path: Path):
     """The baseline is a model variant like the others: inferred when undeclared, named when declared."""
     source = REPO_ROOT / "configs" / "sex_age_baseline" / "cox.yaml"
