@@ -136,69 +136,6 @@ def test_hparam_plan_skips_survival_index_gate_when_base_preset_is_configured(tm
     assert (output_dir / "run_all.sh").exists()
 
 
-def test_hparam_plan_skips_remote_deferred_survival_index_summary(tmp_path: Path):
-    index = tmp_path / "local_index.csv"
-    index.write_text("path,split,duration,eid,ppg_mask\nx.npz,train,60,001,1\n")
-    payload = survival_config_payload(
-        index,
-        {
-            "disease_columns_index": "/wujidata/survival/disease_columns.txt",
-            "event_time_index": "/wujidata/survival/event_time.csv",
-            "is_event_index": "/wujidata/survival/is_event.csv",
-            "has_label_index": "/wujidata/survival/has_label.csv",
-        },
-    )
-    payload["data"]["finetune_data_index"] = "/wujidata/survival/index.csv"
-    config = write_yaml(tmp_path / "remote_survival_config.yaml", payload)
-    base = _survival_recipe_with_missing_sidecar_key(tmp_path)[0]
-    base_payload = yaml.safe_load(base.read_text())
-    base_payload["inputs"]["config"] = str(config)
-    write_yaml(base, base_payload)
-    recipe = write_yaml(
-        tmp_path / "tune_remote_survival.yaml",
-        {
-            "name": "unit_tune_remote_survival",
-            "task": "hparam_tune",
-            "variant": "sleep2vec",
-            "base_recipe": str(base),
-            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
-            "evaluation_policy": {
-                "selection_metric": "val_loss",
-                "selection_mode": "min",
-                "selection_split": "val",
-                "final_eval_split": "test",
-                "external_test_locked": True,
-                "test_after_fit": False,
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "execution": {
-                "target": "ssh",
-                "host": "baichuan3",
-                "path_context": "remote",
-                "path_validation": "defer",
-                "python": sys.executable,
-                "runtime_commit": _RUNTIME_COMMIT,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
-    )
-    output_dir = tmp_path / "plan"
-
-    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
-
-    assert result.returncode == 0
-    assert "Index CSV not found" not in result.stdout
-    assert (output_dir / "run_all.sh").exists()
-
-
 def test_infer_invalid_eval_split_blocks_command_generation(tmp_path: Path):
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("checkpoint")
@@ -453,46 +390,6 @@ def test_preset_plan_checks_survival_sidecar_keys_only_for_requested_split(tmp_p
 
     assert result.returncode == 0
     assert "survival key values missing from sidecars" not in result.stdout
-    assert (output_dir / "run.sh").exists()
-
-
-def test_preset_plan_skips_local_index_summary_for_remote_deferred_index(tmp_path: Path):
-    config = yaml.safe_load(write_finetune_recipe(tmp_path).read_text())["inputs"]["config"]
-    recipe = write_yaml(
-        tmp_path / "preset_remote_index.yaml",
-        {
-            "name": "unit_preset_remote_index",
-            "task": "preset_prepare",
-            "variant": "sleep2vec",
-            "inputs": {"config": config, "index": ["/wujidata/index.csv"], "dataset_name": "unit"},
-            "preset": {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False},
-            "execution": {
-                "target": "local",
-                "workdir": str(tmp_path),
-                "python": sys.executable,
-                "runtime_commit": _RUNTIME_COMMIT,
-                "host": "baichuan3",
-                "path_context": "remote",
-                "path_validation": "defer",
-            },
-            "decisions": {
-                "task": {"value": "preset_prepare", "source": "explicit_recipe"},
-                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
-                "required_channels": {
-                    "value": ["ppg", "ahi", "stage5"],
-                    "source": "explicit_config",
-                },
-                "min_channels": {"value": 3, "source": "explicit_config"},
-            },
-        },
-    )
-    output_dir = tmp_path / "plan_remote_index"
-
-    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
-
-    assert result.returncode == 0
-    assert "Index CSV not found" not in result.stdout
     assert (output_dir / "run.sh").exists()
 
 

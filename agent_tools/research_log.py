@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 class StepManifestReader(Protocol):
     """The workspace's step-manifest reader, injected so this leaf does not import the workspace."""
 
-    def __call__(self, root: Path, step_id: str, *, remote: str | None) -> Mapping[str, JsonValue] | None: ...
+    def __call__(self, root: Path, step_id: str) -> Mapping[str, JsonValue] | None: ...
 
 
 class ResearchLogEvidence(TypedDict):
@@ -116,7 +116,6 @@ def _normalized_research_log_scope(
     experiment_id: str,
     managed_rows: list[dict[str, Any]],
     root: Path,
-    remote: str | None,
     read_step_manifest: StepManifestReader,
     managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
 ) -> ResearchLogScope | _EmptyResearchLogScope:
@@ -135,7 +134,7 @@ def _normalized_research_log_scope(
             raise ValueError(
                 "Research log entry scope.step_id must use lowercase letters, digits, hyphens, and underscores."
             )
-        step_manifest = read_step_manifest(root, step_id, remote=remote)
+        step_manifest = read_step_manifest(root, step_id)
         assert step_manifest is not None  # Missing steps raise unless allow_missing is explicitly enabled.
         if step_manifest["experiment_id"] != experiment_id:
             raise ValueError("Research log entry scope.step_id belongs to a different experiment.")
@@ -163,7 +162,6 @@ def _normalized_research_log_entry(
     experiment_id: str,
     managed_rows: list[dict[str, Any]],
     root: Path,
-    remote: str | None,
     read_step_manifest: StepManifestReader,
     managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
 ) -> NormalizedResearchLogEntry:
@@ -233,7 +231,6 @@ def _normalized_research_log_entry(
         experiment_id=experiment_id,
         managed_rows=managed_rows,
         root=root,
-        remote=remote,
         read_step_manifest=read_step_manifest,
         managed_run_key=managed_run_key,
     )
@@ -343,7 +340,6 @@ def append_research_log(
     *,
     experiment_id: str,
     managed_rows: list[dict[str, Any]],
-    remote: str | None,
     read_step_manifest: StepManifestReader,
     managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
     io: ModuleType = exp_io,
@@ -351,18 +347,15 @@ def append_research_log(
     root = Path(root)
     path = root / RESEARCH_LOG_NAME
     managed_paths = [path, path.with_name(f".{path.name}.cas.lock")]
-    if remote:
-        managed_paths.append(Path(f"{path}.lock"))
     scope = entry.get("scope") if isinstance(entry, dict) else None
     if isinstance(scope, dict) and isinstance(scope.get("step_id"), str):
         managed_paths.append(root / "steps" / scope["step_id"] / "step.yaml")
-    io.validate_managed_output_paths(root, managed_paths, remote=remote)
+    io.validate_managed_output_paths(root, managed_paths)
     normalized = _normalized_research_log_entry(
         entry,
         experiment_id=experiment_id,
         managed_rows=managed_rows,
         root=root,
-        remote=remote,
         read_step_manifest=read_step_manifest,
         managed_run_key=managed_run_key,
     )
@@ -371,8 +364,8 @@ def append_research_log(
     marker = f'<!-- agent-tools-research-entry id="{normalized["id"]}" sha256="{digest}" -->\n'
 
     for _attempt in range(3):
-        exists = io.path_exists_at(path, remote=remote)
-        current = io.read_text_at(path, remote=remote) if exists else RESEARCH_LOG_PREAMBLE
+        exists = io.path_exists_at(path)
+        current = io.read_text_at(path) if exists else RESEARCH_LOG_PREAMBLE
         entries = _research_log_blocks(current, path)
         existing_digest = entries.get(normalized["id"])
         if existing_digest is not None:
@@ -392,7 +385,6 @@ def append_research_log(
             replacement,
             expected_sha256,
             managed_root=root,
-            remote=remote,
         ):
             return path, normalized["id"], True
     raise RuntimeError(f"Managed research log changed during three append attempts: {path}")

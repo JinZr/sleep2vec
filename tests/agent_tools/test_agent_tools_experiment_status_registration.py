@@ -1113,12 +1113,12 @@ def test_experiment_status_rejects_plan_escape_before_external_probe(tmp_path, m
     step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
     path_exists_at = experiment_io.path_exists_at
 
-    def reject_external_probe(path, *, remote=None):
+    def reject_external_probe(path):
         try:
             Path(path).relative_to(root)
         except ValueError as exc:
             raise AssertionError(f"status probed outside the canonical workspace: {path}") from exc
-        return path_exists_at(path, remote=remote)
+        return path_exists_at(path)
 
     monkeypatch.setattr(experiment_io, "path_exists_at", reject_external_probe)
 
@@ -1140,10 +1140,10 @@ def test_experiment_status_rejects_aliased_plan_directory_before_file_probe(tmp_
     step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
     path_exists_at = experiment_io.path_exists_at
 
-    def reject_aliased_file_probe(path, *, remote=None):
+    def reject_aliased_file_probe(path):
         if Path(path).is_relative_to(alias):
             raise AssertionError(f"status probed through an aliased plan directory: {path}")
-        return path_exists_at(path, remote=remote)
+        return path_exists_at(path)
 
     monkeypatch.setattr(experiment_io, "path_exists_at", reject_aliased_file_probe)
 
@@ -1209,104 +1209,3 @@ def test_experiment_status_rejects_plan_registered_by_multiple_steps(tmp_path):
 
     with pytest.raises(ValueError, match="more than one managed step"):
         experiments.experiment_status(root)
-
-
-def test_experiment_status_routes_all_registered_reads_to_remote(monkeypatch):
-    root = Path("/remote/experiment")
-    experiment = {
-        "id": "status-unit",
-        "title": "Status unit experiment",
-        "objective": "Remote status.",
-        "root": str(root),
-        "baseline": "unit baseline",
-    }
-    step = {"id": "train", "phase": "train", "purpose": "Train."}
-    manifest = {
-        "step": step,
-        "experiment_id": "status-unit",
-        "plan_controller": "ordinary",
-        "recipe_path": "",
-        "plans": [str(root / "plans" / "train")],
-    }
-    row = {
-        "experiment_id": "status-unit",
-        "step_id": "train",
-        "run_id": "run-000",
-        "run_name": "default",
-        "status": "unknown_remote",
-    }
-    calls = []
-
-    def managed_workspace(candidate, *, remote, allow_completed, validate_experiment_index):
-        calls.append(("workspace", candidate, remote, allow_completed, validate_experiment_index))
-        return experiment, [row]
-
-    def registered_steps(candidate, *, experiment_id, remote):
-        calls.append(("steps", candidate, experiment_id, remote))
-        return [manifest]
-
-    def registered_blocked_plan(candidate, *, workspace, remote):
-        calls.append(("blocked", candidate, workspace, remote))
-        return False
-
-    def registered_plan(
-        candidate,
-        *,
-        workspace,
-        workspace_experiment,
-        step_manifest,
-        workspace_rows,
-        expected_recipe_path,
-        remote,
-        run_index_offset,
-    ):
-        calls.append(
-            (
-                "plan",
-                candidate,
-                workspace,
-                workspace_experiment,
-                step_manifest,
-                workspace_rows,
-                expected_recipe_path,
-                remote,
-                run_index_offset,
-            )
-        )
-        candidate_path = Path(candidate)
-        return {
-            "path": str(candidate),
-            "task": "finetune",
-            "run_keys": [("train", "run-000")],
-            "launch_script": str(candidate_path / "run.sh"),
-        }
-
-    monkeypatch.setattr(experiments, "_managed_workspace", managed_workspace)
-    monkeypatch.setattr(experiments, "read_registered_steps", registered_steps)
-    monkeypatch.setattr(experiments.artifacts, "is_registered_blocked_plan", registered_blocked_plan)
-    monkeypatch.setattr(experiments.artifacts, "read_registered_plan", registered_plan)
-
-    def unexpected_write(*_args, **_kwargs):
-        raise AssertionError("remote experiment-status attempted a write")
-
-    for name in (
-        "write_text_at",
-        "write_rows_at",
-        "conditional_atomic_replace_text_at",
-        "append_event_at",
-        "mkdir_experiment_dirs",
-    ):
-        monkeypatch.setattr(experiment_io, name, unexpected_write)
-    monkeypatch.setattr(experiments, "merge_run_manifest", unexpected_write)
-
-    snapshot = experiments.experiment_status(root, remote="baichuan3")
-
-    assert calls[0] == ("workspace", root, "baichuan3", True, False)
-    assert calls[1] == ("steps", root, "status-unit", "baichuan3")
-    assert calls[2] == ("blocked", str(root / "plans" / "train"), root, "baichuan3")
-    assert calls[3][3] == experiment
-    assert calls[3][-3:] == ("", "baichuan3", 0)
-    assert snapshot["experiment"]["remote"] == "baichuan3"
-    action = snapshot["decision"]["recommended_next"]
-    assert action["control_host"] is None
-    assert action["argv"][-2:] == ["--remote", "baichuan3"]

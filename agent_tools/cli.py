@@ -67,10 +67,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, yaml.YAMLError) as exc:
-        # Expected refusals (validation, missing artifacts, remote/scheduler failures) end as one
+        # Expected refusals (validation, missing artifacts, scheduler failures) end as one
         # stderr line instead of a traceback, even under --json; programming errors such as KeyError still raise.
         # Progress lines a command already wrote (doctor's phases) may precede it; the error line comes last.
-        # Remote stderr can be multiline, so line breaks are folded to keep the single-line contract.
+        # Subprocess stderr can be multiline, so line breaks are folded to keep the single-line contract.
         message = " | ".join(line.strip() for line in str(exc).splitlines() if line.strip())
         print(f"error: {message}", file=sys.stderr)
         return 1
@@ -89,10 +89,6 @@ def _command(sub: argparse._SubParsersAction, name: str, summary: str) -> argpar
 # Shared declarations exist only for options whose help text is identical on every
 # command that takes them. Per-command help (--run-dir, --plan-dir, --metric, ...) is
 # part of the help contract and stays inline at each command.
-
-
-def _add_workspace_remote(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--remote", help="SSH host owning the workspace instead of the local filesystem.")
 
 
 def _add_json(parser: argparse.ArgumentParser) -> None:
@@ -155,12 +151,6 @@ def _add_inspection_commands(sub: argparse._SubParsersAction) -> None:
         "Dry run unless --execute is given. Never launches work.",
     )
     runtime_sync.add_argument("--workdir", required=True, help="Existing Git checkout to inspect or update in place.")
-    runtime_sync.add_argument("--host", help="SSH host that owns the checkout; omit for a local checkout.")
-    runtime_sync.add_argument(
-        "--python",
-        default="python3",
-        help="Python interpreter used for the self-contained sync program on --host; defaults to python3.",
-    )
     runtime_sync.add_argument(
         "--execute",
         action="store_true",
@@ -327,7 +317,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     """Register progress and the experiment lifecycle commands."""
     progress = _command(sub, "progress", "Report training progress for a run directory.")
     progress.add_argument("--run-dir", required=True, help="Run directory to read progress from.")
-    progress.add_argument("--remote", help="SSH host to read the run directory from instead of the local filesystem.")
     _add_json(progress)
     progress.set_defaults(func=_cmd_progress)
 
@@ -338,7 +327,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
         required=True,
         help="YAML spec declaring the experiment id, title, objective, root, and baseline.",
     )
-    _add_workspace_remote(experiment_init)
     experiment_init.set_defaults(func=_cmd_experiment_init)
 
     experiment_note = _command(
@@ -352,7 +340,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
         required=True,
         help="Existing local YAML file path; inline text is not accepted.",
     )
-    _add_workspace_remote(experiment_note)
     experiment_note.set_defaults(func=_cmd_experiment_note)
 
     experiment_finalize = _command(
@@ -366,7 +353,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
         required=True,
         help="Non-empty final report whose path and SHA-256 are bound to the completed experiment.",
     )
-    _add_workspace_remote(experiment_finalize)
     experiment_finalize.set_defaults(func=_cmd_experiment_finalize)
 
     experiment_monitor = _command(
@@ -375,7 +361,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
         "Refresh an experiment's status report from its manifests. Never launches runs.",
     )
     experiment_monitor.add_argument("--run-dir", required=True, help="Experiment workspace root to monitor.")
-    _add_workspace_remote(experiment_monitor)
     experiment_monitor.add_argument(
         "--json",
         action="store_true",
@@ -389,7 +374,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
         "Print a projected status snapshot for an experiment workspace.",
     )
     experiment_status_parser.add_argument("--run-dir", required=True, help="Experiment workspace root to report on.")
-    _add_workspace_remote(experiment_status_parser)
     _add_json(experiment_status_parser)
     experiment_status_parser.set_defaults(func=_cmd_experiment_status)
 
@@ -446,7 +430,7 @@ def _cmd_repo_summary(args: argparse.Namespace) -> int:
 
 def _cmd_runtime_sync(args: argparse.Namespace) -> int:
     _emit(
-        sync_runtime(args.workdir, host=args.host, remote_python=args.python, execute=args.execute),
+        sync_runtime(args.workdir, execute=args.execute),
         as_json=True,
     )
     return 0
@@ -598,7 +582,7 @@ def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
     evidence_rows = [
         row
         for row in rows
-        if row.get("status") in {"failed", "missing_pid", "unknown_remote", "unknown_scheduler"}
+        if row.get("status") in {"failed", "missing_pid", "unknown_scheduler"}
         or row.get("process_identity_error")
         or row.get("scheduler_health_error")
     ]
@@ -623,7 +607,7 @@ def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
 
 
 def _cmd_progress(args: argparse.Namespace) -> int:
-    data = read_progress(args.run_dir, remote=args.remote)
+    data = read_progress(args.run_dir)
     if args.json:
         _emit(data, as_json=True)
     else:
@@ -632,7 +616,7 @@ def _cmd_progress(args: argparse.Namespace) -> int:
 
 
 def _cmd_experiment_init(args: argparse.Namespace) -> int:
-    manifest = init_experiment(args.run_dir, args.spec, remote=args.remote)
+    manifest = init_experiment(args.run_dir, args.spec)
     print(f"Wrote {manifest}")
     return 0
 
@@ -640,20 +624,20 @@ def _cmd_experiment_init(args: argparse.Namespace) -> int:
 def _cmd_experiment_note(args: argparse.Namespace) -> int:
     if not Path(args.entry).is_file():
         raise ValueError("--entry must be an existing local YAML file path; inline text and stdin are not accepted.")
-    result = append_experiment_note(args.run_dir, args.entry, remote=args.remote)
+    result = append_experiment_note(args.run_dir, args.entry)
     status = "appended" if result["appended"] else "already present"
     print(f"Research log {result['path']}: {result['entry_id']} {status}")
     return 0
 
 
 def _cmd_experiment_finalize(args: argparse.Namespace) -> int:
-    path = finalize_experiment(args.run_dir, args.report, remote=args.remote)
+    path = finalize_experiment(args.run_dir, args.report)
     print(f"Wrote {path}")
     return 0
 
 
 def _cmd_experiment_monitor(args: argparse.Namespace) -> int:
-    result = monitor_experiment(args.run_dir, remote=args.remote)
+    result = monitor_experiment(args.run_dir)
     if args.json:
         _emit(result, as_json=True)
     else:
@@ -662,7 +646,7 @@ def _cmd_experiment_monitor(args: argparse.Namespace) -> int:
 
 
 def _cmd_experiment_status(args: argparse.Namespace) -> int:
-    snapshot = experiment_status(args.run_dir, remote=args.remote)
+    snapshot = experiment_status(args.run_dir)
     if args.json:
         _emit(snapshot, as_json=True)
     else:

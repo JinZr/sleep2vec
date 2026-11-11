@@ -116,7 +116,6 @@ def _read_plan_documents(
     plan_dir: Path,
     *,
     workspace: Path | None = None,
-    remote: str | None = None,
     strict_control_bundle: bool = False,
     require_resolved_sha256: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -124,7 +123,7 @@ def _read_plan_documents(
     if strict_control_bundle:
         if workspace is None:
             raise ValueError("Strict registered-plan reads require a workspace root.")
-        files = exp_io.read_managed_files_at(workspace, [plan_path, resolved_recipe_path], remote=remote)
+        files = exp_io.read_managed_files_at(workspace, [plan_path, resolved_recipe_path])
         try:
             plan = json.loads(
                 files[str(plan_path)]["text"],
@@ -169,12 +168,11 @@ def is_registered_blocked_plan(
     plan_dir: str | Path,
     *,
     workspace: str | Path,
-    remote: str | None = None,
 ) -> bool:
     """Recognize a blocked control bundle at a caller-supplied registered path.
 
     Requires absolute paths without '..', with plan_dir inside workspace; reads
-    locally or on remote without changing artifacts. True means the expected
+    without changing artifacts. True means the expected
     blocked files are readable and the directory layout passes the bundle checks,
     not that this function looked up registration or validated question contents.
     False does not establish a valid PASS plan: missing blocked markers or a
@@ -200,26 +198,23 @@ def is_registered_blocked_plan(
         exp_io.validate_managed_output_paths(
             workspace,
             [plan_path, resolved_recipe_path, *blocked_only_paths],
-            remote=remote,
         )
     except ValueError as exc:
         raise ValueError(f"Registered plan control bundle is missing or aliased: {plan_dir}") from exc
-    plan_exists = exp_io.path_exists_at(plan_path, remote=remote)
-    blocked_entries = [path for path in blocked_only_paths if exp_io.path_exists_at(path, remote=remote)]
+    plan_exists = exp_io.path_exists_at(plan_path)
+    blocked_entries = [path for path in blocked_only_paths if exp_io.path_exists_at(path)]
     if plan_exists:
         if blocked_entries:
             raise ValueError(f"Registered plan contains both PASS and blocked planning artifacts: {plan_dir}")
         return False
     blocked_path = plan_dir / "plan.blocked.md"
-    if not exp_io.path_exists_at(blocked_path, remote=remote) or exp_io.path_exists_at(
-        resolved_recipe_path, remote=remote
-    ):
+    if not exp_io.path_exists_at(blocked_path) or exp_io.path_exists_at(resolved_recipe_path):
         return False
     if plan_dir == workspace:
         residue = [
             path
             for path in plan_contract.pass_plan_artifact_paths(plan_dir)
-            if path not in {plan_path, resolved_recipe_path} and exp_io.path_exists_at(path, remote=remote)
+            if path not in {plan_path, resolved_recipe_path} and exp_io.path_exists_at(path)
         ]
         if residue:
             raise ValueError(
@@ -234,7 +229,6 @@ def is_registered_blocked_plan(
     exp_io.read_managed_files_at(
         workspace,
         blocked_files,
-        remote=remote,
         exact_directory_entries=plan_dir != workspace,
     )
     return True
@@ -248,7 +242,6 @@ def read_registered_plan(
     step_manifest: dict[str, Any],
     workspace_rows: list[dict[str, Any]],
     expected_recipe_path: str | None,
-    remote: str | None = None,
     run_index_offset: int = 0,
 ) -> RegisteredPlanSummary:
     """Validate a registered plan against caller-supplied workspace state and return a summary.
@@ -258,7 +251,7 @@ def read_registered_plan(
     refreshing those snapshots. expected_recipe_path, when set, must match the
     frozen recipe identity; run_index_offset controls reconstruction of run IDs.
 
-    Reads the control bundle and frozen files locally or on remote, checking
+    Reads the control bundle and frozen files, checking
     registration, recipe/command consistency, run bindings and hashes. Returns
     path, task, run_keys, launch_script, selection, recipe and runs, rather than
     the original plan.json mapping. Does not update lifecycle state or launch
@@ -274,11 +267,10 @@ def read_registered_plan(
     plan, resolved_recipe = _read_plan_documents(
         plan_dir,
         workspace=workspace,
-        remote=remote,
         strict_control_bundle=True,
     )
     legacy_status = plan_dir / "trial_status.tsv"
-    if exp_io.path_exists_at(legacy_status, remote=remote):
+    if exp_io.path_exists_at(legacy_status):
         raise ValueError(f"Legacy hparam status is read-only and cannot be managed: {legacy_status}")
     if plan.get("status") != "PASS":
         raise ValueError(f"Registered plan must have status PASS: {plan_path}")
@@ -353,7 +345,7 @@ def read_registered_plan(
     launch_script = plan_dir / ("run_all.sh" if adapter.materializes_plan else "run.sh")
     bundle_paths.append(launch_script)
     final_script = plan_dir / "final_external_test.sh"
-    final_script_present = exp_io.path_exists_at(final_script, remote=remote)
+    final_script_present = exp_io.path_exists_at(final_script)
     if adapter.materializes_plan:
         final_path = None
         if "final_eval_config" in plan:
@@ -370,7 +362,7 @@ def read_registered_plan(
         if expected_final_command is not None:
             bundle_paths.append(final_script)
 
-    bundle = exp_io.read_managed_files_at(workspace, list(dict.fromkeys(bundle_paths)), remote=remote)
+    bundle = exp_io.read_managed_files_at(workspace, list(dict.fromkeys(bundle_paths)))
     config_path = str(source_config) if adapter.materializes_plan else layout["config"]
     _validate_registered_bundle(
         adapter=adapter,

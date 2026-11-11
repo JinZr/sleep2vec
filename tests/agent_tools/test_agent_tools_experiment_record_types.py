@@ -32,8 +32,8 @@ def test_normalized_research_record_preserves_order_and_omits_empty_optionals(tm
     original = deepcopy(entry)
     calls = []
 
-    def read_step(root, step_id, *, remote):
-        calls.append((root, step_id, remote))
+    def read_step(root, step_id):
+        calls.append((root, step_id))
         return {"experiment_id": "unit"}
 
     monkeypatch.setattr(experiment_workspace, "read_step_manifest", read_step)
@@ -42,7 +42,6 @@ def test_normalized_research_record_preserves_order_and_omits_empty_optionals(tm
         experiment_id="unit",
         managed_rows=[{"step_id": "train", "run_id": run_id} for run_id in ("run-001", "run-002")],
         root=tmp_path,
-        remote="test-host",
     )
     expected = {key: value for key, value in original.items() if key not in {"authority", "supersedes"}}
     expected["recorded_at"] = "2026-09-07T01:02:03Z"
@@ -53,7 +52,7 @@ def test_normalized_research_record_preserves_order_and_omits_empty_optionals(tm
     assert entry == original
     assert normalized["evidence"] is not entry["evidence"]
     assert normalized["evidence"][0] is not entry["evidence"][0]
-    assert calls == ([(tmp_path, "train", "test-host")] if scoped else [])
+    assert calls == ([(tmp_path, "train")] if scoped else [])
     if scoped:
         assert normalized["scope"]["run_ids"] is not entry["scope"]["run_ids"]
     block = experiment_workspace._research_log_block(normalized, "unit")
@@ -160,7 +159,7 @@ def test_experiment_record_types_reach_callers(tmp_path):
                 raw["unvalidated_extra"] = None
 
             entry = workspace._normalized_research_log_entry(
-                {}, experiment_id="unit", managed_rows=[], root=Path("/workspace"), remote=None,
+                {}, experiment_id="unit", managed_rows=[], root=Path("/workspace"),
             )
             normalized: research_log.NormalizedResearchLogEntry = entry
             body: str = normalized["body"]

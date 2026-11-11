@@ -455,7 +455,6 @@ def test_hparam_plan_rejects_compound_target_python_before_plan_write(tmp_path: 
     "execution",
     [
         {"workdir": "/separate/runtime"},
-        {"target": "ssh", "host": "runtime-host", "workdir": "/remote/runtime"},
         {"conda_env": "runtime"},
     ],
 )
@@ -518,61 +517,6 @@ def test_hparam_relative_workdir_fails_before_workspace_creation(tmp_path: Path)
     assert result.returncode == 1
     assert "execution.workdir must be an absolute path" in result.stdout
     assert not output_dir.exists()
-
-
-def test_remote_deferred_config_must_be_locally_freezable_before_single_run_workspace_creation(tmp_path: Path):
-    recipe = write_finetune_recipe(tmp_path)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["inputs"].update({"config": "/remote/config.yaml", "data_backend": "npz"})
-    payload["execution"] = {
-        "target": "ssh",
-        "host": "unit-host",
-        "path_context": "remote",
-        "path_validation": "defer",
-    }
-    payload["decisions"]["required_channels"] = {
-        "value": ["ppg", "ahi", "stage5"],
-        "source": "explicit_recipe",
-    }
-    recipe.write_text(yaml.safe_dump(payload))
-    output_dir = tmp_path / "plan"
-
-    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
-
-    assert result.returncode == 1
-    assert "Config cannot be frozen from a local file" in result.stdout
-    assert not output_dir.exists()
-    assert not (tmp_path / "steps" / "unit-finetune").exists()
-    assert not (tmp_path / "events.jsonl").exists()
-
-
-def test_remote_deferred_config_must_be_locally_freezable_before_hparam_workspace_creation(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
-    payload = yaml.safe_load(recipe.read_text())
-    base_recipe = Path(payload["base_recipe"])
-    base_payload = yaml.safe_load(base_recipe.read_text())
-    base_payload["inputs"].update({"config": "/remote/config.yaml", "data_backend": "npz"})
-    base_payload["decisions"]["required_channels"] = {
-        "value": ["ppg", "ahi", "stage5"],
-        "source": "explicit_recipe",
-    }
-    base_recipe.write_text(yaml.safe_dump(base_payload))
-    payload["execution"] = {
-        "target": "ssh",
-        "host": "unit-host",
-        "path_context": "remote",
-        "path_validation": "defer",
-    }
-    recipe.write_text(yaml.safe_dump(payload))
-    output_dir = tmp_path / "plan"
-
-    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
-
-    assert result.returncode == 1
-    assert "Config cannot be frozen from a local file" in result.stdout
-    assert not output_dir.exists()
-    assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
-    assert not (tmp_path / "events.jsonl").exists()
 
 
 def test_hparam_run_all_rejects_tampered_leaf_before_execution(tmp_path: Path):
@@ -680,7 +624,6 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
     recipe["step"] = {"id": "unit-infer", "phase": "evaluate", "purpose": "Exercise runtime identity."}
     recipe["decisions"]["task"] = {"value": "infer", "source": "explicit_recipe"}
     recipe["execution"] = {
-        "target": "local",
         "workdir": str(REPO_ROOT),
         "python": runtime_python,
         "runtime_commit": _RUNTIME_COMMIT,
@@ -743,7 +686,6 @@ def test_infer_runtime_commit_mismatch_runs_and_records_both_commits(tmp_path: P
     recipe["step"] = {"id": "unit-infer", "phase": "evaluate", "purpose": "Exercise commit guard."}
     recipe["decisions"]["task"] = {"value": "infer", "source": "explicit_recipe"}
     recipe["execution"] = {
-        "target": "local",
         "workdir": str(runtime),
         "python": sys.executable,
         "runtime_commit": "0" * 40,

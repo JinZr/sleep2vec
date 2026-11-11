@@ -1,6 +1,6 @@
 """Canonical loader for the embedded kernel programs run through ``python -c``.
 
-Layer 0 leaf, used by ``transport`` and the experiment-control modules.
+Layer 0 leaf, used by ``transport`` and the launch, probe and plan-rendering modules.
 ``python_program_sources/*.py.src`` are fragments whose names resolve only once
 concatenated, so they do not lint standalone and flake8's directory walk never
 sees them. ``utils/complexity_check.py`` assembles every registered program
@@ -15,48 +15,18 @@ from pathlib import Path
 _SOURCE_ROOT = Path(__file__).with_name("python_program_sources")
 
 _FRAGMENTS = {
-    "managed_descriptors": "experiment_io/_managed_descriptors.py.src",
     "process_start_token": "run_evidence/process_start_token.py.src",
     "process_group_running": "run_evidence/process_group_running.py.src",
     "runtime_guard": "runtime_lock.py.src",
 }
 
 _PROGRAMS = {
-    "experiment_io.remote_dir_nonempty": ("experiment_io/remote_dir_nonempty.py.src",),
-    "experiment_io.path_exists": ("experiment_io/path_exists.py.src",),
-    "experiment_io.list_managed_subdirectories": ("experiment_io/list_managed_subdirectories.py.src",),
-    "experiment_io.read_managed_files": ("experiment_io/read_managed_files.py.src",),
-    "experiment_io.read_managed_output_texts": (
-        _FRAGMENTS["managed_descriptors"],
-        "experiment_io/read_managed_output_texts.py.src",
-    ),
-    "experiment_io.validate_managed_output_paths": (
-        _FRAGMENTS["managed_descriptors"],
-        "experiment_io/validate_managed_output_paths.py.src",
-    ),
-    "experiment_io.read_text": ("experiment_io/read_text.py.src",),
-    "experiment_io.conditional_atomic_replace_text": (
-        _FRAGMENTS["managed_descriptors"],
-        "experiment_io/conditional_atomic_replace_text.py.src",
-    ),
-    "experiment_workspace.write_run_matrix_if_current": ("experiment_workspace/write_run_matrix_if_current.py.src",),
-    "run_evidence.runtime_artifacts": ("run_evidence/runtime_artifacts.py.src",),
-    "run_evidence.checkpoint_file_sha256": ("run_evidence/checkpoint_file_sha256.py.src",),
-    "run_evidence.read_pid_text": ("run_evidence/read_pid_text.py.src",),
     "run_evidence.process_probe": (
         "run_evidence/_process_probe_header.py.src",
         _FRAGMENTS["process_start_token"],
         _FRAGMENTS["process_group_running"],
         "run_evidence/_process_probe_body.py.src",
     ),
-    "run_evidence.process_stop": (
-        "run_evidence/_process_stop_header.py.src",
-        _FRAGMENTS["process_start_token"],
-        _FRAGMENTS["process_group_running"],
-        "run_evidence/_process_stop_body.py.src",
-    ),
-    "run_evidence.log_tail": ("run_evidence/log_tail.py.src",),
-    "run_evidence.log_tail_and_age": ("run_evidence/log_tail_and_age.py.src",),
     "managed_scheduler.runtime_identity": ("managed_scheduler/runtime_identity.py.src",),
     "managed_scheduler.process_launch": (
         "managed_scheduler/_process_launch_header.py.src",
@@ -69,7 +39,6 @@ _PROGRAMS = {
     "plan_rendering.slurm_allocation_guard": ("plan_rendering/slurm_allocation_guard.py.src",),
     "plan_rendering.verify_input_snapshots": ("plan_rendering/verify_input_snapshots.py.src",),
     "slurm.worker_bootstrap": ("slurm/worker_bootstrap.py.src",),
-    "runtime_sync.sync": (_FRAGMENTS["runtime_guard"], "runtime_sync/sync.py.src"),
 }
 
 

@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
-from ..decision_paths import path_context, path_validation, validate_input_path
+from ..decision_paths import validate_input_path
 from ..domain.sidecar_summaries import looks_like_placeholder_path
 from ..models import (
     REPO_ROOT,
@@ -83,11 +83,7 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def _sleep2stat_existing_run_dir_issue(recipe: dict, raw_path: Any) -> DecisionIssue | None:
-    context = path_context(recipe, raw_path)
-    validation = path_validation(recipe, context)
-    if context != "local" or validation in {"remote", "ssh"}:
-        return None
+def _sleep2stat_existing_run_dir_issue(raw_path: Any) -> DecisionIssue | None:
     path = Path(str(raw_path)).expanduser()
     if not path.is_absolute():
         path = REPO_ROOT / path
@@ -300,7 +296,7 @@ class Sleep2statAdapter(TaskAdapter):
                 )
             )
         if config_run_dir:
-            existing_run_dir_issue = _sleep2stat_existing_run_dir_issue(recipe, config_run_dir)
+            existing_run_dir_issue = _sleep2stat_existing_run_dir_issue(config_run_dir)
             if existing_run_dir_issue is not None:
                 issues.append(existing_run_dir_issue)
         effective_split = _as_list(inputs.get("split") or cfg_data.get("split"))

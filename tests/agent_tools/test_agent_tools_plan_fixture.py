@@ -60,7 +60,6 @@ def test_plan_fixture_restores_exact_stubs_and_streams_after_an_exception(tmp_pa
         assert argv == ["plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)]
         assert execution_snapshot.run_execution_command is run_execution_preflight_fixture
         experiment_io.validate_managed_output_paths(tmp_path, [plan_dir])
-        experiment_io.validate_managed_output_paths(tmp_path, [plan_dir], remote="unused-test-host")
         print("fixture stdout")
         print("fixture stderr", file=sys.stderr)
         raise ValueError("fixture failure")

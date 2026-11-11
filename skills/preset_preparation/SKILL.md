@@ -35,11 +35,10 @@ SSH shell or retry a launch after a lost receipt. Observe with
 [managed preset contract](../../doc/agent_contracts/task_recipe.md#managed-preset-preparation).
 The workload and lifecycle commits share the planned interpreter.
 New local plans at the manager checkout freeze its current
-Python and baseline Git HEAD by default. For a different workdir or remote path
-context, provide a complete local `execution.python`,
+Python and baseline Git HEAD by default. For a different workdir, provide a complete local `execution.python`,
 `execution.runtime_commit`, and absolute `execution.workdir` identity in the
 recipe; use an absolute Python path to avoid launcher PATH drift. Plan on the
-execution host: preset plans do not provide recipe-driven SSH execution.
+execution host.
 Historical plans without the direct
 scheduler declaration retain their original script behavior; do not patch them
 to add identity or route them through the new launcher. The provenance-aware

@@ -50,7 +50,7 @@ These must stay domain-free — the layering guard allows them **no** domain
 imports.
 
 `python_programs` owns the canonical loader for embedded kernel program source
-files used by transport and experiment-control modules.
+files used by transport and the launch, probe and plan-rendering modules.
 
 `runtime_sync` owns dry-run inspection and clean `origin/main` fast-forward of
 one existing checkout. It shares `runtime_lock` with launch paths so an update

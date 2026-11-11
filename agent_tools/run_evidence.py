@@ -1,10 +1,9 @@
 """Observation of one direct run: process identity, logs, artifacts, and health.
 
-Layer 0 leaf. Turns a manifest row plus live probes into a status row while
-keeping three kinds of uncertainty apart: a confirmed-unsafe identity
-(``ProcessIdentityError``), an unreachable host (``unknown_remote``), and a
-genuinely absent process. Collapsing them would let a transport failure read as
-a finished run.
+Layer 0 leaf. Turns a manifest row plus live local probes into a status row
+while keeping a confirmed-unsafe identity (``ProcessIdentityError``), a failed
+probe, and a genuinely absent process apart. Collapsing them would let a probe
+failure read as a finished run.
 
 Observes and returns; it never persists a row or launches work. It also owns
 ``stop_process_group``, the identity-verified process-group termination
@@ -13,22 +12,19 @@ primitive used by the managed launchers.
 
 from __future__ import annotations
 
-import base64
 import calendar
 import codecs
 from collections.abc import Mapping
 import json
-import locale
 import os
 from pathlib import Path
 import signal
 import stat
 import subprocess
 import time
-from typing import Any, BinaryIO, Literal, TypedDict, TypeGuard, cast
+from typing import Any, BinaryIO, Literal, TypedDict, cast
 
 from . import transport
-from .experiment_io import REMOTE_MISSING_RETURN_CODE
 from .experiment_workspace import (
     MONITOR_EXIT_CODE_PREFIX,
     PROCESS_IDENTITY_FIELDS,
@@ -39,11 +35,9 @@ from .experiment_workspace import (
 from .manifests import read_json, utc_now
 from .models import JsonValue, is_full_git_object_id
 from .progress import read_progress
-from .transport import SSH_TIMEOUT_SECONDS
 
 RUN_EVIDENCE_FIELDS = {
     "target",
-    "host",
     "workdir",
     "gpus",
     "pid_path",
@@ -120,15 +114,14 @@ def status_row(
 ) -> dict[str, JsonValue]:
     """Observe a direct run and return a row merged with caller-supplied history.
 
-    Reads local/SSH process identity, logs and runtime artifacts; health adds
+    Reads local process identity, logs and runtime artifacts; health adds
     progress, I/O and GPU probes. Does not persist the returned row or launch or
     stop work. previous supplies prior lifecycle and evidence fields, not a
     snapshot refreshed here; merge_run_row applies the lifecycle merge rules.
 
     Missing/invalid managed identity and uncertain probes take different paths:
-    ProcessIdentityError records process_identity_error, while remote uncertainty
-    can produce unknown_remote. Unavailable remote artifact observations retain
-    prior artifact fields. Neither a discovered manifest nor health establishes
+    ProcessIdentityError records process_identity_error, while a failed probe
+    leaves the running state unknown. Neither a discovered manifest nor health establishes
     completion. When an observed active process disappears without a script-owned
     terminal commit, the script-owned path reports failed; monitor-owned runs use
     log evidence to determine finished versus failed. Unhandled artifact, parsing
@@ -162,11 +155,7 @@ def status_row(
                 if populated_process_fields == PROCESS_IDENTITY_FIELDS:
                     committed_process_identity = process_identity
                 elif running_state is True:
-                    _require_process_script(
-                        process_identity["pid"],
-                        previous.get("script") or row.get("script"),
-                        row,
-                    )
+                    _require_process_script(process_identity["pid"], previous.get("script") or row.get("script"))
                     committed_process_identity = process_identity
                 else:
                     # A dead leader cannot bind previously unfrozen PID evidence to the launch script.
@@ -174,7 +163,7 @@ def status_row(
                     running_state = None
         else:
             pid = read_pid(row.get("pid_path"), row)
-            running_state = process_running(row, pid) if pid is not None else False
+            running_state = process_running(pid) if pid is not None else False
     except ProcessIdentityError as exc:
         # Corrupt, incomplete, or reused identity is confirmed unsafe evidence, not a transient probe failure.
         observed_status: JsonValue = previous.get("status") or row.get("status") or "missing_pid"
@@ -185,13 +174,11 @@ def status_row(
             observed_status = "missing_pid"
     except RuntimeError as exc:
         observed_status = previous.get("status") or row.get("status") or "missing_pid"
-        if not is_remote_row(row) and observed_status in {"planned", "pending"} and isinstance(exc.__cause__, OSError):
+        if observed_status in {"planned", "pending"} and isinstance(exc.__cause__, OSError):
             raise
         pid = _to_int(previous.get("pid") or row.get("pid"))
         running_state = None
-        if is_remote_row(row):
-            observed_status = "unknown_remote"
-        elif observed_status in {"planned", "pending"}:
+        if observed_status in {"planned", "pending"}:
             observed_status = "missing_pid"
     else:
         observed_status = row.get("status") or "unknown"
@@ -205,18 +192,11 @@ def status_row(
         dead_unbound_process_identity=dead_unbound_process_identity,
         script_commits_terminal_status=script_commits_terminal_status,
     )
-    # Remote artifacts must be observed on the execution host; transport uncertainty preserves prior evidence.
-    manifest = str(previous.get("run_manifest") or row.get("run_manifest") or "")
-    checkpoints = [name for name in str(previous.get("checkpoints") or row.get("checkpoints") or "").split(";") if name]
     artifact_row = {
         **row,
         **{field: previous[field] for field in ("runtime_dir", "checkpoint_dir") if field in previous},
     }
-    observed_artifacts = runtime_artifacts(artifact_row)
-    health_checkpoints = None
-    if observed_artifacts is not None:
-        manifest, _manifest_data, checkpoints = observed_artifacts
-        health_checkpoints = checkpoints
+    manifest, _manifest_data, checkpoints = runtime_artifacts(artifact_row)
     observation = {
         **row,
         **(committed_process_identity or {}),
@@ -225,7 +205,7 @@ def status_row(
         or previous.get("pid")
         or row.get("pid")
         or "",
-        "log_tail": log_tail(row.get("log_path"), row),
+        "log_tail": log_tail(row.get("log_path")),
         "run_manifest": str(manifest or ""),
         "checkpoints": ";".join(checkpoints),
         "monitored_at": utc_now(),
@@ -234,9 +214,7 @@ def status_row(
         observation["process_identity_error"] = process_identity_error
     output = merge_run_row(previous, observation)
     if health:
-        output.update(
-            **health_fields(run_dir, row, previous, pid, running_state, str(output["status"]), health_checkpoints)
-        )
+        output.update(**health_fields(run_dir, row, previous, pid, running_state, str(output["status"]), checkpoints))
     return output
 
 
@@ -258,18 +236,6 @@ def _direct_run_status(
         observed_status = "running"
     elif (
         pid is None
-        and is_remote_row(row)
-        and observed_status
-        in {
-            "launched",
-            "running",
-            "unknown_remote",
-            "missing_pid",
-        }
-    ):
-        observed_status = "unknown_remote"
-    elif (
-        pid is None
         and running_state is False
         and managed_process_identity
         and observed_status in {"launched", "running"}
@@ -278,13 +244,11 @@ def _direct_run_status(
     elif pid is None and observed_status == "launched":
         observed_status = "missing_pid"
     elif running_state is None:
-        if is_remote_row(row):
-            observed_status = "unknown_remote"
-        elif dead_unbound_process_identity:
+        if dead_unbound_process_identity:
             observed_status = "missing_pid"
     elif running:
         observed_status = "running"
-    elif observed_status in {"launched", "running", "unknown_remote"}:
+    elif observed_status in {"launched", "running"}:
         if script_commits_terminal_status:
             # Lifecycle-enabled scripts commit their own terminal status; disappearance without it is failure.
             observed_status = "failed"
@@ -295,10 +259,7 @@ def _direct_run_status(
                 row,
                 require_exit_code=owner == "monitor",
             )
-            if log_failed is None and is_remote_row(row):
-                observed_status = "unknown_remote"
-            else:
-                observed_status = "failed" if log_failed else "finished"
+            observed_status = "failed" if log_failed else "finished"
     if script_commits_terminal_status and previous.get("status") == "stopping" and previous.get("stop_requested_at"):
         # The stop manager owns final stopped evidence; a live probe cannot release its recorded intent.
         observed_status = "stopping"
@@ -347,70 +308,24 @@ def checkpoint_names(run: Mapping[str, JsonValue]) -> list[str]:
     ckpt_dir = Path(str(run["checkpoint_dir"]))
     if ckpt_dir.is_symlink() or not ckpt_dir.is_dir():
         return []
-    # Match remote evidence collection: only physical checkpoint files belong to the runtime inventory.
+    # Only physical checkpoint files belong to the runtime inventory.
     return [path.name for path in sorted(ckpt_dir.glob("*.ckpt")) if not path.is_symlink() and path.is_file()]
 
 
-def runtime_artifacts(row: Mapping[str, JsonValue]) -> tuple[str, dict[str, Any], list[str]] | None:
-    """Observe a runtime manifest and checkpoint inventory on the row's host.
+def runtime_artifacts(row: Mapping[str, JsonValue]) -> tuple[str, dict[str, Any], list[str]]:
+    """Observe a runtime manifest and checkpoint inventory.
 
     Returns (manifest path or empty string, parsed mapping, checkpoint basenames).
-    Missing artifacts are represented inside that tuple, not by None. SSH probe
-    exit codes 124 and 255 return None to signal unavailable observation; other
-    failed probes or malformed responses raise RuntimeError. Local reads use
-    find_run_manifest and checkpoint_names, whose validation errors propagate.
-    Reads without updating state; callers decide whether to retain prior evidence
-    and must separately validate runtime identity and completion.
+    Missing artifacts are represented inside that tuple. find_run_manifest and
+    checkpoint_names validation errors propagate. Reads without updating state;
+    callers must separately validate runtime identity and completion.
     """
-    if is_remote_row(row):
-        result = run_row_command(
-            row,
-            transport.remote_python_program_command(
-                "run_evidence.runtime_artifacts",
-                str(row.get("runtime_dir") or ""),
-                str(row.get("checkpoint_dir") or ""),
-            ),
-        )
-        if result.returncode == 0:
-            try:
-                artifact_payload = json.loads(result.stdout)
-            except (TypeError, json.JSONDecodeError):
-                raise RuntimeError(f"SSH runtime artifact observation returned malformed output on {row['host']}.")
-            if not isinstance(artifact_payload, dict) or not isinstance(artifact_payload.get("checkpoints"), list):
-                raise RuntimeError(f"SSH runtime artifact observation returned malformed output on {row['host']}.")
-            manifest = artifact_payload.get("manifest", {})
-            if not isinstance(manifest, dict):
-                raise RuntimeError(f"SSH runtime artifact observation returned malformed output on {row['host']}.")
-            return (
-                str(artifact_payload.get("run_manifest") or ""),
-                manifest,
-                [str(name) for name in artifact_payload["checkpoints"]],
-            )
-        if result.returncode in {124, 255}:
-            return None
-        detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"SSH runtime artifact observation failed on {row['host']}: {detail}")
     manifest_path = find_run_manifest(row)
     manifest = read_json(manifest_path) if manifest_path else {}
     return str(manifest_path or ""), manifest, checkpoint_names(row)
 
 
-def checkpoint_file_sha256(row: Mapping[str, JsonValue], checkpoint_path: str | Path) -> str:
-    # Checkpoint bytes belong to the frozen execution target; a manager-local namesake is not SSH evidence.
-    if row.get("target") == "ssh" and not row.get("host"):
-        raise ValueError("Managed SSH checkpoint evidence requires a host.")
-    if is_remote_row(row):
-        result = run_row_command(
-            row,
-            transport.remote_python_program_command("run_evidence.checkpoint_file_sha256", str(checkpoint_path)),
-        )
-        if result.returncode != 0:
-            detail = result.stderr.strip() or f"exit code {result.returncode}"
-            raise RuntimeError(f"SSH checkpoint SHA-256 failed on {row['host']}: {detail}")
-        digest = result.stdout.strip()
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-            raise RuntimeError(f"SSH checkpoint SHA-256 returned malformed output on {row['host']}.")
-        return digest
+def checkpoint_file_sha256(checkpoint_path: str | Path) -> str:
     path = Path(checkpoint_path)
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"Checkpoint is not a physical regular file: {path}")
@@ -423,7 +338,7 @@ def read_pid(
     *,
     expected_script: str | Path | None = None,
 ) -> int | None:
-    text = _read_pid_text(path, row)
+    text = _read_pid_text(path)
     if text is None:
         return None
     if text.startswith("{"):
@@ -432,7 +347,7 @@ def read_pid(
             state = process_identity_running(row or {}, identity)
             if state is not True:
                 raise RuntimeError(f"Cannot verify PID {identity['pid']} process identity.")
-            _require_process_script(identity["pid"], expected_script, row)
+            _require_process_script(identity["pid"], expected_script)
         return identity["pid"]
     try:
         pid = int(text)
@@ -451,16 +366,16 @@ def read_process_identity(
     *,
     expected_script: str | Path | None = None,
 ) -> ProcessIdentity | None:
-    """Read managed PID/group/start-token identity from a local or remote file.
+    """Read managed PID/group/start-token identity from a local file.
 
     Returns None when no path is supplied or the file is missing. Legacy scalar
-    PIDs and malformed identity payloads raise ProcessIdentityError; file access,
-    empty-file and remote command failures can raise RuntimeError. expected_script
+    PIDs and malformed identity payloads raise ProcessIdentityError; file access
+    and empty-file failures can raise RuntimeError. expected_script
     additionally checks the live PID's command when supplied. Reading identity
     alone does not establish that its process group is still running or matches
     canonical row fields; process_identity_running performs those checks.
     """
-    text = _read_pid_text(path, row)
+    text = _read_pid_text(path)
     if text is None:
         return None
     if not text.startswith("{"):
@@ -473,19 +388,18 @@ def read_process_identity(
         raise ProcessIdentityError(f"PID file lacks process group identity: {path}")
     identity = _parse_process_identity(text, path)
     if expected_script is not None:
-        _require_process_script(identity["pid"], expected_script, row)
+        _require_process_script(identity["pid"], expected_script)
     return identity
 
 
-def _require_process_script(pid: int, expected_script: JsonValue | Path, row: Mapping[str, JsonValue] | None) -> None:
+def _require_process_script(pid: int, expected_script: JsonValue | Path) -> None:
     script_path = Path(str(expected_script or ""))
     if not script_path.is_absolute():
         raise RuntimeError(f"Frozen run script is not absolute: {expected_script}")
-    result = run_row_command(row or {}, f"ps -ww -p {pid} -o args=")
+    result = run_row_command(f"ps -ww -p {pid} -o args=")
     if result.returncode != 0 or not result.stdout.strip():
-        location = f" on {row['host']}" if is_remote_row(row) else ""
         detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"Cannot verify PID {pid} process identity{location}: {detail}")
+        raise RuntimeError(f"Cannot verify PID {pid} process identity: {detail}")
     process_args = result.stdout.rstrip("\r\n")
     expected_suffix = f"bash {script_path}"
     prefix = process_args[: -len(expected_suffix)] if process_args.endswith(expected_suffix) else ""
@@ -494,36 +408,24 @@ def _require_process_script(pid: int, expected_script: JsonValue | Path, row: Ma
         raise ProcessIdentityError(f"PID {pid} process identity does not match frozen script: {script_path}")
 
 
-def _read_pid_text(path: Any, row: Mapping[str, JsonValue] | None) -> str | None:
+def _read_pid_text(path: Any) -> str | None:
     if not path:
         return None
-    if is_remote_row(row):
-        result = run_row_command(
-            row or {},
-            transport.remote_python_program_command("run_evidence.read_pid_text", str(path)),
-        )
-        if result.returncode == REMOTE_MISSING_RETURN_CODE:
+    pid_path = Path(str(path))
+    try:
+        info = os.lstat(pid_path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"PID file read failed: {path}") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise RuntimeError(f"PID file is not an independent regular file: {path}")
+    try:
+        if not pid_path.exists():
             return None
-        if result.returncode != 0:
-            detail = result.stderr.strip() or f"exit code {result.returncode}"
-            raise RuntimeError(f"SSH PID read failed for {path} on {row['host']}: {detail}")
-        text = result.stdout.strip()
-    else:
-        pid_path = Path(str(path))
-        try:
-            info = os.lstat(pid_path)
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            raise RuntimeError(f"PID file read failed: {path}") from exc
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise RuntimeError(f"PID file is not an independent regular file: {path}")
-        try:
-            if not pid_path.exists():
-                return None
-            text = pid_path.read_text().strip()
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(f"PID file read failed: {path}") from exc
+        text = pid_path.read_text().strip()
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"PID file read failed: {path}") from exc
     if not text:
         raise RuntimeError(f"PID file is empty or invalid: {path}")
     return text
@@ -565,16 +467,11 @@ def process_identity_running(row: Mapping[str, JsonValue], identity: ProcessIden
     failed, not that the group exited. Canonical mismatches, malformed successful
     responses and an observed leader with a different identity raise
     ProcessIdentityError. A missing leader can still leave a running group.
-    Executes a local/SSH read-only probe without changing lifecycle state.
+    Executes a local read-only probe without changing lifecycle state.
     """
     _require_matching_process_identity(row, identity)
     result = run_row_command(
-        row,
-        transport.remote_python_program_command(
-            "run_evidence.process_probe",
-            identity["pid"],
-            identity["process_group_id"],
-        ),
+        transport.python_program_command("run_evidence.process_probe", identity["pid"], identity["process_group_id"])
     )
     if result.returncode != 0:
         return None
@@ -602,16 +499,9 @@ def _require_matching_process_identity(row: Mapping[str, JsonValue], identity: P
             raise ProcessIdentityError(f"PID file differs from canonical {field}: {identity['pid']}")
 
 
-def process_running(row: Mapping[str, JsonValue], pid: int | None) -> bool | None:
+def process_running(pid: int | None) -> bool:
     if pid is None:
         return False
-    if row.get("target") == "ssh" and row.get("host"):
-        result = run_row_command(row, f"ps -p {pid} -o pid=")
-        if result.returncode == 0:
-            return str(pid) in result.stdout
-        if result.returncode == 1:
-            return False
-        return None
     try:
         os.kill(pid, 0)
     except OSError:
@@ -623,22 +513,6 @@ def stop_process_group(row: Mapping[str, JsonValue], identity: ProcessIdentity, 
     _require_matching_process_identity(row, identity)
     pid = identity["pid"]
     pgid = identity["process_group_id"]
-    if is_remote_row(row):
-        # Verification and signal share one remote process so PID reuse cannot race a second SSH call.
-        result = run_row_command(
-            row,
-            transport.remote_python_program_command(
-                "run_evidence.process_stop",
-                pid,
-                pgid,
-                identity["process_start_token"],
-                timeout,
-            ),
-        )
-        if result.returncode != 0:
-            detail = result.stderr.strip() or f"exit code {result.returncode}"
-            raise RuntimeError(f"Failed to stop remote process group {pgid} on {row['host']}: {detail}")
-        return
     if pgid != pid or pgid == os.getpgrp():
         raise RuntimeError(f"Refusing to signal unsafe process group: {pgid}")
     running = process_identity_running(row, identity)
@@ -669,33 +543,17 @@ def log_has_failure(
 ) -> bool | None:
     """Interpret a log tail as failure evidence without changing runtime state.
 
-    Reads the last 100 lines locally or through the remote log probe. A valid
+    Reads the last 100 lines of the local log. A valid
     final monitor exit-code marker takes precedence over error text; Slurm's
     rank-zero label is stripped for that marker. require_exit_code treats a
     missing/invalid final marker, including an absent log, as failure. Otherwise
     falls back to known error strings, so False alone does not prove success.
-    Unavailable remote reads return None; a remotely missing file is an empty
-    log. Unhandled local I/O and transport exceptions propagate.
+    A missing file is an empty log. Unhandled I/O exceptions propagate.
     """
     if not path:
         return require_exit_code
-    if is_remote_row(row):
-        result = run_row_command(
-            row or {},
-            transport.remote_python_program_command("run_evidence.log_tail", str(path)),
-        )
-        if result.returncode == REMOTE_MISSING_RETURN_CODE:
-            tail = ""
-        elif result.returncode != 0:
-            return None
-        else:
-            tail = result.stdout
-    else:
-        log_path = Path(str(path))
-        if not log_path.exists():
-            tail = ""
-        else:
-            tail = _local_log_tail(log_path, 100)
+    log_path = Path(str(path))
+    tail = _local_log_tail(log_path, 100) if log_path.exists() else ""
     lines = tail.splitlines()
     final_line = lines[-1] if lines else ""
     # srun --label prefixes the rank-zero terminal marker; other ranks cannot own it.
@@ -723,12 +581,9 @@ def log_has_failure(
     )
 
 
-def log_tail(path: Any, row: Mapping[str, JsonValue] | None = None, lines: int = 8) -> str:
+def log_tail(path: Any, lines: int = 8) -> str:
     if not path:
         return ""
-    if is_remote_row(row):
-        result = run_row_command(row or {}, f"tail -n {int(lines)} {transport.sh(path)}")
-        return result.stdout.strip() if result.returncode == 0 else ""
     log_path = Path(str(path))
     if not log_path.exists():
         return ""
@@ -760,42 +615,6 @@ def _local_log_tail(path: Path, lines: int) -> str:
             window *= 2
 
 
-def log_tail_and_age(path: Any, row: Mapping[str, JsonValue], lines: int = 8) -> tuple[str, int | None]:
-    if not path or not is_remote_row(row):
-        return log_tail(path, row, lines), log_age_seconds(path, row)
-    result = run_row_command(
-        row,
-        transport.remote_python_program_command("run_evidence.log_tail_and_age", str(path), int(lines)),
-    )
-    try:
-        if result.returncode != 0:
-            raise ValueError("Remote log probe failed.")
-        payload = json.loads(result.stdout)
-        if (
-            not isinstance(payload, list)
-            or len(payload) != 2
-            or any(
-                not isinstance(part, list)
-                or len(part) != 3
-                or type(part[0]) is not int
-                or not all(isinstance(value, str) for value in part[1:])
-                for part in payload
-            )
-        ):
-            raise ValueError("Remote log probe returned an incomplete response.")
-        decoded = [(part[0], *(base64.b64decode(value, validate=True) for value in part[1:])) for part in payload]
-    except (TypeError, ValueError):
-        # A broken paired response is not missing evidence; retain the two exact probes for this observation.
-        return log_tail(path, row, lines), log_age_seconds(path, row)
-    outputs = []
-    for returncode, stdout, stderr in decoded:
-        encoding = locale.getpreferredencoding(False)
-        text = stdout.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
-        stderr.decode(encoding)  # Preserve the original text subprocess's strict decoding, including stderr.
-        outputs.append(text.strip() if returncode == 0 else "")
-    return outputs[0], _to_int(outputs[1])
-
-
 def health_fields(
     run_dir: Path,
     row: Mapping[str, JsonValue],
@@ -806,12 +625,12 @@ def health_fields(
     checkpoints: list[str] | None,
 ) -> RunHealthFields:
     progress = read_run_progress(run_dir, row)
-    io_counts = proc_io(row, pid)
+    io_counts = proc_io(pid)
     read_bytes = io_counts.get("read_bytes")
     write_bytes = io_counts.get("write_bytes")
     read_delta = _delta(read_bytes, previous.get("io_read_bytes"))
     write_delta = _delta(write_bytes, previous.get("io_write_bytes"))
-    log_age = log_age_seconds(row.get("log_path"), row)
+    log_age = log_age_seconds(row.get("log_path"))
     gpu = gpu_summary(row, pid)
     checkpoint_count = len(checkpoints) if checkpoints is not None else None
     health_status = classify_health(
@@ -846,15 +665,15 @@ def health_fields(
 def read_run_progress(run_dir: Path, row: Mapping[str, Any]) -> dict[str, Any]:
     progress_dir = row.get("progress_dir") or row.get("workdir") or run_dir
     try:
-        return read_progress(progress_dir, remote=row.get("host") if is_remote_row(row) else None)
+        return read_progress(progress_dir)
     except Exception as exc:
         return {"status": "unknown", "message": str(exc)}
 
 
-def proc_io(row: Mapping[str, JsonValue], pid: int | None) -> dict[str, int]:
+def proc_io(pid: int | None) -> dict[str, int]:
     if pid is None:
         return {}
-    result = run_row_command(row, f"cat /proc/{int(pid)}/io")
+    result = run_row_command(f"cat /proc/{int(pid)}/io")
     if result.returncode != 0:
         return {}
     counts: dict[str, int] = {}
@@ -874,7 +693,6 @@ def gpu_summary(row: Mapping[str, JsonValue], pid: int | None) -> str | None:
         return ""
     gpu_probe_required = bool(str(row.get("gpus") or "").strip())
     apps = run_row_command(
-        row,
         "nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory --format=csv,noheader,nounits",
     )
     if apps.returncode != 0:
@@ -890,7 +708,7 @@ def gpu_summary(row: Mapping[str, JsonValue], pid: int | None) -> str | None:
     managed_pids = {pid}
     process_group_id = _to_int(row.get("process_group_id"))
     if process_group_id is not None:
-        processes = run_row_command(row, "ps -eo pid=,pgid=")
+        processes = run_row_command("ps -eo pid=,pgid=")
         if processes.returncode == 0:
             for line in processes.stdout.splitlines():
                 parts = line.split()
@@ -906,7 +724,6 @@ def gpu_summary(row: Mapping[str, JsonValue], pid: int | None) -> str | None:
     if not matched:
         return ""
     gpu_state = run_row_command(
-        row,
         "nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits",
     )
     summary = "; ".join(matched)
@@ -915,18 +732,9 @@ def gpu_summary(row: Mapping[str, JsonValue], pid: int | None) -> str | None:
     return summary
 
 
-def log_age_seconds(path: Any, row: Mapping[str, JsonValue]) -> int | None:
+def log_age_seconds(path: Any) -> int | None:
     if not path:
         return None
-    if is_remote_row(row):
-        quoted = transport.sh(path)
-        result = run_row_command(
-            row,
-            f"now=$(date +%s); m=$(stat -c %Y {quoted} 2>/dev/null) || exit 1; echo $((now-m))",
-        )
-        if result.returncode != 0:
-            return None
-        return _to_int(result.stdout.strip())
     log_path = Path(str(path))
     if not log_path.exists():
         return None
@@ -948,15 +756,15 @@ def classify_health(
 ) -> str:
     """Classify supplied observations without probing or changing lifecycle state.
 
-    Unknown running state takes precedence and returns unknown_remote, even for
-    local callers. Otherwise failed/finished statuses are retained and a false
-    running_state returns the supplied status. Live activity is checked in order: GPU,
+    Unknown running state (a failed probe) takes precedence and returns the
+    historical unknown_remote health label. Otherwise failed/finished statuses
+    are retained and a false running_state returns the supplied status. Live activity is checked in order: GPU,
     positive I/O deltas, fresh progress, a log younger than 300 seconds, then
     checkpoint growth. Missing GPU/checkpoint observations yield health_unknown
     when no activity matched; possibly_stalled is a heuristic, not a failure or
     instruction to stop/restart the run.
     """
-    if status == "unknown_remote" or running_state is None:
+    if running_state is None:
         return "unknown_remote"
     if status == "failed":
         return "failed"
@@ -1021,10 +829,5 @@ def progress_age_seconds(progress: dict[str, Any]) -> int | None:
     return max(int(time.time() - calendar.timegm(parsed)), 0)
 
 
-def run_row_command(row: Mapping[str, JsonValue], command: str) -> subprocess.CompletedProcess:
-    host = str(row["host"]) if is_remote_row(row) else None
-    return transport.run_shell(host, command, timeout=SSH_TIMEOUT_SECONDS, swallow_timeout=True)
-
-
-def is_remote_row(row: Mapping[str, JsonValue] | None) -> TypeGuard[Mapping[str, Any]]:
-    return bool(row and row.get("target") == "ssh" and row.get("host"))
+def run_row_command(command: str) -> subprocess.CompletedProcess:
+    return transport.run_shell(command, swallow_timeout=True)

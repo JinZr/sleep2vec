@@ -212,7 +212,7 @@ def _frozen_plan(tmp_path: Path, *, invalid: bool = False) -> tuple[Path, dict]:
             "variant": "sleep2vec",
             "inputs": {"config": str(tmp_path / "authored-must-not-be-read.yaml")},
             "experiment": {"root": str(plan_dir.parent)},
-            "execution": {"target": "local"},
+            "execution": {},
         },
         "runs": runs,
         "execution_snapshot": {},
@@ -327,16 +327,12 @@ def test_preflight_validated_commit_still_rejects_frozen_config_drift(
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-@pytest.mark.parametrize(
-    "target,scheduler_type", [("local", "direct"), ("ssh", "direct"), ("local", "slurm"), ("ssh", "slurm")]
-)
+@pytest.mark.parametrize("scheduler_type", ["direct", "slurm"])
 def test_invalid_frozen_config_blocks_every_submission_route_without_mutation(
-    tmp_path: Path, monkeypatch, dry_run: bool, target: str, scheduler_type: str
+    tmp_path: Path, monkeypatch, dry_run: bool, scheduler_type: str
 ):
     plan_dir, plan = _frozen_plan(tmp_path, invalid=True)
-    plan["recipe"]["execution"].update({"target": target, "scheduler": {"type": scheduler_type}})
-    if target == "ssh":
-        plan["recipe"]["execution"]["host"] = "unit-host"
+    plan["recipe"]["execution"]["scheduler"] = {"type": scheduler_type}
     monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda *_args, **_kwargs: plan)
     monkeypatch.setattr(hparam_runtime, "read_run_manifest", lambda _root: plan["runs"])
     monkeypatch.setattr(
@@ -404,11 +400,11 @@ def test_active_and_terminal_launch_and_monitor_do_not_validate_configs(tmp_path
 def test_direct_observation_cannot_add_launchable_runs_and_removes_running_pending(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_evidence, "read_pid", lambda *_args: 42)
     monkeypatch.setattr(run_evidence, "process_running", lambda *_args: True)
-    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: None)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: ("", {}, []))
     monkeypatch.setattr(run_evidence, "log_tail", lambda *_args: "")
     rows = [
         {"step_id": "tune", "run_id": f"run-{index:03d}", "target": "local", "status": status}
-        for index, status in enumerate(["pending", "running", "unknown_remote", "finished"])
+        for index, status in enumerate(["pending", "running", "missing_pid", "finished"])
     ]
     by_key = {managed_run_key(row): row for row in rows}
     observed = managed_scheduler.observe_runs(tmp_path, by_key, by_key, dry_run=False)
@@ -422,7 +418,7 @@ def test_direct_observation_cannot_add_launchable_runs_and_removes_running_pendi
 
 def test_slurm_observation_and_merge_cannot_add_launchable_runs(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(managed_scheduler, "_read_slurm_json", lambda *_args: {})
-    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: None)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: ("", {}, []))
     monkeypatch.setattr(
         slurm,
         "active_jobs",

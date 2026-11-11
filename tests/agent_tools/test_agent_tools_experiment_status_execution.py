@@ -44,7 +44,7 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
     assert "generated_at" not in first
     assert first["summary"] == {"state": "blocked", "run_count": 1, "status_counts": {"unknown_scheduler": 1}}
     assert first["steps"][0]["plan_controller"] == "ordinary"
-    assert first["runs"][0]["execution"] == {"target": None, "host": None}
+    assert first["runs"][0]["execution"] == {"target": None}
     assert first["runs"][0]["scheduler"]["observed_at"] == "2026-08-25T01:02:03Z"
     assert first["runs"][0]["process"]["pid"] is None
     assert first["runs"][0]["evidence"]["checkpoint_count"] == "50"
@@ -112,7 +112,7 @@ def test_experiment_status_rejects_process_identity_on_launchable_direct_runs(tm
         experiments.experiment_status(root)
 
 
-@pytest.mark.parametrize("status", ["unknown_scheduler", "unknown_remote", "missing_pid", "submitting"])
+@pytest.mark.parametrize("status", ["unknown_scheduler", "missing_pid", "submitting"])
 def test_experiment_status_uncertain_states_block_planned_launch_and_recommend_only_monitor(tmp_path, status):
     root = tmp_path / "experiment"
     _init_workspace(root)

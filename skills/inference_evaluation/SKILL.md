@@ -20,7 +20,7 @@ The agent must stop and ask the user before continuing if any high-impact decisi
 Use the recipe `variant` to choose the module: `python -m sleep2vec.infer`, `python -m sleep2vec2.infer`, `python -m sleep2expert.infer`, or `python -m sex_age_baseline.infer`. When runtime identity is declared, use its frozen Python. `sex_age_baseline.infer` takes the same options as `sleep2vec.infer`, including checkpoint averaging and `--override-dataset-names`; it fails at launch when `--pretrained-backbone-path` is set.
 
 For rolling latest-main maintenance, use one existing checkout. Run
-`python -m agent_tools runtime-sync --workdir <checkout> [--host <host>]` first;
+`python -m agent_tools runtime-sync --workdir <checkout>` first;
 add `--execute` only to perform an authorized clean fast-forward of
 `origin/main`. Do not clone or reset. The short sync/launch lock is released
 while a job runs, so a process whose spawn boundary observed A may continue

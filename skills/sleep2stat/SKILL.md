@@ -169,10 +169,10 @@ Placeholder checkpoint:
 - Symptom: doctor blocks on `sleep2stat_config`.
 - Fix: provide a concrete checkpoint path or disable the model analyzer.
 
-Wrong path context:
+Paths on another host:
 
-- Symptom: local path validation fails for remote absolute paths.
-- Fix: set `execution.path_context: remote` and `execution.path_validation: defer` or `ssh`.
+- Symptom: local path validation fails for absolute paths that live on the cluster.
+- Fix: run `agent_tools` on the host that owns the files; recipes have no remote path context.
 
 Metric misuse:
 

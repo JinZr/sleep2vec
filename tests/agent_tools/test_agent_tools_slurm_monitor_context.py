@@ -14,14 +14,6 @@ from agent_tools.experiment_workspace import merge_run_manifest
 
 @pytest.fixture(autouse=True)
 def _isolate_execution_evidence(monkeypatch):
-    read_outputs = managed_scheduler.exp_io.read_managed_output_texts_at
-    monkeypatch.setattr(
-        managed_scheduler.exp_io,
-        "read_managed_output_texts_at",
-        lambda owner, paths, remote=None: (
-            {str(path): None for path in paths} if remote else read_outputs(owner, paths)
-        ),
-    )
     monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda _row: ("", {}, []))
     monkeypatch.setattr(run_evidence, "log_tail", lambda *_args: "")
     monkeypatch.setattr(run_evidence, "log_age_seconds", lambda *_args: None)
@@ -42,7 +34,6 @@ def _bound_rows(tmp_path: Path, count: int = 2) -> list[dict]:
             "scheduler_result_path": str(tmp_path / f"terminal-{index}.json"),
             "allocation_identity_path": str(tmp_path / f"allocation-{index}.json"),
             "target": "local",
-            "host": "",
             "status": "queued",
         }
         for index in range(count)
@@ -51,8 +42,6 @@ def _bound_rows(tmp_path: Path, count: int = 2) -> list[dict]:
 
 def _execution(row: dict) -> dict:
     execution = {"target": row["target"]}
-    if row["target"] == "ssh":
-        execution["host"] = row["host"]
     if row["scheduler_direct_controller"] == "true":
         execution["scheduler"] = {"direct_controller": True}
     return execution
@@ -178,26 +167,26 @@ def test_hparam_continuous_monitor_rebuilds_snapshot_each_round(tmp_path: Path, 
 
 def test_context_separates_same_job_ids_by_frozen_route(tmp_path: Path, monkeypatch):
     routes = [
-        ("local", "", "cluster-a", "false"),
-        ("local", "", "cluster-b", "false"),
-        ("ssh", "host-a", "cluster-a", "false"),
-        ("ssh", "host-a", "cluster-a", "true"),
-        ("ssh", "host-b", "cluster-a", "false"),
+        ("cluster-a", "false"),
+        ("cluster-b", "false"),
+        ("cluster-a", "true"),
     ]
     rows = _bound_rows(tmp_path, 2 * len(routes))
     grouped = {}
     for index, row in enumerate(rows):
-        target, host, cluster, topology = routes[index // 2]
-        row.update(target=target, host=host, scheduler_cluster=cluster, scheduler_direct_controller=topology)
+        cluster, topology = routes[index // 2]
+        row.update(scheduler_cluster=cluster, scheduler_direct_controller=topology)
         row["scheduler_job_id"] = str(3880 + index % 2)
-        key = (target, host, "" if topology == "true" else cluster)
+        key = ("" if topology == "true" else cluster, topology == "true")
         grouped.setdefault(key, []).append(row)
     calls = []
 
     def run_command(execution, argv, *, timeout):
         assert argv[0] == "squeue"
         cluster = next((arg.split("=", 1)[1] for arg in argv if arg.startswith("--clusters=")), "")
-        key = (execution["target"], execution.get("host", ""), cluster)
+        direct_controller = execution.get("scheduler", {}).get("direct_controller") is True
+        assert (cluster == "") == direct_controller
+        key = (cluster, direct_controller)
         calls.append((key, argv))
         return subprocess.CompletedProcess(argv, 0, _queue_output(grouped[key]), "")
 
@@ -265,7 +254,7 @@ def test_context_is_lazy_until_after_sidecar_validation(tmp_path: Path, monkeypa
         managed_scheduler.observe_slurm_run(tmp_path, _execution(rows[0]), rows[0], monitor_context=context)
 
 
-@pytest.mark.parametrize("failure", ["partial", "ssh255", "timeout", "malformed", "duplicate"])
+@pytest.mark.parametrize("failure", ["partial", "exit255", "timeout", "malformed", "duplicate"])
 def test_bad_batch_disables_only_its_group_and_requeries_every_job(tmp_path: Path, monkeypatch, failure: str):
     rows = _bound_rows(tmp_path, 4)
     for row in rows[2:]:
@@ -282,8 +271,8 @@ def test_bad_batch_disables_only_its_group_and_requeries_every_job(tmp_path: Pat
                 raise subprocess.TimeoutExpired(argv, timeout)
             if failure == "partial":
                 return subprocess.CompletedProcess(argv, 1, _queue_output(queried[:1]), "Invalid job id specified")
-            if failure == "ssh255":
-                return subprocess.CompletedProcess(argv, 255, _queue_output(queried[:1]), "ssh: connection closed")
+            if failure == "exit255":
+                return subprocess.CompletedProcess(argv, 255, _queue_output(queried[:1]), "connection closed")
             output = _queue_output(queried[:1]) + (
                 "broken row\n" if failure == "malformed" else _queue_output(queried[:1])
             )
@@ -365,7 +354,7 @@ def test_successful_batch_missing_job_keeps_per_job_query(tmp_path: Path, monkey
         {"scheduler_cluster": ""},
         {"scheduler_submit_token": ""},
         {"target": ""},
-        {"target": "ssh", "host": ""},
+        {"target": "ssh"},
         {"scheduler_direct_controller": ""},
         {"scheduler_direct_controller": True},
         {"scheduler_raw_state": "SUBMISSION_CLUSTER_MISMATCH"},
@@ -448,27 +437,11 @@ def test_context_does_not_consume_snapshot_on_different_execution_route(tmp_path
     monkeypatch.setattr(slurm, "run_command", run_command)
     context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
     managed_scheduler.observe_slurm_run(
-        tmp_path, {"target": "ssh", "host": "other-host"}, rows[0], monitor_context=context
+        tmp_path, {"target": "local", "scheduler": {"direct_controller": True}}, rows[0], monitor_context=context
     )
     for row in rows:
         managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
     assert [argv[-1] for _execution, argv in calls] == ["3880", "3880,3881"]
-
-
-def test_remote_transport_override_rows_do_not_share_snapshot(tmp_path: Path, monkeypatch):
-    rows = _bound_rows(tmp_path)
-    calls = []
-
-    def run_command(_execution, argv, *, timeout):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, _queue_output(rows), "")
-
-    monkeypatch.setattr(slurm, "run_command", run_command)
-    context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path, remote="unit-host")
-    for row in rows:
-        observation = {**row, "target": "ssh", "host": "unit-host"}
-        managed_scheduler.observe_slurm_run(tmp_path, _execution(observation), observation, monitor_context=context)
-    assert [argv[-1] for argv in calls] == ["3880", "3881"]
 
 
 def test_queue_launch_observation_does_not_reuse_monitor_snapshot(tmp_path: Path, monkeypatch):

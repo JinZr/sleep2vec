@@ -18,8 +18,8 @@ def reads(monkeypatch):
     calls = []
     reader = experiment_io.read_managed_output_texts_at
 
-    def read(root, paths, *, remote=None):
-        calls.append((remote, tuple(str(path) for path in paths)))
+    def read(root, paths):
+        calls.append(tuple(str(path) for path in paths))
         return reader(root, paths)
 
     monkeypatch.setattr(experiment_io, "read_managed_output_texts_at", read)
@@ -96,12 +96,10 @@ def test_observe_slurm_run_first_fills_canonical_actual_runtime_commit_from_side
     assert committed["runtime_commit"] == "b" * 40
 
 
-@pytest.mark.parametrize("target", ["local", "ssh"])
 @pytest.mark.parametrize("terminal", [True, False])
-def test_sidecars_are_read_in_two_lazy_host_phases(tmp_path, monkeypatch, reads, target, terminal):
+def test_sidecars_are_read_in_two_lazy_phases(tmp_path, monkeypatch, reads, terminal):
     rows = _bound_rows(tmp_path, 6)
     for row in rows:
-        row.update(target=target, host="unit-host" if target == "ssh" else "")
         if terminal:
             _write_sidecar(row)
             Path(row["allocation_identity_path"]).symlink_to(tmp_path / "forbidden")
@@ -115,15 +113,12 @@ def test_sidecars_are_read_in_two_lazy_host_phases(tmp_path, monkeypatch, reads,
 
     assert {row["status"] for row in observed} == {"running"}
     expected_fields = ["scheduler_result_path"] + ([] if terminal else ["allocation_identity_path"])
-    assert reads == [
-        ("unit-host" if target == "ssh" else None, tuple(row[field] for row in rows)) for field in expected_fields
-    ]
+    assert reads == [tuple(row[field] for row in rows) for field in expected_fields]
 
 
-def test_file_batches_use_host_not_scheduler_route(tmp_path, monkeypatch, reads):
+def test_file_batches_ignore_scheduler_route(tmp_path, monkeypatch, reads):
     rows = _bound_rows(tmp_path, 6)
     for index, row in enumerate(rows):
-        row.update(target="ssh", host="host-a" if index < 4 else "host-b")
         row["scheduler_cluster"] = f"cluster-{index}"
         row["scheduler_direct_controller"] = "true" if index % 2 else "false"
         _write_sidecar(row)
@@ -133,10 +128,7 @@ def test_file_batches_use_host_not_scheduler_route(tmp_path, monkeypatch, reads)
     for row in rows:
         managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
 
-    assert reads == [
-        ("host-a", tuple(row["scheduler_result_path"] for row in rows[:4])),
-        ("host-b", tuple(row["scheduler_result_path"] for row in rows[4:])),
-    ]
+    assert reads == [tuple(row["scheduler_result_path"] for row in rows)]
 
 
 @pytest.mark.parametrize("bad_text", ["{", "null", "[]", " "])
@@ -157,8 +149,8 @@ def test_future_bad_terminal_does_not_block_current_allocation(tmp_path, monkeyp
 
     assert len(calls) == 1
     assert reads == [
-        (None, tuple(row["scheduler_result_path"] for row in rows)),
-        (None, (rows[0]["allocation_identity_path"],)),
+        tuple(row["scheduler_result_path"] for row in rows),
+        (rows[0]["allocation_identity_path"],),
     ]
 
 
@@ -182,8 +174,8 @@ def test_future_malformed_runtime_commit_does_not_block_current_allocation(tmp_p
 
     assert len(calls) == 1
     assert reads == [
-        (None, tuple(row["scheduler_result_path"] for row in rows)),
-        (None, (rows[0]["allocation_identity_path"],)),
+        tuple(row["scheduler_result_path"] for row in rows),
+        (rows[0]["allocation_identity_path"],),
     ]
 
 
@@ -203,8 +195,8 @@ def test_allocation_batch_contains_only_rows_with_absent_terminal(tmp_path, monk
         managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
 
     assert reads == [
-        (None, tuple(row["scheduler_result_path"] for row in rows)),
-        (None, tuple(row["allocation_identity_path"] for row in rows[1:])),
+        tuple(row["scheduler_result_path"] for row in rows),
+        tuple(row["allocation_identity_path"] for row in rows[1:]),
     ]
 
 
@@ -227,14 +219,14 @@ def test_bad_future_file_discards_batch_but_preserves_current_error_order(tmp_pa
         managed_scheduler.observe_slurm_run(tmp_path, _execution(rows[2]), rows[2], monitor_context=context)["status"]
         == "running"
     )
-    batches = [paths for _host, paths in reads if len(paths) > 1 and rows[1][field] in paths]
+    batches = [paths for paths in reads if len(paths) > 1 and rows[1][field] in paths]
     assert len(batches) == 1
-    assert (None, (rows[0][field],)) in reads
-    assert (None, (rows[1][field],)) in reads
-    assert (None, (rows[2][field],)) in reads
+    assert (rows[0][field],) in reads
+    assert (rows[1][field],) in reads
+    assert (rows[2][field],) in reads
 
 
-@pytest.mark.parametrize("failure", ["timeout", "transport", "payload"])
+@pytest.mark.parametrize("failure", ["runtime", "payload"])
 def test_batch_protocol_failure_has_only_one_attempt_then_singletons(tmp_path, monkeypatch, reads, failure):
     rows = _bound_rows(tmp_path, 3)
     for row in rows:
@@ -242,15 +234,13 @@ def test_batch_protocol_failure_has_only_one_attempt_then_singletons(tmp_path, m
     read = experiment_io.read_managed_output_texts_at
     batches = []
 
-    def fail_batch(root, paths, *, remote=None):
+    def fail_batch(root, paths):
         if len(paths) > 1:
             batches.append(tuple(paths))
-            if failure == "timeout":
-                raise subprocess.TimeoutExpired("ssh", 1)
-            if failure == "transport":
-                raise RuntimeError("SSH read failed")
-            raise ValueError("incomplete remote payload")
-        return read(root, paths, remote=remote)
+            if failure == "runtime":
+                raise RuntimeError("batch read failed")
+            raise ValueError("incomplete payload")
+        return read(root, paths)
 
     monkeypatch.setattr(experiment_io, "read_managed_output_texts_at", fail_batch)
     _stub_queue(monkeypatch, rows)
@@ -258,7 +248,7 @@ def test_batch_protocol_failure_has_only_one_attempt_then_singletons(tmp_path, m
     for row in rows:
         managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
     assert len(batches) == 1
-    assert reads == [(None, (row["scheduler_result_path"],)) for row in rows]
+    assert reads == [(row["scheduler_result_path"],) for row in rows]
 
 
 def test_conflict_row_is_excluded_from_other_runs_prefetch(tmp_path, monkeypatch, reads):
@@ -273,30 +263,27 @@ def test_conflict_row_is_excluded_from_other_runs_prefetch(tmp_path, monkeypatch
         observed = managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
         if row is rows[1]:
             assert observed["status"] == "unknown_scheduler"
-    assert reads == [(None, (rows[0]["scheduler_result_path"], rows[2]["scheduler_result_path"]))]
+    assert reads == [(rows[0]["scheduler_result_path"], rows[2]["scheduler_result_path"])]
     assert len(calls) == 1
 
 
-def test_snapshot_does_not_cross_owner_or_execution_host(tmp_path, monkeypatch, reads):
+def test_snapshot_does_not_cross_owner(tmp_path, monkeypatch, reads):
     rows = _bound_rows(tmp_path)
     for row in rows:
-        row.update(target="ssh", host="host-a")
         _write_sidecar(row)
     _stub_queue(monkeypatch, rows)
     context = managed_scheduler.SlurmMonitorContext(rows, owner_dir=tmp_path)
-    managed_scheduler.observe_slurm_run(tmp_path, _execution(rows[0]), rows[0], monitor_context=context)
-    managed_scheduler.observe_slurm_run(tmp_path, {"target": "ssh", "host": "host-b"}, rows[1], monitor_context=context)
+    for row in rows:
+        managed_scheduler.observe_slurm_run(tmp_path, _execution(row), row, monitor_context=context)
     other_owner = tmp_path / "other-owner"
     other_owner.mkdir()
     other_rows = _bound_rows(other_owner)
     for row in other_rows:
-        row.update(target="ssh", host="host-a")
         _write_sidecar(row)
     managed_scheduler.observe_slurm_run(other_owner, _execution(other_rows[0]), other_rows[0], monitor_context=context)
     assert reads == [
-        ("host-a", tuple(row["scheduler_result_path"] for row in rows)),
-        ("host-b", (rows[1]["scheduler_result_path"],)),
-        ("host-a", (other_rows[0]["scheduler_result_path"],)),
+        tuple(row["scheduler_result_path"] for row in rows),
+        (other_rows[0]["scheduler_result_path"],),
     ]
 
 
@@ -336,7 +323,7 @@ def test_batched_sidecars_never_accumulate_trusted_legacy_identity(
         if argv[0] == "squeue" and argv[-1] == rows[0]["scheduler_job_id"]:
             return subprocess.CompletedProcess(argv, 0, _queue_output(rows[:1]), "")
         if phase == "error":
-            return subprocess.CompletedProcess(argv, 255, "", "SSH connection closed")
+            return subprocess.CompletedProcess(argv, 1, "", "controller unavailable")
         if argv[0] == "squeue":
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[0] == "scontrol":
@@ -352,7 +339,7 @@ def test_batched_sidecars_never_accumulate_trusted_legacy_identity(
         ]
         assert (rows[1]["scheduler_job_id"], rows[1]["scheduler_cluster"]) == identity
         assert rows[1]["status"] == ("unknown_scheduler" if identity[0] else "submitting")
-    terminal_batches = [paths for _host, paths in reads if rows[1]["scheduler_result_path"] in paths]
+    terminal_batches = [paths for paths in reads if rows[1]["scheduler_result_path"] in paths]
     assert len(terminal_batches) == 2
     assert all(len(paths) == 2 for paths in terminal_batches)
 
@@ -371,7 +358,7 @@ def test_public_monitors_make_fresh_sidecar_batches(tmp_path, monkeypatch, reads
         else:
             experiments.monitor_experiment(tmp_path)
     assert len(reads) == 3
-    assert [len(paths) for _host, paths in reads] == [2, 2, 2]
+    assert [len(paths) for paths in reads] == [2, 2, 2]
 
 
 def test_hparam_monitor_preserves_relative_plan_directory(tmp_path, monkeypatch, reads):
@@ -386,12 +373,11 @@ def test_hparam_monitor_preserves_relative_plan_directory(tmp_path, monkeypatch,
 
     assert report == Path(plan_dir.name) / "run_status.tsv"
     assert len(reads) == 1
-    assert reads[0][0] is None
-    assert set(reads[0][1]) == {row["scheduler_result_path"] for row in rows}
+    assert set(reads[0]) == {row["scheduler_result_path"] for row in rows}
 
 
 @pytest.mark.parametrize("routes", [1, 2])
-def test_real_subprocess_sidecar_counts_scale_with_hosts(tmp_path, routes):
+def test_real_subprocess_scheduler_queries_scale_with_routes(tmp_path, routes):
     repo = Path(__file__).resolve().parents[2]
     output = tmp_path / "counts"
     result = subprocess.run(
@@ -418,15 +404,14 @@ def test_real_subprocess_sidecar_counts_scale_with_hosts(tmp_path, routes):
     )
     assert result.returncode == 0, result.stderr
     report = json.loads((output / "results.json").read_text())
-    assert report["transport"] == "real_subprocess_fake_ssh_fake_slurm"
+    assert report["transport"] == "real_subprocess_fake_slurm"
     assert len(report["samples"]) == 2
     for sample in report["samples"]:
         counts = sample["counts"]
-        assert counts["ssh:sidecar_read"] == 2 * routes
-        assert counts.get("ssh:sidecar_validate", 0) == 0
         assert counts["squeue"] == routes
-        assert counts["ssh"] == (8 if sample["mode"] == "ordinary" else 12) + 3 * routes
-        assert counts.get("ssh:run_evidence.log_tail_and_age", 0) == (0 if sample["mode"] == "ordinary" else 4)
+        assert all(counts[f"benchmark-cluster-{index}:squeue"] == 1 for index in range(routes))
+        assert counts.get("scontrol", 0) == (0 if sample["mode"] == "ordinary" else 4)
+        assert counts.get("sacct", 0) == 0
 
 
 @pytest.mark.parametrize("field", ["scheduler_result_path", "allocation_identity_path"])

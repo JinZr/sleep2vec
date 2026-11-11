@@ -93,8 +93,8 @@ def _preset_direct_workspace(plan_dir: Path) -> Path:
 def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
     # All execution fields below come from the registered frozen plan, not the untrusted locator.
     workspace = _preset_direct_workspace(plan_dir)
-    experiment, rows = _managed_workspace(workspace, remote=None, lock_held=True)
-    registered_steps = _registered_plan_steps(workspace, experiment, rows, remote=None, require_registered_rows=True)
+    experiment, rows = _managed_workspace(workspace, lock_held=True)
+    registered_steps = _registered_plan_steps(workspace, experiment, rows, require_registered_rows=True)
     for registered in registered_steps:
         for plan in registered["plans"]:
             if plan["path"] != str(plan_dir):
@@ -105,7 +105,6 @@ def _read_preset_direct_plan(plan_dir: Path) -> tuple[Path, artifacts.Registered
                 or plan["task"] != "preset_prepare"
                 or len(plan["runs"]) != 1
                 or execution.get("scheduler") != {"type": "direct"}
-                or (execution.get("target") or "local") != "local"
                 or any(not execution.get(field) for field in ("python", "runtime_commit", "workdir"))
                 or plan["runs"][0].get("terminal_status_owner") != "script"
             ):
@@ -328,8 +327,8 @@ def _infer_slurm_workspace(plan_dir: Path) -> Path:
 def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPlanSummary, list[dict[str, Any]]]:
     # Execution uses the strict registered-plan reader below, not the locating document.
     workspace = _infer_slurm_workspace(plan_dir)
-    experiment, rows = _managed_workspace(workspace, remote=None, lock_held=True)
-    registered_steps = _registered_plan_steps(workspace, experiment, rows, remote=None, require_registered_rows=True)
+    experiment, rows = _managed_workspace(workspace, lock_held=True)
+    registered_steps = _registered_plan_steps(workspace, experiment, rows, require_registered_rows=True)
     for registered in registered_steps:
         for plan in registered["plans"]:
             if plan["path"] != str(plan_dir):
@@ -404,8 +403,8 @@ def stop_infer_run(plan_dir: str | Path, *, reason: str) -> Path:
     return workspace / "run_manifest.tsv"
 
 
-def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str | None = None) -> Path:
-    root = _target_root(run_dir, remote)
+def init_experiment(run_dir: str | Path, spec_path: str | Path) -> Path:
+    root = _target_root(run_dir)
     raw = read_managed_yaml_mapping(Path(spec_path).read_text(), source=f"Experiment spec {spec_path}")
     experiment = raw.get("experiment") if isinstance(raw, dict) and isinstance(raw.get("experiment"), dict) else raw
     if not isinstance(experiment, dict):
@@ -420,17 +419,15 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
     )
     if issues:
         raise ValueError("; ".join(issue["message"] for issue in issues))
-    existing_text = exp_io.read_text_at(root / "experiment.yaml", remote=remote)
-    if not remote and root.exists() and any(root.iterdir()) and not existing_text:
-        raise ValueError(f"Experiment root is non-empty: {root}")
-    if remote and not existing_text and exp_io.remote_dir_nonempty(root, remote):
+    existing_text = exp_io.read_text_at(root / "experiment.yaml")
+    if root.exists() and any(root.iterdir()) and not existing_text:
         raise ValueError(f"Experiment root is non-empty: {root}")
     manifest = root / "experiment_manifest.tsv"
     rows = []
     if existing_text:
         validate_existing_experiment_manifest(existing_text, experiment, root)
-        _managed_rows(root, remote=remote)
-        rows = exp_io.read_rows_at(manifest, remote=remote, strict=True)
+        _managed_rows(root)
+        rows = exp_io.read_rows_at(manifest, strict=True)
     exp_io.validate_managed_output_paths(
         root,
         [
@@ -441,13 +438,12 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
             root / "README.md",
             manifest,
         ],
-        remote=remote,
     )
-    exp_io.mkdir_experiment_dirs(root, remote=remote)
+    exp_io.mkdir_experiment_dirs(root)
     if not existing_text:
-        write_initial_experiment_manifest(root, experiment, remote=remote)
-        exp_io.append_event_at(root, "experiment_initialized", {"experiment_id": experiment["id"]}, remote=remote)
-    exp_io.write_text_at(root / "README.md", experiment_readme_text(experiment), remote=remote)
+        write_initial_experiment_manifest(root, experiment)
+        exp_io.append_event_at(root, "experiment_initialized", {"experiment_id": experiment["id"]})
+    exp_io.write_text_at(root / "README.md", experiment_readme_text(experiment))
     if rows:
         row = rows[0]
         row.update(
@@ -456,7 +452,6 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
                 "experiment_root": str(root),
                 "title": experiment["title"],
                 "objective": experiment["objective"],
-                "remote_host": remote or row.get("remote_host", ""),
                 "updated_at": utc_now(),
             }
         )
@@ -466,7 +461,6 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
             "experiment_root": str(root),
             "title": experiment["title"],
             "objective": experiment["objective"],
-            "remote_host": remote or "",
             "task": "",
             "selection_metric": "",
             "selection_mode": "",
@@ -476,18 +470,16 @@ def init_experiment(run_dir: str | Path, spec_path: str | Path, *, remote: str |
             "created_at": utc_now(),
             "updated_at": utc_now(),
         }
-    exp_io.write_rows_at(manifest, [row], remote=remote)
+    exp_io.write_rows_at(manifest, [row])
     return manifest
 
 
 def append_experiment_note(
     run_dir: str | Path,
     entry_path: str | Path,
-    *,
-    remote: str | None = None,
 ) -> ExperimentNoteResult:
-    root = _target_root(run_dir, remote)
-    experiment, rows = _managed_workspace(root, remote=remote, allow_completed=True)
+    root = _target_root(run_dir)
+    experiment, rows = _managed_workspace(root, allow_completed=True)
     entry = read_managed_yaml_mapping(
         Path(entry_path).read_text(),
         source=f"Research log entry {entry_path}",
@@ -497,7 +489,6 @@ def append_experiment_note(
         entry,
         experiment_id=str(experiment["id"]),
         managed_rows=rows,
-        remote=remote,
     )
     return {"path": str(path), "entry_id": entry_id, "appended": appended}
 
@@ -505,35 +496,27 @@ def append_experiment_note(
 def _validate_hparam_checkpoints(
     rows: list[dict[str, str]],
     selected_steps: Sequence[tracking.HparamSelectionReportStep],
-    *,
-    remote: str | None,
 ) -> None:
-    canonical_by_key = {managed_run_key(row): row for row in rows}
     checkpoint_rows_by_path: dict[tuple[str, str, str], dict[str, Any]] = {}
     for step in selected_steps:
         for row in step["ranked"]:
             checkpoint_rows_by_path.setdefault((*validated_run_key(row), str(row["checkpoint_path"])), row)
     checkpoint_rows = list(checkpoint_rows_by_path.values())
-    tracking.validate_checkpoint_evidence_rows(rows, checkpoint_rows, remote=remote)
+    tracking.validate_checkpoint_evidence_rows(rows, checkpoint_rows)
     for row in checkpoint_rows:
-        owner = canonical_by_key[managed_run_key(row)]
-        evidence_host = tracking.checkpoint_evidence_host(owner, remote)
-        evidence_row = owner if evidence_host is None else {**owner, "target": "ssh", "host": evidence_host}
-        if evidence.checkpoint_file_sha256(evidence_row, row["checkpoint_path"]) != row["checkpoint_sha256"]:
+        if evidence.checkpoint_file_sha256(row["checkpoint_path"]) != row["checkpoint_sha256"]:
             raise ValueError(f"Frozen checkpoint SHA-256 differs: {row['checkpoint_path']}")
 
 
 def _validate_hparam_selection_files_unchanged(
     root: Path,
     selection_report: tracking.HparamSelectionReportSnapshot,
-    *,
-    remote: str | None,
 ) -> None:
     expected = {
         str(selection_report["path"]): selection_report["sha256"],
         str(selection_report["ranking_path"]): selection_report["ranking_sha256"],
     }
-    current = exp_io.read_managed_files_at(root, [Path(path) for path in expected], remote=remote)
+    current = exp_io.read_managed_files_at(root, [Path(path) for path in expected])
     for path, sha256 in expected.items():
         if current[path]["sha256"] != sha256:
             if path == str(selection_report["path"]):
@@ -541,11 +524,11 @@ def _validate_hparam_selection_files_unchanged(
             raise ValueError("The hparam ranking changed during finalization.")
 
 
-def _finalizable_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
+def _finalizable_rows(root: Path) -> list[dict[str, str]]:
     """The managed rows, refusing an experiment that is not ready to finalize.
     Read twice -- once before the run-manifest snapshot and once after -- so a
     run that changes during finalization cannot slip past the check."""
-    rows = _managed_rows(root, remote=remote)
+    rows = _managed_rows(root)
     if not rows:
         raise ValueError("Experiment has no managed runs to finalize.")
     unresolved = [row["run_id"] for row in rows if row.get("status") not in TERMINAL_STATUSES]
@@ -558,7 +541,7 @@ def _finalizable_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]
     return rows
 
 
-def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote: str | None = None) -> Path:
+def finalize_experiment(run_dir: str | Path, report_path: str | Path) -> Path:
     """Publish a final report and commit the managed experiment as completed.
 
     Requires nonempty terminal run state, reasons for stopped runs, materialized
@@ -566,7 +549,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     evidence. Failed runs are allowed when the required failure or combined
     report is supplied; completion does not mean every run succeeded.
 
-    Reads report_path locally or on remote (where it must be absolute), writes
+    Reads report_path, writes
     reports/final.md and a preparation event, then commits experiment.yaml with
     report hash bindings. Returns the canonical final report path. The manifest
     is the terminal commit: a later failure can leave a published report without
@@ -574,23 +557,17 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     ValueError; run-manifest changes detected during finalization raise RuntimeError,
     and other I/O errors propagate. Does not launch runs or refresh their observed
     statuses."""
-    if remote and not Path(report_path).is_absolute():
-        raise ValueError("Remote final report path must be absolute.")
-    root = _target_root(run_dir, remote)
+    root = _target_root(run_dir)
     run_manifest_path = root / "run_manifest.tsv"
-    rows = _finalizable_rows(root, remote=remote)
-    with nullcontext() if remote else experiment_workspace.managed_run_lock(root):
-        run_manifest_snapshot = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
-            str(run_manifest_path)
-        ]
-    rows = _finalizable_rows(root, remote=remote)
-    with nullcontext() if remote else experiment_workspace.managed_run_lock(root):
-        current_run_manifest = exp_io.read_managed_files_at(root, [run_manifest_path], remote=remote)[
-            str(run_manifest_path)
-        ]
+    rows = _finalizable_rows(root)
+    with experiment_workspace.managed_run_lock(root):
+        run_manifest_snapshot = exp_io.read_managed_files_at(root, [run_manifest_path])[str(run_manifest_path)]
+    rows = _finalizable_rows(root)
+    with experiment_workspace.managed_run_lock(root):
+        current_run_manifest = exp_io.read_managed_files_at(root, [run_manifest_path])[str(run_manifest_path)]
     if current_run_manifest["sha256"] != run_manifest_snapshot["sha256"]:
         raise RuntimeError("Run manifest changed during finalization.")
-    manifest_text = exp_io.read_text_at(root / "experiment.yaml", remote=remote)
+    manifest_text = exp_io.read_text_at(root / "experiment.yaml")
     manifest = read_managed_yaml_mapping(
         manifest_text, source=f"Managed experiment manifest {root / 'experiment.yaml'}"
     )
@@ -600,11 +577,10 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         root,
         manifest["experiment"],
         rows,
-        remote=remote,
         require_registered_rows=False,
     )
     selection_report = (
-        _hparam_selection_report(root, remote=remote)
+        _hparam_selection_report(root)
         if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
         else None
     )
@@ -613,7 +589,6 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         registered_steps,
         rows,
         root=root,
-        remote=remote,
         hparam_selection_report=selection_report,
     )
     blocking_codes = sorted(
@@ -633,7 +608,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     if hparam["selected_steps"] and (selected_report is None or not hparam["report_valid"]):
         raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
     if selected_report is not None:
-        _validate_hparam_selection_files_unchanged(root, selected_report, remote=remote)
+        _validate_hparam_selection_files_unchanged(root, selected_report)
     report_path_is_selection = str(Path(report_path)) == hparam["report_path"]
     if selected_report is not None:
         if hparam["automatic_report_final"]:
@@ -645,7 +620,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     elif hparam["hparam_steps"] and report_path_is_selection:
         raise ValueError("The hparam selection report cannot replace the required hparam failure report.")
     if not (hparam["selected_steps"] and hparam["automatic_report_final"]):
-        report_text = exp_io.read_text_at(report_path, remote=remote)
+        report_text = exp_io.read_text_at(report_path)
         report_content_is_selection = bool(
             selection_report is not None
             and hashlib.sha256(report_text.encode()).hexdigest() == selection_report["sha256"]
@@ -657,7 +632,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     if not report_text.strip():
         raise ValueError("Final report is missing or empty.")
     if hparam["selected_steps"]:
-        _validate_hparam_checkpoints(rows, hparam["selected_steps"], remote=remote)
+        _validate_hparam_checkpoints(rows, hparam["selected_steps"])
     target = root / "reports" / "final.md"
     exp_io.validate_managed_output_paths(
         root,
@@ -667,10 +642,9 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
             root / "events.jsonl",
             run_manifest_path.with_name(run_manifest_path.name + ".lock"),
         ],
-        remote=remote,
     )
-    target_exists = exp_io.path_exists_at(target, remote=remote)
-    target_text = exp_io.read_text_at(target, remote=remote) if target_exists else ""
+    target_exists = exp_io.path_exists_at(target)
+    target_text = exp_io.read_text_at(target) if target_exists else ""
     target_sha256 = hashlib.sha256(target_text.encode()).hexdigest() if target_exists else None
     manifest_sha256 = hashlib.sha256(manifest_text.encode()).hexdigest()
     report_sha256 = hashlib.sha256(report_text.encode()).hexdigest()
@@ -679,7 +653,6 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         report_text,
         target_sha256,
         managed_root=root,
-        remote=remote,
         dependency_path=run_manifest_path,
         expected_dependency_sha256=run_manifest_snapshot["sha256"],
         guard_path=root / "experiment.yaml",
@@ -695,18 +668,17 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     manifest["experiment"].update(completion)
     if selected_report is not None:
         manifest["experiment"]["selection_report_sha256"] = selected_report["sha256"]
-    exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)}, remote=remote)
+    exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)})
     if selected_report is not None:
-        _validate_hparam_selection_files_unchanged(root, selected_report, remote=remote)
+        _validate_hparam_selection_files_unchanged(root, selected_report)
     if hparam["selected_steps"]:
-        _validate_hparam_checkpoints(rows, hparam["selected_steps"], remote=remote)
+        _validate_hparam_checkpoints(rows, hparam["selected_steps"])
     # The experiment manifest is the terminal commit, so publish it only after the report is durable.
     if not exp_io.conditional_atomic_replace_text_at(
         root / "experiment.yaml",
         yaml.safe_dump(manifest, sort_keys=False),
         manifest_sha256,
         managed_root=root,
-        remote=remote,
         dependency_path=run_manifest_path,
         expected_dependency_sha256=run_manifest_snapshot["sha256"],
         guard_path=target,
@@ -716,20 +688,20 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     return target
 
 
-def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> tracking.ExperimentMonitorResult:
+def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
     """Observe managed runs once and commit their current status without launching work.
 
-    Requires an active, valid managed workspace. Reads local/remote process,
+    Requires an active, valid managed workspace. Reads local process,
     scheduler and artifact evidence, merges observations into run_manifest.tsv
     and its projections, then writes reports/monitor.md. Returns run_dir, the
     committed runs and the report path; these are committed observations rather
     than an experiment_status lifecycle decision.
 
-    remote selects the workspace host. Invalid ownership/state and unhandled
+    Invalid ownership/state and unhandled
     observation or write errors propagate; a report-write failure can occur
     after the canonical manifest has already been updated."""
-    root = _target_root(run_dir, remote)
-    previous_rows = _managed_rows(root, remote=remote)
+    root = _target_root(run_dir)
+    previous_rows = _managed_rows(root)
     report_path = root / "reports" / "monitor.md"
     exp_io.validate_managed_output_paths(
         root,
@@ -740,42 +712,39 @@ def monitor_experiment(run_dir: str | Path, *, remote: str | None = None) -> tra
             root / "reports" / "run_matrix.md",
             root / "events.jsonl",
         ],
-        remote=remote,
     )
     # Observe the owner-validated input snapshot; the commit still reads fresh under its lock/CAS.
     run_rows = previous_rows
-    monitor_context = managed_scheduler.SlurmMonitorContext(run_rows, owner_dir=root, remote=remote)
+    monitor_context = managed_scheduler.SlurmMonitorContext(run_rows, owner_dir=root)
     observations = [
-        tracking.monitor_run_row(root, row, previous_rows, remote=remote, monitor_context=monitor_context)
-        for row in run_rows
+        tracking.monitor_run_row(root, row, previous_rows, monitor_context=monitor_context) for row in run_rows
     ]
-    committed = merge_run_manifest(root, observations, remote=remote)
+    committed = merge_run_manifest(root, observations)
     report = tracking.monitor_report(committed)
-    exp_io.write_text_at(report_path, report, remote=remote)
+    exp_io.write_text_at(report_path, report)
     return {"run_dir": str(root), "runs": committed, "report": str(report_path)}
 
 
-def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> tracking.ExperimentStatusSnapshot:
+def experiment_status(run_dir: str | Path) -> tracking.ExperimentStatusSnapshot:
     """Return a read-only lifecycle snapshot from the managed workspace's recorded state.
 
     Validates registered plan bindings and available selection/report/checkpoint
-    evidence locally or on remote, including completed workspaces. Does not poll
+    evidence, including completed workspaces. Does not poll
     jobs or refresh canonical run statuses: live_observation is False.
 
     The mapping contains experiment identity, lifecycle_source, summary, steps,
     runs, blockers and advisory next actions, which do not authorize execution.
     Lifecycle blockers appear in that snapshot; invalid workspace/plan contracts and
     unhandled read errors raise. No reports or manifests are written."""
-    root = _target_root(run_dir, remote)
+    root = _target_root(run_dir)
     experiment, rows = _managed_workspace(
         root,
-        remote=remote,
         allow_completed=True,
         validate_experiment_index=False,
     )
-    registered_steps = _registered_plan_steps(root, experiment, rows, remote=remote, require_registered_rows=True)
+    registered_steps = _registered_plan_steps(root, experiment, rows, require_registered_rows=True)
     selection_report = (
-        _hparam_selection_report(root, remote=remote)
+        _hparam_selection_report(root)
         if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
         else None
     )
@@ -785,7 +754,6 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> trac
         registered_steps,
         rows,
         root=root,
-        remote=remote,
         hparam_selection_report=selection_report,
     )
 
@@ -795,10 +763,9 @@ def _registered_plan_steps(
     experiment: dict[str, Any],
     rows: list[dict[str, str]],
     *,
-    remote: str | None,
     require_registered_rows: bool,
 ) -> list[artifacts.RegisteredPlanStep]:
-    step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]), remote=remote)
+    step_manifests = read_registered_steps(root, experiment_id=str(experiment["id"]))
     legacy_run_identity_fields = {"experiment_id", "step_id", "run_id", "run_name", "version"}
     managed_plan_fields = (FROZEN_RUN_FIELDS - legacy_run_identity_fields) | tracking.HPARAM_SELECTION_METADATA_FIELDS
     has_managed_plan_rows = any(
@@ -836,7 +803,7 @@ def _registered_plan_steps(
         plan_keys: list[tuple[str, str]] = []
         run_index_offset = 0
         for plan_path in manifest["plans"]:
-            if artifacts.is_registered_blocked_plan(plan_path, workspace=root, remote=remote):
+            if artifacts.is_registered_blocked_plan(plan_path, workspace=root):
                 continue
             plan = artifacts.read_registered_plan(
                 plan_path,
@@ -847,7 +814,6 @@ def _registered_plan_steps(
                 expected_recipe_path=(
                     manifest["recipe_path"] if manifest["plan_controller"] == "ordinary" and not plans else None
                 ),
-                remote=remote,
                 run_index_offset=run_index_offset,
             )
             plans.append(plan)
@@ -863,16 +829,16 @@ def _registered_plan_steps(
     return registered_steps
 
 
-def _hparam_selection_report(root: Path, *, remote: str | None) -> tracking.HparamSelectionReportSnapshot | None:
+def _hparam_selection_report(root: Path) -> tracking.HparamSelectionReportSnapshot | None:
     path = root / "reports" / "hparam_selection.md"
     ranking_path = root / "reports" / "ranking.csv"
-    exp_io.validate_managed_output_paths(root, [path, ranking_path], remote=remote)
-    if not exp_io.path_exists_at(path, remote=remote):
+    exp_io.validate_managed_output_paths(root, [path, ranking_path])
+    if not exp_io.path_exists_at(path):
         return None
     read_paths: list[str | Path] = [path]
-    if exp_io.path_exists_at(ranking_path, remote=remote):
+    if exp_io.path_exists_at(ranking_path):
         read_paths.append(ranking_path)
-    files = exp_io.read_managed_files_at(root, read_paths, remote=remote)
+    files = exp_io.read_managed_files_at(root, read_paths)
     ranking = files.get(str(ranking_path))
     return {
         "path": str(path),
@@ -883,17 +849,12 @@ def _hparam_selection_report(root: Path, *, remote: str | None) -> tracking.Hpar
     }
 
 
-def _target_root(run_dir: str | Path, remote: str | None) -> Path:
-    root = Path(run_dir)
-    if remote:
-        if not root.is_absolute():
-            raise ValueError("Remote experiment root must be an absolute path.")
-        return root
-    return canonical_local_experiment_root(root, Path.cwd())
+def _target_root(run_dir: str | Path) -> Path:
+    return canonical_local_experiment_root(Path(run_dir), Path.cwd())
 
 
-def _managed_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
-    _experiment, rows = _managed_workspace(root, remote=remote)
+def _managed_rows(root: Path) -> list[dict[str, str]]:
+    _experiment, rows = _managed_workspace(root)
     return rows
 
 
@@ -949,15 +910,14 @@ def _normalized_completed_metadata(
 def _managed_workspace(
     root: Path,
     *,
-    remote: str | None,
     allow_completed: bool = False,
     validate_experiment_index: bool = True,
     lock_held: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     manifest_path = root / "experiment.yaml"
-    if not exp_io.path_exists_at(manifest_path, remote=remote):
+    if not exp_io.path_exists_at(manifest_path):
         raise ValueError("experiment.yaml is missing. Initialize the experiment first.")
-    files = exp_io.read_managed_files_at(root, [manifest_path], remote=remote)
+    files = exp_io.read_managed_files_at(root, [manifest_path])
     experiment_text = files[str(manifest_path)]["text"]
     manifest = read_managed_yaml_mapping(experiment_text, source=f"Managed experiment manifest {manifest_path}")
     if set(manifest) != {"experiment"}:
@@ -979,7 +939,7 @@ def _managed_workspace(
         raise ValueError(f"experiment.root differs from the target workspace: {root}")
 
     if completed_bindings:
-        bound_files = exp_io.read_managed_files_at(root, completed_bindings, remote=remote)
+        bound_files = exp_io.read_managed_files_at(root, completed_bindings)
         if bound_files[str(completed_bindings[0])]["sha256"] != experiment["final_report_sha256"]:
             raise ValueError("Completed experiment final report differs from its terminal binding.")
         if len(completed_bindings) == 2 and (
@@ -988,12 +948,12 @@ def _managed_workspace(
             raise ValueError("Completed experiment selection report differs from its terminal binding.")
 
     legacy_path = root / "trial_status.tsv"
-    if exp_io.path_exists_at(legacy_path, remote=remote):
+    if exp_io.path_exists_at(legacy_path):
         raise ValueError(f"Historical experiment artifacts are read-only: {legacy_path}")
 
     experiment_manifest = root / "experiment_manifest.tsv"
-    if validate_experiment_index and exp_io.path_exists_at(experiment_manifest, remote=remote):
-        manifest_rows = exp_io.read_rows_at(experiment_manifest, remote=remote, strict=True)
+    if validate_experiment_index and exp_io.path_exists_at(experiment_manifest):
+        manifest_rows = exp_io.read_rows_at(experiment_manifest, strict=True)
         if len(manifest_rows) != 1:
             raise ValueError("experiment_manifest.tsv must contain exactly one row.")
         manifest_row = manifest_rows[0]
@@ -1002,10 +962,9 @@ def _managed_workspace(
         if manifest_row.get("experiment_root") != str(root):
             raise ValueError("experiment_manifest.tsv root differs from the target workspace.")
 
-    # lock_held means the caller already owns the local run lock. SSH reads use the remote workspace,
-    # whose lock this process cannot take.
-    with nullcontext() if remote or lock_held else experiment_workspace.managed_run_lock(root):
-        rows = read_run_manifest(root, remote=remote)
+    # lock_held means the caller already owns the run lock.
+    with nullcontext() if lock_held else experiment_workspace.managed_run_lock(root):
+        rows = read_run_manifest(root)
     for row in rows:
         if row["experiment_id"] != experiment["id"]:
             raise ValueError("run_manifest.tsv contains a run owned by a different experiment.")

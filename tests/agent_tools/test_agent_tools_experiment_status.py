@@ -47,7 +47,6 @@ def _add_plan(
     step_id: str,
     status: str = "planned",
     task: str = "finetune",
-    host: str | None = None,
 ) -> tuple[Path, dict[str, str]]:
     experiment = yaml.safe_load((root / "experiment.yaml").read_text())["experiment"]
     step = {"id": step_id, "phase": "train", "purpose": f"Run {step_id}."}
@@ -151,8 +150,6 @@ def _add_plan(
     run.update({"config_sha256": _sha256(config_path), "script_sha256": _sha256(script_path)})
     if task != "hparam_tune":
         run["status"] = "planned"
-    if host is not None:
-        run["host"] = host
     resolved_recipe = {key: value for key, value in recipe.items() if key != "_recipe_path"}
     resolved_text = yaml.safe_dump(resolved_recipe, sort_keys=False)
     resolved_path = plan_dir / "recipe.resolved.yaml"
@@ -243,7 +240,6 @@ def _record_hparam_selection(
         root,
         experiment,
         _read_manifest_rows(root),
-        remote=None,
         require_registered_rows=True,
     )
     lifecycle = experiment_tracking.hparam_selection_lifecycle(

@@ -18,7 +18,7 @@ identity. Read the relevant detailed owners before preparing work:
 
 - [Search space](../../doc/agent_contracts/hparam_workflow.md#search-space) for grids, exact joint points and further rounds.
 - [Test-access policy](../../doc/agent_contracts/external_test_locking.md#selection-and-test-access-policy) for selection split, test-after-fit and unlock requirements.
-- [Launch and queue](../../doc/agent_contracts/hparam_workflow.md#launch-and-queue) for local/SSH identity, direct/Slurm resources and capacity.
+- [Launch and queue](../../doc/agent_contracts/hparam_workflow.md#launch-and-queue) for runtime identity, direct/Slurm resources and capacity.
 
 ## Interaction stages
 
@@ -154,7 +154,7 @@ resubmission, manual manifest repair or unauthenticated cancellation.
 ## Canonical commands
 
 For rolling latest-main maintenance, keep one existing checkout. Run
-`python -m agent_tools runtime-sync --workdir <checkout> [--host <host>]` as the
+`python -m agent_tools runtime-sync --workdir <checkout>` as the
 non-mutating check; add `--execute` only when authorized to fast-forward
 `origin/main`. Never clone or reset for a heartbeat. Sync and launch share a
 short critical-section lock, not a whole-job lock: an older process can continue

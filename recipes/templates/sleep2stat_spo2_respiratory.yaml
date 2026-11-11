@@ -30,11 +30,6 @@ artifacts:
   run_dir: results/sleep2stat/spo2_respiratory_v02
   overwrite: false
 
-execution:
-  target: local
-  path_context: local
-  path_validation: local
-
 evaluation_policy:
   external_test_locked: true
 

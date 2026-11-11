@@ -78,10 +78,9 @@ def run_execution_preflight_fixture(execution: dict, command: list[str]) -> subp
 _validate_managed_output_paths = experiment_io.validate_managed_output_paths
 
 
-def validate_local_managed_output_paths(root, paths, *, remote=None):
-    """Validate local managed output paths; skip remote validation, which would need a reachable SSH host."""
-    if remote is None:
-        return _validate_managed_output_paths(root, paths)
+def validate_local_managed_output_paths(root, paths):
+    """Validate managed output paths through the validator bound before any test patched it."""
+    return _validate_managed_output_paths(root, paths)
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -177,9 +176,8 @@ def prepare_hparam_plan_fixture(recipe: Path, plan_dir: Path) -> None:
 
     original_validate_paths = experiment_io.validate_managed_output_paths
 
-    def validate_managed_output_paths(root, paths, *, remote=None):
-        if remote is None:
-            return original_validate_paths(root, paths)
+    def validate_managed_output_paths(root, paths):
+        return original_validate_paths(root, paths)
 
     stdout, stderr = StringIO(), StringIO()
     # Match the CLI stub's two substitutions only while preparing this fixture.

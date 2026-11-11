@@ -364,18 +364,11 @@ def test_experiment_finalize_rehashes_selected_checkpoints_before_writing(tmp_pa
     assert not (root / "reports" / "final.md").exists()
 
 
-@pytest.mark.parametrize(
-    ("target", "host", "remote", "expected_host"),
-    [("local", "", "controller", "controller"), ("ssh", "worker", "controller", "worker")],
-)
-def test_hparam_checkpoint_rehash_uses_execution_evidence_host(
-    monkeypatch, target: str, host: str, remote: str, expected_host: str
-):
+def test_hparam_checkpoint_rehash_validates_evidence_and_hashes_checkpoint_path(monkeypatch):
     row = {
         "step_id": "tune",
         "run_id": "run-000",
-        "target": target,
-        "host": host,
+        "target": "local",
         "checkpoint_path": "/data/epoch=1.ckpt",
         "checkpoint_sha256": "a" * 64,
     }
@@ -384,25 +377,19 @@ def test_hparam_checkpoint_rehash_uses_execution_evidence_host(
     monkeypatch.setattr(
         experiments.tracking,
         "validate_checkpoint_evidence_rows",
-        lambda rows, ranked, *, remote: validated.append((rows, ranked, remote)),
+        lambda rows, ranked: validated.append((rows, ranked)),
     )
 
-    def checkpoint_sha256(evidence_row, checkpoint_path):
-        hashed.append((evidence_row, checkpoint_path))
+    def checkpoint_sha256(checkpoint_path):
+        hashed.append(checkpoint_path)
         return "a" * 64
 
     monkeypatch.setattr(experiments.evidence, "checkpoint_file_sha256", checkpoint_sha256)
 
-    experiments._validate_hparam_checkpoints(
-        [row],
-        [{"ranked": [row]}],
-        remote=remote,
-    )
+    experiments._validate_hparam_checkpoints([row], [{"ranked": [row]}])
 
-    assert validated == [([row], [row], remote)]
-    assert [(evidence_row["target"], evidence_row["host"], path) for evidence_row, path in hashed] == [
-        ("ssh", expected_host, row["checkpoint_path"]),
-    ]
+    assert validated == [([row], [row])]
+    assert hashed == [row["checkpoint_path"]]
 
 
 def test_experiment_finalize_rejects_selection_report_copy_for_pure_hparam_experiment(tmp_path):
@@ -552,8 +539,8 @@ def test_experiment_finalize_rechecks_selection_report_before_terminal_commit(tm
     manifest_before = manifest.read_bytes()
     original_replace = experiment_io.conditional_atomic_replace_text_at
 
-    def publish_then_tamper(path, text, expected_sha256, *, remote=None, **kwargs):
-        committed = original_replace(path, text, expected_sha256, remote=remote, **kwargs)
+    def publish_then_tamper(path, text, expected_sha256, **kwargs):
+        committed = original_replace(path, text, expected_sha256, **kwargs)
         if Path(path) == root / "reports" / "final.md" and committed:
             selection_report.write_text("# Tampered before terminal commit\n")
         return committed
@@ -578,8 +565,8 @@ def test_experiment_finalize_rechecks_ranking_before_terminal_commit(tmp_path, m
     manifest_before = manifest.read_bytes()
     original_replace = experiment_io.conditional_atomic_replace_text_at
 
-    def publish_then_tamper(path, text, expected_sha256, *, remote=None, **kwargs):
-        committed = original_replace(path, text, expected_sha256, remote=remote, **kwargs)
+    def publish_then_tamper(path, text, expected_sha256, **kwargs):
+        committed = original_replace(path, text, expected_sha256, **kwargs)
         if Path(path) == root / "reports" / "final.md" and committed:
             ranking.write_text(ranking.read_text().replace("0.25", "999", 1))
         return committed
@@ -604,8 +591,8 @@ def test_experiment_finalize_rechecks_checkpoint_before_terminal_commit(tmp_path
     manifest_before = manifest.read_bytes()
     original_replace = experiment_io.conditional_atomic_replace_text_at
 
-    def publish_then_tamper(path, text, expected_sha256, *, remote=None, **kwargs):
-        committed = original_replace(path, text, expected_sha256, remote=remote, **kwargs)
+    def publish_then_tamper(path, text, expected_sha256, **kwargs):
+        committed = original_replace(path, text, expected_sha256, **kwargs)
         if Path(path) == root / "reports" / "final.md" and committed:
             checkpoint.write_bytes(b"tampered before terminal commit\n")
         return committed
@@ -629,8 +616,8 @@ def test_experiment_finalize_rechecks_run_manifest_before_terminal_commit(tmp_pa
     manifest_before = manifest.read_bytes()
     original_replace = experiment_io.conditional_atomic_replace_text_at
 
-    def publish_then_tamper(path, text, expected_sha256, *, remote=None, **kwargs):
-        committed = original_replace(path, text, expected_sha256, remote=remote, **kwargs)
+    def publish_then_tamper(path, text, expected_sha256, **kwargs):
+        committed = original_replace(path, text, expected_sha256, **kwargs)
         if Path(path) == root / "reports" / "final.md" and committed:
             rows = _read_manifest_rows(root)
             rows[0]["score"] = "0.5"
@@ -656,12 +643,12 @@ def test_experiment_finalize_guards_terminal_commit_with_run_manifest_lock(tmp_p
     manifest_before = manifest.read_bytes()
     original_replace = experiment_io.conditional_atomic_replace_text_at
 
-    def tamper_at_terminal_commit(path, text, expected_sha256, *, remote=None, **kwargs):
+    def tamper_at_terminal_commit(path, text, expected_sha256, **kwargs):
         if Path(path) == manifest:
             rows = _read_manifest_rows(root)
             rows[0]["score"] = "0.5"
             write_rows(root / "run_manifest.tsv", rows)
-        return original_replace(path, text, expected_sha256, remote=remote, **kwargs)
+        return original_replace(path, text, expected_sha256, **kwargs)
 
     monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", tamper_at_terminal_commit)
 
@@ -686,7 +673,7 @@ def test_stale_finalizer_cannot_bind_an_overwritten_final_report(tmp_path, monke
     real_replace = experiment_io.conditional_atomic_replace_text_at
     interleaved = False
 
-    def overwrite_before_terminal_commit(path, text, expected_sha256, *, remote=None, **kwargs):
+    def overwrite_before_terminal_commit(path, text, expected_sha256, **kwargs):
         nonlocal interleaved
         if Path(path) == manifest and not interleaved:
             interleaved = True
@@ -700,7 +687,7 @@ def test_stale_finalizer_cannot_bind_an_overwritten_final_report(tmp_path, monke
                 guard_path=manifest,
                 expected_guard_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
             )
-        return real_replace(path, text, expected_sha256, remote=remote, **kwargs)
+        return real_replace(path, text, expected_sha256, **kwargs)
 
     monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", overwrite_before_terminal_commit)
 
@@ -787,10 +774,10 @@ def test_experiment_finalize_rechecks_rows_bound_to_run_manifest_snapshot(tmp_pa
     original_rows = experiments._managed_rows
     calls = 0
 
-    def read_then_add_active_run(candidate, *, remote):
+    def read_then_add_active_run(candidate):
         nonlocal calls
         calls += 1
-        rows = original_rows(candidate, remote=remote)
+        rows = original_rows(candidate)
         if calls == 1:
             active = {**rows[0], "run_id": "run-999", "status": "running"}
             write_rows(root / "run_manifest.tsv", [*rows, active])

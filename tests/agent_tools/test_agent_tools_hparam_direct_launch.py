@@ -15,7 +15,6 @@ from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS, FakeLauncher, run_c
 import pytest
 from test_agent_tools_hparam_runtime import (
     _hparam_recipe,
-    _is_remote_python_program,
     _process_identity,
     _read_table,
     _set_execution_probe,
@@ -35,7 +34,6 @@ from agent_tools import (
     plan_rendering,
     python_programs,
     run_evidence,
-    transport,
 )
 from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, merge_run_manifest, merge_run_row
 
@@ -353,35 +351,6 @@ def test_hparam_launch_rejects_invalid_canonical_output_before_start(tmp_path: P
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-def test_hparam_ssh_launch_validates_run_outputs_remotely_before_start(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(
-        tmp_path,
-        execution={
-            "target": "ssh",
-            "host": "unit-host",
-            "workdir": str(tmp_path),
-            "max_concurrent": 1,
-        },
-    )
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    remote_calls = []
-
-    def reject_remote_output(command, **kwargs):
-        remote_calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 2, "", "aliased output")
-
-    launcher = FakeLauncher()
-    monkeypatch.setattr(hparam_runtime.exp_io.subprocess, "run", reject_remote_output)
-
-    with pytest.raises(ValueError, match="aliased output"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-    assert remote_calls[0][0][:2] == ["ssh", "unit-host"]
-    assert remote_calls[0][1]["timeout"] == transport.SSH_TIMEOUT_SECONDS
-
-
 def test_hparam_runtime_rejects_tampered_relative_workdir_before_start(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -419,8 +388,6 @@ def test_hparam_runtime_rejects_workdir_that_differs_from_frozen_runtime_path(tm
 @pytest.mark.parametrize(
     ("field", "changed"),
     [
-        ("target", "ssh"),
-        ("host", "other-host"),
         ("env", {"UNIT_CHANGED": "1"}),
         ("conda_env", "other-env"),
         ("gpu_pool", [7]),
@@ -440,18 +407,6 @@ def test_hparam_launch_rejects_execution_drift_from_resolved_recipe_before_side_
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     calls = []
     launcher = FakeLauncher(lambda *_args: calls.append("start") or "launched")
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-
-    def record_remote_probe(root, paths, remote=None):
-        if remote is not None:
-            calls.append("remote-probe")
-        return real_validate(root, paths, remote=remote)
-
-    monkeypatch.setattr(
-        hparam_runtime.exp_io,
-        "validate_managed_output_paths",
-        record_remote_probe,
-    )
 
     with pytest.raises(ValueError, match="recipe.resolved.yaml"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
@@ -514,8 +469,7 @@ def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: 
             {
                 **run,
                 "status": "launched",
-                "target": "ssh",
-                "host": "foreign-host",
+                "target": "foreign-target",
                 "workdir": "/foreign/workdir",
                 "gpus": "7",
                 "pid_path": "/foreign/run.pid",
@@ -549,15 +503,13 @@ def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: 
         assert canonical.get("target", "") == ""
 
 
-def test_hparam_launch_binds_ssh_conda_gpu_and_pid_identity_only_after_a_launch_slot(
+def test_hparam_launch_binds_conda_gpu_and_pid_identity_only_after_a_launch_slot(
     tmp_path: Path,
     monkeypatch,
 ):
     recipe = _hparam_recipe(
         tmp_path,
         execution={
-            "target": "ssh",
-            "host": "baichuan3",
             "workdir": str(tmp_path / "plan"),
             "conda_env": "ywx",
             "gpu_pool": [6, 7],
@@ -575,10 +527,9 @@ def test_hparam_launch_binds_ssh_conda_gpu_and_pid_identity_only_after_a_launch_
     assert result.returncode == 0, result.stderr
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert rows[0]["status"] == "planned"
-    assert rows[0]["target"] == "ssh"
-    assert rows[0]["host"] == "baichuan3"
+    assert rows[0]["target"] == "local"
     assert rows[0]["gpus"] == "6,7"
-    assert "ssh baichuan3" in rows[0]["command"]
+    assert rows[0]["command"].startswith(f"cd {shlex.quote(str(plan_dir))} && ")
     assert "CUDA_VISIBLE_DEVICES=6,7" in rows[0]["command"]
     canonical = _read_table(tmp_path / "run_manifest.tsv")
     assert canonical[0]["target"] == ""
@@ -593,26 +544,17 @@ def test_hparam_launch_binds_ssh_conda_gpu_and_pid_identity_only_after_a_launch_
     assert "--wandb-group unit" in script
     assert not (plan_dir / "logs").exists()
     assert not (plan_dir / "pids").exists()
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-
-    def validate_without_remote(root, paths, remote=None):
-        if remote is None:
-            return real_validate(root, paths)
-
     launcher = FakeLauncher()
-    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
-    # The fake launcher creates no remote PID file; keep its follow-up lookup local too.
+    # The fake launcher creates no PID file for the follow-up identity lookup.
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args: None)
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert rows[0]["status"] == "launched"
-    assert rows[0]["target"] == "ssh"
-    assert rows[0]["host"] == "baichuan3"
+    assert rows[0]["target"] == "local"
     assert rows[0]["gpus"] == "6,7"
-    assert "ssh baichuan3" in rows[0]["command"]
-    assert "mkdir -p" in rows[0]["command"]
+    assert rows[0]["command"].startswith(f"cd {shlex.quote(str(plan_dir))} && ")
     assert "start_new_session=True" in rows[0]["command"]
     assert "conda run --no-capture-output -n ywx" in rows[0]["command"]
     assert "CUDA_VISIBLE_DEVICES=6,7" in rows[0]["command"]
@@ -719,8 +661,7 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
     assert not (plan_dir / "run_status.tsv").exists()
 
 
-@pytest.mark.parametrize("target", ["local", "ssh"])
-def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch, target: str):
+def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch):
     calls = []
 
     def run(argv, **kwargs):
@@ -731,16 +672,12 @@ def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch, ta
     workdir = "/runtime checkout"
 
     execution_snapshot.run_execution_command(
-        {"target": target, "host": "unit-host", "workdir": workdir, "conda_env": "runtime", "env": {"TOKEN": "value"}},
+        {"workdir": workdir, "conda_env": "runtime", "env": {"TOKEN": "value"}},
         ["/runtime/bin/python", "-c", "pass"],
     )
 
     argv, kwargs = calls[0]
-    if target == "ssh":
-        assert argv[0] == "ssh"
-        assert argv[-2] == "unit-host"
-    else:
-        assert argv[:2] == ["bash", "-lc"]
+    assert argv[:2] == ["bash", "-lc"]
     shell = argv[-1]
     assert shell.index(f"cd {shlex.quote(workdir)}") < shell.index("conda run")
     assert "export PYTHONPATH=" in shell
@@ -749,8 +686,7 @@ def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch, ta
     assert kwargs["timeout"] == 300
 
 
-@pytest.mark.parametrize("target", ["local", "ssh"])
-def test_execution_probe_timeout_propagates_without_retry(monkeypatch, target: str):
+def test_execution_probe_timeout_propagates_without_retry(monkeypatch):
     calls = []
 
     def timeout(argv, **kwargs):
@@ -761,7 +697,7 @@ def test_execution_probe_timeout_propagates_without_retry(monkeypatch, target: s
 
     with pytest.raises(subprocess.TimeoutExpired):
         execution_snapshot.run_execution_command(
-            {"target": target, "host": "unit-host", "workdir": "/runtime"},
+            {"workdir": "/runtime"},
             ["/runtime/bin/python", "-c", "pass"],
         )
 
@@ -983,45 +919,28 @@ def test_monitor_owned_launch_uses_shell_exit_code(tmp_path: Path, exit_code: in
     assert observed["status"] == expected_status
 
 
-@pytest.mark.parametrize("target", ["local", "ssh"])
-def test_launch_timeout_is_uncertain_only_over_ssh(monkeypatch, target: str):
+def test_launch_waits_without_timeout_and_propagates_its_exception(monkeypatch):
     calls = []
 
     def timeout(*_args, **kwargs):
-        calls.append(kwargs["timeout"])
-        raise subprocess.TimeoutExpired("launch", kwargs["timeout"])
+        calls.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired("launch", 1)
 
+    monkeypatch.setattr(subprocess, "run", timeout)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        managed_scheduler.start_process({"target": "local"}, "managed launch")
+    assert calls == [None]
+
+
+def test_launch_returncode_255_is_launch_failed(monkeypatch):
     monkeypatch.setattr(
         subprocess,
         "run",
-        timeout,
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 255, "", "launcher failed"),
     )
 
-    execution = {"target": target, **({"host": "unit-host"} if target == "ssh" else {})}
-    if target == "ssh":
-        assert managed_scheduler.start_process(execution, "managed launch") == "launched"
-        assert calls == [60]
-    else:
-        with pytest.raises(subprocess.TimeoutExpired):
-            managed_scheduler.start_process(execution, "managed launch")
-        assert calls == [None]
-
-
-@pytest.mark.parametrize(
-    ("execution", "expected_status"),
-    [
-        pytest.param({"target": "ssh", "host": "unit-host"}, "launched", id="ssh"),
-        pytest.param({"target": "local"}, "launch_failed", id="local"),
-    ],
-)
-def test_launch_returncode_255_is_uncertain_only_over_ssh(monkeypatch, execution: dict, expected_status: str):
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 255, "", "connection lost"),
-    )
-
-    assert managed_scheduler.start_process(execution, "managed launch") == expected_status
+    assert managed_scheduler.start_process({"target": "local"}, "managed launch") == "launch_failed"
 
 
 def test_pre_spawn_verification_failure_is_retryable(monkeypatch):
@@ -1034,7 +953,6 @@ def test_pre_spawn_verification_failure_is_retryable(monkeypatch):
     )
 
     assert managed_scheduler.start_process({"target": "local"}, "managed launch") == "pending"
-    assert managed_scheduler.start_process({"target": "ssh", "host": "unit-host"}, "managed launch") == "pending"
 
 
 def test_retryable_pre_spawn_failure_does_not_consume_managed_run(tmp_path: Path):
@@ -1050,7 +968,7 @@ def test_retryable_pre_spawn_failure_does_not_consume_managed_run(tmp_path: Path
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
 
 
-def test_uncertain_remote_launch_is_not_relaunched(tmp_path: Path):
+def test_unconfirmed_launch_is_not_relaunched(tmp_path: Path):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     launcher = FakeLauncher(verify_target=False)
 
@@ -1319,42 +1237,32 @@ def test_hparam_launch_accepts_additional_cli_options_on_a_rolling_runtime(tmp_p
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launch_failed"
 
 
-def test_repeated_ssh_dry_run_does_not_observe_runtime_before_execute(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(
-        tmp_path,
-        execution={
-            "target": "ssh",
-            "host": "offline-host",
-            "workdir": str(tmp_path / "plan"),
-            "max_concurrent": 1,
-        },
-    )
+def test_repeated_dry_run_does_not_observe_runtime_before_execute(tmp_path: Path, monkeypatch):
+    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path / "plan"), "max_concurrent": 1})
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    remote_calls = []
+    observations = []
+    real_run_row_command = run_evidence.run_row_command
+    real_runtime_artifacts = run_evidence.runtime_artifacts
 
-    def fake_remote_command(row, command):
-        remote_calls.append((row, command))
-        if _is_remote_python_program(command, "run_evidence.runtime_artifacts"):
-            return subprocess.CompletedProcess([], 0, json.dumps({"run_manifest": "", "checkpoints": []}), "")
-        return subprocess.CompletedProcess([], run_evidence.REMOTE_MISSING_RETURN_CODE, "", "")
+    def record_command(command):
+        observations.append(command)
+        return real_run_row_command(command)
 
-    monkeypatch.setattr(run_evidence, "run_row_command", fake_remote_command)
+    def record_artifacts(row):
+        observations.append("runtime_artifacts")
+        return real_runtime_artifacts(row)
+
+    monkeypatch.setattr(run_evidence, "run_row_command", record_command)
+    monkeypatch.setattr(run_evidence, "runtime_artifacts", record_artifacts)
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
 
-    assert remote_calls == []
+    assert observations == []
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
     assert _read_table(plan_dir / "launch_manifest.tsv")[0]["status"] == "planned"
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-
-    def validate_without_remote(root, paths, remote=None):
-        if remote is None:
-            return real_validate(root, paths)
-
     launcher = FakeLauncher()
-    monkeypatch.setattr(hparam_runtime.exp_io, "validate_managed_output_paths", validate_without_remote)
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
@@ -1378,42 +1286,6 @@ def test_hparam_launch_rejects_unsafe_runtime_root_before_start(tmp_path: Path, 
     launcher = FakeLauncher()
 
     with pytest.raises(ValueError, match="Managed runtime output|Managed output"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
-
-
-def test_hparam_ssh_launch_rejects_existing_remote_runtime_root_before_start(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(
-        tmp_path,
-        execution={
-            "target": "ssh",
-            "host": "offline-host",
-            "workdir": str(tmp_path),
-            "max_concurrent": 1,
-        },
-    )
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
-    runtime_dir = Path(run["runtime_dir"])
-    real_validate = hparam_runtime.exp_io.validate_managed_output_paths
-
-    def fake_validate(root, paths, remote=None):
-        if remote and runtime_dir in paths:
-            raise ValueError(f"Managed output paths must be independent regular files: {runtime_dir}")
-        if not remote:
-            real_validate(root, paths)
-
-    monkeypatch.setattr(
-        hparam_runtime.exp_io,
-        "validate_managed_output_paths",
-        fake_validate,
-    )
-    launcher = FakeLauncher()
-
-    with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()

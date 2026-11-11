@@ -298,7 +298,6 @@ def test_infer_accepts_complete_execution_identity(tmp_path: Path):
     recipe = _write_infer_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"] = {
-        "target": "local",
         "workdir": str(tmp_path / "runtime"),
         "python": "/runtime/python",
         "runtime_commit": "a" * 40,
@@ -710,7 +709,6 @@ def test_rejects_invalid_execution_identity(tmp_path: Path, task: str, field: st
     payload["task"] = task
     payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
     payload["execution"] = {
-        "target": "local",
         "workdir": str(tmp_path / "runtime"),
         "python": "/runtime/python",
         "runtime_commit": "a" * 40,

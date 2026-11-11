@@ -203,7 +203,7 @@ def fixed_node_resource_capacity(
     resources: SlurmResources,
     planned_runs: int,
     *,
-    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+    timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> NodeResourceCapacity:
     node = str(resources.get("nodelist") or "")
     if re.fullmatch(r"[A-Za-z0-9_.-]+", node) is None:
@@ -471,7 +471,6 @@ def run_frozen_job(
                 with runtime_lock(workdir):
                     snapshot = execution_snapshot.inspect_execution_target(
                         {
-                            "target": "local",
                             "workdir": workdir,
                             "python": python,
                             "runtime_commit": runtime_commit,
@@ -560,23 +559,16 @@ def run_command(
     execution: Mapping[str, JsonValue],
     argv: list[str],
     *,
-    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+    timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess:
-    target = str(execution.get("target", "local") or "local")
-    if target not in {"local", "ssh"}:
-        raise ValueError("execution.target must be local or ssh.")
-    host = None
-    if target == "ssh":
-        host = str(execution.get("host") or "").strip()
-        if not host:
-            raise ValueError("execution.host is required for an SSH Slurm submission host.")
-    return transport.run_shell(host, _shell_command(argv), timeout=timeout)
+    # Slurm commands run on the host where agent_tools runs; execution only keeps the callers' shared signature.
+    return transport.run_shell(_shell_command(argv), timeout=timeout)
 
 
 def controller_cluster(
     execution: Mapping[str, JsonValue],
     *,
-    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+    timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> str:
     result = run_command(execution, ["scontrol", "show", "config"], timeout=timeout)
     if result.returncode != 0:
@@ -605,7 +597,7 @@ def submit(
     submit_token: str,
     *,
     execution_snapshot_sha256: str,
-    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+    timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> JobIdentity:
     result = run_command(
         execution,
@@ -623,7 +615,7 @@ def active_jobs(
     job_id: str | Sequence[str] | None = None,
     submit_token: str | None = None,
     cluster: str | None = None,
-    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+    timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> list[JobObservation]:
     argv = ["squeue", "--noheader", "--format=%i|%T|%R|%N|%k"]
     cluster_name = _follow_up_cluster_name(execution, cluster)
@@ -654,7 +646,7 @@ def show_job(
     job_id: str,
     *,
     cluster: str | None = None,
-    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+    timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> JobObservation | None:
     job_id = _job_id(job_id)
     argv = ["scontrol"]
@@ -707,7 +699,7 @@ def accounting_job(
     *,
     submit_token: str,
     cluster: str | None = None,
-    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+    timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> JobObservation | None:
     job_id = _job_id(job_id)
     argv = ["sacct", "--duplicates", "--noheader", "--parsable2", "--allocations"]
@@ -732,7 +724,7 @@ def cluster_scheduling_capabilities(
     execution: Mapping[str, JsonValue],
     partition: str,
     *,
-    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+    timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> SlurmSchedulingCapabilities:
     outputs: dict[str, str] = {}
     for action, argv in (
@@ -794,7 +786,7 @@ def cancel(
     job_id: str,
     *,
     cluster: str | None = None,
-    timeout: float = transport.SSH_TIMEOUT_SECONDS,
+    timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> None:
     argv = ["scancel"]
     cluster_name = _follow_up_cluster_name(execution, cluster)

@@ -5,12 +5,9 @@ import json
 import os
 from pathlib import Path
 from shlex import quote as shlex_quote
-import subprocess
-import sys
 
 from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
 from test_agent_plan_blocks_on_ambiguity import (
-    _RUNTIME_COMMIT,
     _first_run,
     _hparam_recipe,
     _local_runtime_execution,
@@ -451,75 +448,6 @@ def test_unlock_final_test_freezes_explicit_config_without_yaml_search(tmp_path:
     script = (output_dir / "final_external_test.sh").read_text()
     assert shlex_quote(str(frozen_config)) in script
     assert shlex_quote(str(selected_config)) not in script
-
-
-def test_unlock_final_test_captures_remote_explicit_config_over_ssh(tmp_path: Path, monkeypatch):
-    ckpt = tmp_path / "best.ckpt"
-    ckpt.write_text("checkpoint")
-    remote_config = "/remote/selected_run.yaml"
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=Path(remote_config))
-    selected_bytes = _valid_final_config_bytes(tmp_path)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["execution"] = {
-        "target": "ssh",
-        "host": "unit-host",
-        "path_context": "remote",
-        "path_validation": "ssh",
-        "python": sys.executable,
-        "runtime_commit": _RUNTIME_COMMIT,
-    }
-    write_yaml(recipe, payload)
-    calls = []
-
-    def fake_run_ssh(host: str, command: str, **kwargs):
-        calls.append((host, command, kwargs))
-        if command.startswith("cat -- "):
-            return subprocess.CompletedProcess([], 0, stdout=selected_bytes, stderr=b"")
-        if command.startswith("test "):
-            return subprocess.CompletedProcess([], 0, stdout="path-present\n", stderr="")
-        return subprocess.CompletedProcess([], 0, stdout="true\n", stderr="")
-
-    monkeypatch.setattr("agent_tools.transport.run_ssh", fake_run_ssh)
-    output_dir = tmp_path / "unlocked"
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir, unlock_final_test=True)
-
-    assert report.exit_code == 0, [issue.message for issue in report.issues]
-    frozen_config = output_dir / "config.final_eval.yaml"
-    assert frozen_config.read_bytes() == selected_bytes
-    assert [command for _host, command, _kwargs in calls].count(f"cat -- {remote_config}") == 2
-    assert shlex_quote(str(frozen_config)) in (output_dir / "final_external_test.sh").read_text()
-
-
-def test_unlock_final_test_rejects_deferred_remote_explicit_config_before_workspace_mutation(tmp_path: Path):
-    ckpt = tmp_path / "best.ckpt"
-    ckpt.write_text("checkpoint")
-    recipe = _hparam_recipe(
-        tmp_path,
-        ckpt_path=ckpt,
-        final_config_path=Path("/remote/selected_run.yaml"),
-    )
-    payload = yaml.safe_load(recipe.read_text())
-    payload["execution"] = {
-        "target": "ssh",
-        "host": "unit-host",
-        "path_context": "remote",
-        "path_validation": "defer",
-        "python": sys.executable,
-        "runtime_commit": _RUNTIME_COMMIT,
-    }
-    write_yaml(recipe, payload)
-    output_dir = tmp_path / "unlocked"
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir, unlock_final_test=True)
-
-    assert report.exit_code == 1
-    assert any(
-        "remote final_eval_config_path requires execution.path_validation=ssh" in issue.message
-        for issue in report.issues
-    )
-    assert not output_dir.exists()
-    assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
 
 
 def test_infer_user_decision_ckpt_path_must_exist(tmp_path: Path):
