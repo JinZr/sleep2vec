@@ -14,7 +14,7 @@ import sys
 
 def start_token(pid: int) -> str | None:
     try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as stat_file:
+        with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as stat_file:
             stat_text = stat_file.read()
     except OSError:
         if sys.platform == "darwin":
@@ -64,11 +64,14 @@ def start_token(pid: int) -> str | None:
 
 
 def process_group_running(pgid: int, proc_root: str = "/proc") -> bool | None:
-    """Whether ``pgid`` still has a non-zombie member; None when the process table cannot settle it."""
+    """Whether ``pgid`` still has a non-zombie member; None when the process table cannot settle it.
+
+    Stat reads replace undecodable bytes: only the numeric fields after the
+    process name are parsed, and a name may hold arbitrary bytes."""
     leader_uncertain = False
     leader_stat: str | None
     try:
-        with open(os.path.join(proc_root, str(pgid), "stat"), encoding="utf-8") as stat_file:
+        with open(os.path.join(proc_root, str(pgid), "stat"), encoding="utf-8", errors="replace") as stat_file:
             leader_stat = stat_file.read()
     except (FileNotFoundError, ProcessLookupError):
         # ESRCH, like ENOENT, means the leader exited while its stat was read.
@@ -104,7 +107,7 @@ def process_group_running(pgid: int, proc_root: str = "/proc") -> bool | None:
         if not entry.isdigit() or entry == str(pgid):
             continue
         try:
-            with open(os.path.join(proc_root, entry, "stat"), encoding="utf-8") as stat_file:
+            with open(os.path.join(proc_root, entry, "stat"), encoding="utf-8", errors="replace") as stat_file:
                 stat_text = stat_file.read()
         except (FileNotFoundError, ProcessLookupError):
             continue

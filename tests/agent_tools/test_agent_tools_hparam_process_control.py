@@ -815,6 +815,17 @@ def test_process_monitor_treats_a_leader_that_exits_mid_probe_as_gone(monkeypatc
     assert run_evidence.process_identity_running({}, identity) is group_running
 
 
+def test_process_group_probe_reads_members_with_undecodable_names(tmp_path: Path):
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc_stat(proc_root, 123, 123, "Z")
+    member = proc_root / "124"
+    member.mkdir()
+    (member / "stat").write_bytes(b"124 (bad\xffname) S 1 123\n")
+
+    assert process_identity.process_group_running(123, proc_root=str(proc_root)) is True
+
+
 def test_process_group_probe_skips_members_that_exit_mid_scan(tmp_path: Path, monkeypatch):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
