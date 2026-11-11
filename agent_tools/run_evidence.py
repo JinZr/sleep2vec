@@ -1,9 +1,9 @@
 """Observation of one direct run: process identity, logs, artifacts, and health.
 
-Layer 0 leaf. Turns a manifest row plus live local probes into a status row
-while keeping a confirmed-unsafe identity (``ProcessIdentityError``), a failed
-probe, and a genuinely absent process apart. Collapsing them would let a probe
-failure read as a finished run.
+Turns a manifest row plus live local probes into a status row while keeping a
+confirmed-unsafe identity (``ProcessIdentityError``), a failed probe, and a
+genuinely absent process apart. Collapsing them would let a probe failure read
+as a finished run.
 
 Observes and returns; it never persists a row or launches work. It also owns
 ``stop_process_group``, the identity-verified process-group termination

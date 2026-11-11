@@ -1,9 +1,8 @@
 """Recipe evaluation, doctor reports, and frozen plan publication.
 
-Layer 2 kernel. Adds authored/base/local layer orchestration and
-policy-dependent decision validation on top of the structural contract in
-``decision_rules``, then stages and publishes a plan under the publication
-lock.
+Adds authored/base/local layer orchestration and policy-dependent decision
+validation on top of the structural contract in ``decision_rules``, then stages
+and publishes a plan under the publication lock.
 
 ``doctor`` runs the same single validation pass (``preflight_plan`` with
 ``output_dir=None``) and reports it without publishing runnable commands.

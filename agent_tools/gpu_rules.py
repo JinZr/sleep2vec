@@ -1,6 +1,6 @@
 """GPU pool partitioning: how a run's device list becomes concurrent launch groups.
 
-Layer 0 leaf. Pure arithmetic over the recipe's ``execution.gpu_pool`` and
+Pure arithmetic over the recipe's ``execution.gpu_pool`` and
 ``runtime.devices``. Reports grouping problems as ``GpuRuleIssue`` values;
 malformed values can still raise during conversion, so callers rely on the
 canonical input validation. Never probes a device. Live capacity and process

@@ -1,15 +1,9 @@
 """Root anchor: repository paths, variant/task constants, and summary type vocabulary.
 
-Mixed bridge. Widely imported within the package, and also imported from outside
-the package too, so it stays at the package top level. Its domain coupling is
-two hardcoded constants -- ``SUPPORTED_VARIANTS`` (including
-``sex_age_baseline``) and ``VARIANTLESS_TASKS`` -- plus the per-variant
-``*ConfigSummary`` shapes.
-
-``CONFIG_FINETUNE_SECTION`` spells the config-schema section name so kernel
-modules can read it without tripping the adapter-leak guard, which matches raw
-task-name constants: the section shares its spelling with the finetune task but
-is config vocabulary, not task dispatch.
+Widely imported within the package, and also imported from outside the package,
+so it stays at the package top level. Its domain coupling is two hardcoded
+constants -- ``SUPPORTED_VARIANTS`` (including ``sex_age_baseline``) and
+``VARIANTLESS_TASKS`` -- plus the per-variant ``*ConfigSummary`` shapes.
 """
 
 from __future__ import annotations
@@ -17,18 +11,13 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import re
-from typing import Any, Final, TypeAlias, TypedDict, TypeGuard, overload
+from typing import Any, TypeAlias, TypedDict, TypeGuard, overload
 
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SUPPORTED_VARIANTS = ("sleep2vec", "sleep2vec2", "sleep2expert", "sex_age_baseline")
 VARIANTLESS_TASKS = {"sleep2stat"}
-# Domain-config schema section name. Shares its spelling with the finetune
-# task name but is config vocabulary, not task dispatch (the adapter leak
-# guard matches raw task-name constants, so kernel modules read the section
-# through this constant).
-CONFIG_FINETUNE_SECTION: Final = "finetune"
 # libyaml parses the frozen recipes and configs about ten times faster than PyYAML's pure-Python
 # scanner and composes the same node tree. The pinned pyyaml wheels bundle it; an environment
 # without it fails here at import instead of silently falling back to the slow loader.

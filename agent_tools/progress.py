@@ -1,10 +1,9 @@
 """The run-side progress and event files, and their local reader.
 
-Layer 0 leaf. Owns ``status/progress.json`` and ``status/events.jsonl`` under a
-run directory: training and preprocessing scripts write them, monitoring reads
-them. Over twenty scripts outside agent_tools import this module, so its path
-constants and public names are effectively frozen and it stays at the package
-top level.
+Owns ``status/progress.json`` and ``status/events.jsonl`` under a run directory:
+training and preprocessing scripts write them, monitoring reads them. Over
+twenty scripts outside agent_tools import this module, so its path constants and
+public names are effectively frozen and it stays at the package top level.
 """
 
 from __future__ import annotations

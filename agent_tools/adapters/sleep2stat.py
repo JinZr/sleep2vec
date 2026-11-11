@@ -1,9 +1,8 @@
 """The ``sleep2stat`` task adapter and its config-summary owner.
 
-Layer 1, domain. The one variantless task (see ``models.VARIANTLESS_TASKS``).
-Also owns ``sleep2stat_config_summary`` and its config-shape probe
-``looks_like_sleep2stat_config_data``, which ``adapters.config_providers``
-pairs for ``configs``.
+The one variantless task (see ``models.VARIANTLESS_TASKS``). Also owns
+``sleep2stat_config_summary`` and its config-shape probe
+``looks_like_sleep2stat_config_data``, which ``configs`` checks first.
 """
 
 from __future__ import annotations

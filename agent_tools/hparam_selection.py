@@ -1,8 +1,8 @@
 """Hyper-parameter selection.
 
-Layer 0 leaf. Preflights the registered plan and ranks candidates on the frozen
-validation ``selection_split``. Reads frozen artifacts and observed results only;
-it never launches work or authors a new search space. Registered-plan integrity
+Preflights the registered plan and ranks candidates on the frozen validation
+``selection_split``. Reads frozen artifacts and observed results only; it never
+launches work or authors a new search space. Registered-plan integrity
 validation recompiles run contracts from the frozen configurations or parameter
 product through the hparam adapter and ``plan_hparam``.
 """

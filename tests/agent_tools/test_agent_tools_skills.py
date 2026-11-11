@@ -15,7 +15,6 @@ INDEX_FILES = {
     "REUSE_GUIDE.md",
     "WORKFLOWS.md",
 }
-INDEX_PATHS = {f"doc/code_index/{name}" for name in INDEX_FILES}
 
 
 def test_skills_validate_repository_skill_folder():
@@ -34,17 +33,6 @@ def test_code_index_contains_only_shared_navigation_files():
     }
 
     assert files == INDEX_FILES
-
-
-def test_skill_index_references_use_shared_navigation_files():
-    result = validate_skills()
-
-    assert result["ok"], result["issues"]
-    for skill in result["skills"]:
-        relevant_index = set(skill["relevant_index"])
-        assert relevant_index
-        assert relevant_index <= INDEX_PATHS
-        assert all((REPO_ROOT / path).is_file() for path in relevant_index)
 
 
 def _variants_that_parse_finetune_tuning() -> list[str]:

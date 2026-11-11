@@ -1,8 +1,7 @@
 """The ``hparam_tune`` task adapter.
 
-Layer 1, domain, and the single composite adapter: its ``base_task`` is
-``finetune``, so recipes carrying ``_base_recipe`` / ``_local_recipe`` layers
-close under its contract.
+The single composite adapter: its ``base_task`` is ``finetune``, so recipes
+carrying ``_base_recipe`` / ``_local_recipe`` layers close under its contract.
 
 Binds the hparam decision contract and compiles the plan contract for
 hyper-parameter plans.

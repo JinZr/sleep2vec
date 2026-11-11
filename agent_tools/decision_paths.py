@@ -1,12 +1,12 @@
 """Path, sidecar, and execution-contract validation for recipe decisions.
 
-Mixed bridge, and the highest domain signal among the L0 leaves: survival and
-multilabel sidecar checks and the sex_age_baseline pretrained-backbone rejection
-are spelled here rather than behind an adapter hook.
+Survival and multilabel sidecar checks and the sex_age_baseline
+pretrained-backbone rejection are spelled here rather than behind an adapter
+hook.
 
 Must never import the adapter registry -- the task-specific dispatch that used
-to live here is hoisted into ``decisions`` instead, which is what keeps this a
-layer 0 leaf that adapters may import.
+to live here is hoisted into ``decisions`` instead, which is what lets adapters
+import this module without an import cycle.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Any
 
 from . import gpu_rules, slurm
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision
-from .models import CONFIG_FINETUNE_SECTION, REPO_ROOT, ConfigSummaryInput, JsonValue, is_full_git_object_id
+from .models import REPO_ROOT, ConfigSummaryInput, JsonValue, is_full_git_object_id
 
 _EXECUTION_FIELDS = {"workdir"}
 _RUNTIME_IDENTITY_FIELDS = {"python", "runtime_commit"}
@@ -351,7 +351,7 @@ def _config_data(config_summary: ConfigSummaryInput | None) -> dict[str, Any]:
 
 
 def _config_finetune(config_summary: ConfigSummaryInput | None) -> dict[str, Any]:
-    finetune = config_summary.get(CONFIG_FINETUNE_SECTION) if isinstance(config_summary, dict) else {}
+    finetune = config_summary.get("finetune") if isinstance(config_summary, dict) else {}
     return finetune if isinstance(finetune, dict) else {}
 
 

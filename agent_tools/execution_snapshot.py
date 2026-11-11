@@ -1,14 +1,14 @@
 """Frozen execution snapshot of the target runtime a managed plan launches into.
 
-Layer 0 leaf. The execution snapshot (``execution_snapshot.json``) is the
-evidence a managed plan freezes about the runtime its runs execute in: the
-working directory, the interpreter and its version, the planned and observed
-checkout commits, the one runtime module and its origin, and the CLI options the
-planned arguments need and that module accepts. This module owns that shape, the
-target probe that produces it, the check that a frozen snapshot still matches
-the live target, and the snapshot's atomic write. The embedded
-``managed_scheduler.runtime_identity`` and ``managed_scheduler.cli_preflight``
-programs it runs are shared with the scheduler's launch-time verification.
+The execution snapshot (``execution_snapshot.json``) is the evidence a managed
+plan freezes about the runtime its runs execute in: the working directory, the
+interpreter and its version, the planned and observed checkout commits, the one
+runtime module and its origin, and the CLI options the planned arguments need
+and that module accepts. This module owns that shape, the target probe that
+produces it, the check that a frozen snapshot still matches the live target, and
+the snapshot's atomic write. The embedded ``managed_scheduler.runtime_identity``
+and ``managed_scheduler.cli_preflight`` programs it runs are shared with the
+scheduler's launch-time verification.
 
 Imports only ``models``, ``experiment_workspace``, ``manifests``,
 ``python_programs`` and ``transport``.

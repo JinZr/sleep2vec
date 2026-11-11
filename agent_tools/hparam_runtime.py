@@ -1,9 +1,9 @@
 """Launch, queue, monitor, and stop for a registered hyper-parameter plan's runs.
 
-Layer 0 leaf. Dispatches through ``managed_scheduler`` for capacity and process
-lifecycle. A direct plan's queue runs as one detached runner per plan, guarded by
-the plan's ``queue_runner.lock``; a Slurm plan's queue is one submit pass, since
-Slurm itself queues the jobs.
+Dispatches through ``managed_scheduler`` for capacity and process lifecycle. A
+direct plan's queue runs as one detached runner per plan, guarded by the plan's
+``queue_runner.lock``; a Slurm plan's queue is one submit pass, since Slurm
+itself queues the jobs.
 """
 
 from __future__ import annotations
@@ -432,15 +432,7 @@ def monitor_hparam_runs(
                 # Anchor CLI-relative owners without resolving aliases or removing raw '..' components.
                 rows.append(scheduler.observe_slurm_run(root.absolute(), prior, slurm_jobs, health=health))
             else:
-                rows.append(
-                    scheduler.observe_run(
-                        root,
-                        prior,
-                        prior,
-                        health=health,
-                        default_script_commits_terminal_status=False,
-                    )
-                )
+                rows.append(scheduler.observe_run(root, prior, prior, health=health))
         exp_io.validate_managed_output_paths(workspace, managed_output_paths)
         committed = merge_run_manifest(workspace, rows)
         committed_by_key = {validated_run_key(row): row for row in committed}

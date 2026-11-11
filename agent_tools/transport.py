@@ -1,9 +1,9 @@
 """Shared local shell command construction and execution.
 
-Layer 0 leaf. Provides shell quoting, the bounded local ``bash -lc`` runner and
-its default timeout, and the ``python3 -c`` command line for an embedded program.
-Program bodies come from ``python_programs``; this module never embeds program
-source inline.
+Provides shell quoting, the bounded local ``bash -lc`` runner and its default
+timeout, and the ``python3 -c`` command line for an embedded program. Program
+bodies come from ``python_programs``; this module never embeds program source
+inline.
 """
 
 from __future__ import annotations

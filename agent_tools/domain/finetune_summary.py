@@ -1,8 +1,7 @@
 """The generic finetune config summary body and variant guessing.
 
-Layer 0 domain leaf; ``configs`` delegates its summary body here, one of the
-frozen reverse edges. Removing that edge would need a registry/provider
-indirection for the finetune-family summary.
+``configs`` delegates its summary body here for every config that no
+shape-specific family claims.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from ..models import (
-    CONFIG_FINETUNE_SECTION,
     ChannelSummary,
     FinetuneConfigSummary,
     FinetuneTaskSummary,
@@ -65,7 +63,7 @@ def finetune_summary_body(
     # A `finetune:` block that is present but empty is still a finetune config, so the checks
     # below ask this rather than `if finetune` -- `{}` is falsy and would skip every one of
     # them while the summary still reports `is_finetune: true`.
-    raw_finetune = data.get(CONFIG_FINETUNE_SECTION)
+    raw_finetune = data.get("finetune")
     is_finetune = isinstance(raw_finetune, dict)
     finetune: Any = raw_finetune if isinstance(raw_finetune, dict) else {}
     task_value = finetune.get("task")
@@ -219,7 +217,7 @@ def finetune_summary_body(
             "kaldi_data_root": data_block.get("kaldi_data_root"),
             "kaldi_manifest": data_block.get("kaldi_manifest"),
         },
-        CONFIG_FINETUNE_SECTION: finetune_summary,
+        "finetune": finetune_summary,
         "preset_build": {
             "required_channels": preset_build.get("required_channels"),
             "min_channels": preset_build.get("min_channels"),

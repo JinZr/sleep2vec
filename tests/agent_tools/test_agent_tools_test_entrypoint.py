@@ -89,7 +89,7 @@ def test_runner_seed_controls_collection_order_without_changing_membership(tmp_p
 
 def test_runner_shards_partition_collected_tests():
     # pytest applies tests/conftest.py only to paths below tests/, so the probe is an existing module there.
-    module = REPO_ROOT / "tests" / "agent_tools" / "test_agent_layering.py"
+    module = REPO_ROOT / "tests" / "agent_tools" / "test_agent_import_graph.py"
     command = [sys.executable, str(RUNNER), str(module), "--collect-only", "-q"]
     env = os.environ.copy()
     env.pop("PYTEST_ADDOPTS", None)
@@ -104,7 +104,7 @@ def test_runner_shards_partition_collected_tests():
         assert result.returncode == 0, result.stdout + result.stderr
         outputs.append(result.stdout)
     full, shard_0, shard_1 = [
-        {line for line in output.splitlines() if "test_agent_layering.py::" in line} for output in outputs
+        {line for line in output.splitlines() if "test_agent_import_graph.py::" in line} for output in outputs
     ]
     assert shard_0 and shard_1
     assert shard_0.isdisjoint(shard_1)

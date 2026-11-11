@@ -1,14 +1,14 @@
-"""The ``agent_tools`` command-line surface: 23 subcommands over the kernel.
+"""The ``agent_tools`` command-line surface: 23 subcommands.
 
-Mixed bridge -- it forwards the domain commands (``config-summary``,
-``index-summary``, ``preset-summary``) while the rest stay task-agnostic.
+It forwards the domain commands (``config-summary``, ``index-summary``,
+``preset-summary``) while the rest stay task-agnostic.
 
-``test_agent_tools_cli_contract.py`` freezes the subcommand names, their
-kernel/domain/mixed ownership split, the argument contracts, and the
-task/variant routing matrix. Register subcommands through ``_command()``, which sets a
-command's summary and description from one string: every subcommand carries a
-``help=`` and a ``description=``, and every option carries a ``help=``, because
-this CLI is the agent-facing documentation of its own capabilities.
+``test_agent_tools_cli_contract.py`` freezes the subcommand names, the argument
+contracts, and the task/variant routing matrix. Register subcommands through
+``_command()``, which sets a command's summary and description from one string:
+every subcommand carries a ``help=`` and a ``description=``, and every option
+carries a ``help=``, because this CLI is the agent-facing documentation of its
+own capabilities.
 """
 
 from __future__ import annotations

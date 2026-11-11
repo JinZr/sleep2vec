@@ -1,12 +1,13 @@
 """Plain JSON, TSV, and text serialization for managed artifacts.
 
-Layer 0 leaf. JSON and row serializers are deterministic (sorted keys or
-fieldnames, trailing newline), so those artifact bytes depend only on their
-content, which the plan and run digests rely on. ``write_text`` preserves its
-supplied text verbatim, so callers own its newline behavior. The
-``validate_managed_header`` function checks identity and legacy fields for
-``read_rows(require_managed_identity=True)``. ``experiment_workspace`` separately
-enforces those fields when parsing run manifests and validating mapping rows.
+JSON and row serializers are deterministic (sorted keys or fieldnames, trailing
+newline), so those artifact bytes depend only on their content, which the plan
+and run digests rely on. ``write_text`` preserves its supplied text verbatim, so
+callers own its newline behavior. The ``validate_managed_header`` function
+checks identity and legacy fields for
+``read_rows(require_managed_identity=True)``. ``experiment_workspace``
+separately enforces those fields when parsing run manifests and validating
+mapping rows.
 
 Reads and writes that must honour locking or managed path validation belong
 to ``experiment_io``.
