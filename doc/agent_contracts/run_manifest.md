@@ -274,8 +274,8 @@ provenance. The commit file is point-in-time provenance only.
 
 ### Submission and adoption
 
-`hparam-launch --execute`, `hparam-run-queue --execute`, and
-`infer-launch --execute` each make one submission pass under the run lock and
+`hparam-run-queue --execute` and `infer-launch --execute` each make one
+submission pass under the run lock and
 return without polling. The pass runs in this order:
 
 1. Run the pre-submit gates: the frozen script hash, empty runtime and
@@ -335,7 +335,7 @@ own lifecycle.
 
 ### Stopping and lost runs
 
-`hparam-stop` and `infer-stop` require a reason. What a stop does depends on
+`run-stop` requires a reason. What a stop does depends on
 the row:
 
 - **The row has a job id:** atomically record non-terminal `stopping` with the

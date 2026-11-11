@@ -1,4 +1,4 @@
-"""The ``agent_tools`` command-line surface: 23 subcommands.
+"""The ``agent_tools`` command-line surface: 19 subcommands.
 
 It forwards the domain commands (``config-summary``, ``index-summary``,
 ``preset-summary``) while the rest stay task-agnostic.
@@ -40,16 +40,10 @@ from .experiments import (
     stop_infer_run,
     stop_preset_run,
 )
-from .hparam_runtime import (
-    launch_hparam_runs,
-    monitor_hparam_runs,
-    run_hparam_queue,
-    start_hparam_queue_runner,
-    stop_hparam_run,
-)
+from .hparam_runtime import monitor_hparam_runs, run_hparam_queue, start_hparam_queue_runner, stop_hparam_run
 from .hparam_selection import select_hparam_candidates
 from .managed_scheduler import queue_runner_liveness
-from .manifests import read_rows
+from .manifests import read_json, read_rows
 from .markdown import report_text
 from .models import json_ready
 from .plans import (
@@ -59,7 +53,6 @@ from .plans import (
     preflight_plan,
     write_doctor_outputs,
 )
-from .progress import format_progress, read_progress
 from .repo import repo_summary
 from .runtime_sync import sync_runtime
 from .skills import list_skills, validate_skills
@@ -253,15 +246,6 @@ def _add_consultation_commands(sub: argparse._SubParsersAction) -> None:
 
 def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
     """Register the launch, stop, queue, and monitor commands for registered plans."""
-    launch = _command(
-        sub,
-        "hparam-launch",
-        "Launch a registered hyper-parameter plan's runs. Dry run unless --execute is given.",
-    )
-    launch.add_argument("--plan-dir", required=True, help="Registered plan directory to launch from.")
-    _add_dry_run_or_execute(launch, subject="launch", execute_help="Actually launch the runs; enables state changes.")
-    launch.set_defaults(func=_cmd_hparam_launch)
-
     infer_launch = _command(
         sub,
         "infer-launch",
@@ -270,11 +254,6 @@ def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
     infer_launch.add_argument("--plan-dir", required=True, help="Registered plan directory to launch from.")
     infer_launch.add_argument("--execute", action="store_true", help="Actually launch the run; enables state changes.")
     infer_launch.set_defaults(func=_cmd_infer_launch)
-
-    infer_stop = _command(sub, "infer-stop", "Stop a managed inference run and record why it was stopped.")
-    infer_stop.add_argument("--plan-dir", required=True, help="Registered plan directory owning the run.")
-    _add_reason(infer_stop)
-    infer_stop.set_defaults(func=_cmd_infer_stop)
 
     preset_launch = _command(
         sub,
@@ -285,10 +264,20 @@ def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
     preset_launch.add_argument("--execute", action="store_true", help="Actually launch the run; enables state changes.")
     preset_launch.set_defaults(func=_cmd_preset_launch)
 
-    preset_stop = _command(sub, "preset-stop", "Stop a managed preset-preparation run and record why.")
-    preset_stop.add_argument("--plan-dir", required=True, help="Registered plan directory owning the run.")
-    _add_reason(preset_stop)
-    preset_stop.set_defaults(func=_cmd_preset_stop)
+    run_stop = _command(
+        sub,
+        "run-stop",
+        "Stop one managed run of a registered hyper-parameter, inference or preset-preparation plan and "
+        "record the reason in run_manifest.tsv. Acts at once (no dry run); never launches work.",
+    )
+    run_stop.add_argument("--plan-dir", required=True, help="Registered plan directory owning the run.")
+    run_stop.add_argument(
+        "--run-id",
+        required=True,
+        help="Managed run id to stop (e.g. run-000); must name a run of the plan, even a single-run plan.",
+    )
+    _add_reason(run_stop)
+    run_stop.set_defaults(func=_cmd_run_stop)
 
     run_queue = _command(
         sub,
@@ -330,12 +319,7 @@ def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
 
 
 def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
-    """Register progress and the experiment lifecycle commands."""
-    progress = _command(sub, "progress", "Report training progress for a run directory.")
-    progress.add_argument("--run-dir", required=True, help="Run directory to read progress from.")
-    _add_json(progress)
-    progress.set_defaults(func=_cmd_progress)
-
+    """Register the experiment lifecycle commands."""
     experiment_init = _command(sub, "experiment-init", "Initialize a managed experiment workspace from a spec.")
     experiment_init.add_argument("--run-dir", required=True, help="Experiment workspace root to initialize.")
     experiment_init.add_argument(
@@ -397,13 +381,7 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
 
 
 def _add_selection_commands(sub: argparse._SubParsersAction) -> None:
-    """Register hparam-stop and hparam-select."""
-    stop = _command(sub, "hparam-stop", "Stop one hyper-parameter run and record why it was stopped.")
-    stop.add_argument("--run-dir", required=True, help="Run directory holding run_manifest.tsv.")
-    stop.add_argument("--run-id", required=True, help="Managed run id to stop (e.g. run-000).")
-    _add_reason(stop)
-    stop.set_defaults(func=_cmd_hparam_stop)
-
+    """Register hparam-select."""
     select = _command(
         sub,
         "hparam-select",
@@ -525,18 +503,6 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     return report.exit_code
 
 
-def _cmd_hparam_launch(args: argparse.Namespace) -> int:
-    manifest = launch_hparam_runs(args.plan_dir, dry_run=not args.execute)
-    rows = read_rows(manifest, require_managed_identity=True)
-    counts = Counter(str(row.get("status") or "unknown") for row in rows)
-    mode = "execute (state changes enabled)" if args.execute else "dry-run (no launch attempted)"
-    states = ", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "none"
-    print(f"Mode: {mode}")
-    print(f"Lifecycle states: {states}")
-    print(f"Wrote {manifest}")
-    return 0
-
-
 def _cmd_infer_launch(args: argparse.Namespace) -> int:
     result = launch_infer_run(args.plan_dir, dry_run=not args.execute)
     row = result.launch_rows[0]
@@ -545,12 +511,6 @@ def _cmd_infer_launch(args: argparse.Namespace) -> int:
     print(f"Lifecycle state: {row['status']}")
     if row.get("command"):
         print(f"Submission command: {row['command']}")
-    return 0
-
-
-def _cmd_infer_stop(args: argparse.Namespace) -> int:
-    manifest = stop_infer_run(args.plan_dir, reason=args.reason)
-    print(f"Wrote {manifest}")
     return 0
 
 
@@ -565,8 +525,15 @@ def _cmd_preset_launch(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_preset_stop(args: argparse.Namespace) -> int:
-    manifest = stop_preset_run(args.plan_dir, reason=args.reason)
+def _cmd_run_stop(args: argparse.Namespace) -> int:
+    # plan.json only routes by task; each stop function re-reads the registered plan under the run lock,
+    # rejects a plan of another kind, and requires --run-id to name one of its runs.
+    recipe = read_json(Path(args.plan_dir) / "plan.json").get("recipe")
+    task = recipe.get("task") if isinstance(recipe, dict) else None
+    stops = {"hparam_tune": stop_hparam_run, "infer": stop_infer_run, "preset_prepare": stop_preset_run}
+    if task not in stops:
+        raise ValueError(f"run-stop requires a hparam_tune, infer or preset_prepare plan; got task {task!r}.")
+    manifest = stops[task](args.plan_dir, args.run_id, reason=args.reason)
     print(f"Wrote {manifest}")
     return 0
 
@@ -631,15 +598,6 @@ def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_progress(args: argparse.Namespace) -> int:
-    data = read_progress(args.run_dir)
-    if args.json:
-        _emit(data, as_json=True)
-    else:
-        print(format_progress(data), end="")
-    return 0
-
-
 def _cmd_experiment_init(args: argparse.Namespace) -> int:
     manifest = init_experiment(args.run_dir, args.spec)
     print(f"Wrote {manifest}")
@@ -678,12 +636,6 @@ def _cmd_experiment_status(args: argparse.Namespace) -> int:
         _emit(snapshot, as_json=True)
     else:
         print(format_experiment_status(snapshot), end="")
-    return 0
-
-
-def _cmd_hparam_stop(args: argparse.Namespace) -> int:
-    status = stop_hparam_run(args.run_dir, args.run_id, reason=args.reason)
-    print(f"Wrote {status}")
     return 0
 
 

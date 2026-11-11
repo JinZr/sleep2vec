@@ -14,7 +14,7 @@ Run each through `python -m agent_tools`; every subcommand documents itself with
 | 2 | `experiment-status --run-dir <experiment-root>` | On takeover, prints recorded state read-only. Then follow [takeover](experiment_workspace.md#takeover-and-continue-execution). |
 | 3 | `doctor --recipe <recipe> --output-dir <dir>` | Consultation and diagnostics. Exit 0 continues, 1 fails, 2 needs [user decisions](user_decisions.md). It publishes no runnable commands. |
 | 4 | `plan --recipe <recipe> --output-dir <plan-dir> [--user-decisions <decisions.yaml>]` | Publishes a frozen plan in a fresh directory inside `experiment.root`. It does not launch. |
-| 5 | `hparam-launch --plan-dir <plan-dir>` | Dry run by default (`infer-launch` and `preset-launch` likewise). Add `--execute` only with explicit launch authorization. |
+| 5 | `hparam-run-queue --plan-dir <plan-dir>` | Dry run by default (`infer-launch` and `preset-launch` likewise). Add `--execute` only with explicit launch authorization. |
 
 Monitors (`experiment-monitor`, `hparam-monitor`) refresh observations and never launch. The
 [stop-and-consult policy](../../AGENTS.md#agent-stop-and-consult-policy) separates concept

@@ -347,7 +347,7 @@ def test_launch_rejects_modified_frozen_script(tmp_path: Path):
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
     Path(run["script"]).write_text("#!/usr/bin/env bash\nexit 0\n")
 
-    result = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
+    result = run_cli("hparam-run-queue", "--plan-dir", str(plan_dir))
 
     assert result.returncode == 1
     assert "hash" in result.stderr.lower()
@@ -370,8 +370,17 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
 
     with pytest.raises(ValueError, match="reason"):
         hparam_runtime.stop_hparam_run(plan_dir, "run-000", reason="")
-    status_path = hparam_runtime.stop_hparam_run(plan_dir, "run-000", reason="validation diverged")
+    # run-stop never guesses which hparam run to stop.
+    no_run_id = run_cli("run-stop", "--plan-dir", str(plan_dir), "--reason", "validation diverged")
+    assert no_run_id.returncode == 2
+    assert "--run-id" in no_run_id.stderr
+    stopped_cli = run_cli(
+        "run-stop", "--plan-dir", str(plan_dir), "--run-id", "run-000", "--reason", "validation diverged"
+    )
+    assert stopped_cli.returncode == 0, stopped_cli.stderr
+    status_path = plan_dir / "run_status.tsv"
 
+    assert stopped_cli.stdout == f"Wrote {status_path}\n"
     assert "validation diverged" in status_path.read_text()
     assert "validation diverged" in (tmp_path / "events.jsonl").read_text()
     stopped = next(

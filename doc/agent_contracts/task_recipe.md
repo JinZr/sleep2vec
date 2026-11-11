@@ -338,8 +338,8 @@ launched again.
 The worker remains responsible for `running`, `completed`, and `failed` commits.
 Use `experiment-monitor` to observe the existing run; it neither launches work
 nor infers successful completion from a log or a vanished process. Use
-`preset-stop --plan-dir <plan> --reason <reason>` for a reasoned, identity-checked
-stop. An uncertain stop remains `stopping` with its original reason; monitoring
+`run-stop --plan-dir <plan> --run-id <run-id> --reason <reason>` for a reasoned,
+identity-checked stop. An uncertain stop remains `stopping` with its original reason; monitoring
 does not clear that intent. A later explicit stop may confirm the recorded
 process group has exited, but cannot replace its identity or launch again.
 Historical registered plans without the direct scheduler declaration keep
@@ -371,8 +371,8 @@ while the canonical submission command is bound by the shared submission
 pass. Registration and dry-run do not bind a job or execution identity.
 
 Use `experiment-monitor` to refresh scheduler evidence and `experiment-status`
-for read-only advice. `infer-stop --plan-dir <plan> --reason <reason>` acts on
-the unique run through the shared Slurm stop transaction. Repeated execute
+for read-only advice. `run-stop --plan-dir <plan> --run-id <run-id> --reason <reason>`
+acts on the plan's one run through the shared Slurm stop transaction. Repeated execute
 does not resubmit a queued, active, `lost`, or terminal run; a job already
 named for the run is adopted instead. The
 [Slurm evidence contract](run_manifest.md#slurm-scheduler-evidence) owns the

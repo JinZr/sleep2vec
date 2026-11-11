@@ -348,7 +348,7 @@ def test_hparam_plan_canonicalizes_relative_workspace_root_consistently(tmp_path
     plan_dir = tmp_path / "plan"
 
     plan_result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    launch_result = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
+    launch_result = run_cli("hparam-run-queue", "--plan-dir", str(plan_dir))
 
     assert plan_result.returncode == 0, plan_result.stderr
     assert launch_result.returncode == 0, launch_result.stderr

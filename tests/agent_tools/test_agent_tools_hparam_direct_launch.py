@@ -503,7 +503,7 @@ def test_hparam_launch_binds_conda_gpu_and_pid_identity_only_after_a_launch_slot
     plan_dir = tmp_path / "plan"
 
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    result = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
+    result = run_cli("hparam-run-queue", "--plan-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     rows = _read_table(plan_dir / "launch_manifest.tsv")
@@ -1312,7 +1312,7 @@ def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
         [
             sys.executable,
             str(runner),
-            "hparam-launch",
+            "hparam-run-queue",
             "--plan-dir",
             "relative_plan",
         ],

@@ -430,7 +430,7 @@ def test_preset_interrupted_attempt_is_not_relaunched(tmp_path, preset_runtime, 
             assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
         assert len(attempts) == 1
         with pytest.raises(ValueError, match="no recorded process identity"):
-            experiments.stop_preset_run(plan_dir, reason="no child receipt")
+            experiments.stop_preset_run(plan_dir, "run-000", reason="no child receipt")
 
 
 def test_preset_existing_pid_receipt_is_refused_without_recording_launch_failed(tmp_path, preset_runtime, monkeypatch):
@@ -504,7 +504,7 @@ def test_preset_stop_allows_real_exit_trap_to_take_manifest_lock(tmp_path, prese
         field: int(row[field]) if field != "process_start_token" else row[field] for field in PROCESS_IDENTITY_FIELDS
     }
     try:
-        experiments.stop_preset_run(plan_dir, reason="local lifecycle regression")
+        experiments.stop_preset_run(plan_dir, "run-000", reason="local lifecycle regression")
         final = read_run_manifest(preset_runtime["workspace"])[0]
         assert final["status"] == "stopped"
         assert final["stop_requested_at"] and final["stopped_at"]
@@ -519,10 +519,14 @@ def test_preset_stop_planned_run_requires_reason_and_does_not_launch(tmp_path, p
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
     before = read_run_manifest(preset_runtime["workspace"])
     with pytest.raises(ValueError, match="non-empty reason"):
-        experiments.stop_preset_run(plan_dir, reason=" ")
+        experiments.stop_preset_run(plan_dir, "run-000", reason=" ")
+    # The single run must still be named; another id is refused before any state change.
+    with pytest.raises(ValueError, match="Unknown run_id: run-001"):
+        experiments.stop_preset_run(plan_dir, "run-001", reason="not needed")
     assert read_run_manifest(preset_runtime["workspace"]) == before
-    experiments.stop_preset_run(plan_dir, reason="not needed")
-    assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "stopped"
+    assert cli.main(["run-stop", "--plan-dir", str(plan_dir), "--run-id", "run-000", "--reason", "not needed"]) == 0
+    stopped = read_run_manifest(preset_runtime["workspace"])[0]
+    assert (stopped["status"], stopped["stop_reason"]) == ("stopped", "not needed")
     assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
     assert not preset_runtime["payload"].exists()
 
@@ -536,7 +540,7 @@ def test_preset_lifecycle_reads_workspace_state_only_under_run_lock(
     call = (
         functools.partial(experiments.launch_preset_run, plan_dir, dry_run=False)
         if operation == "launch"
-        else functools.partial(experiments.stop_preset_run, plan_dir, reason="cancel during monitor commit")
+        else functools.partial(experiments.stop_preset_run, plan_dir, "run-000", reason="cancel during monitor commit")
     )
 
     call_while_run_lock_holder_commits(monkeypatch, preset_runtime["workspace"], call)
@@ -569,7 +573,7 @@ def test_preset_stop_accepts_authenticated_exit_between_intent_and_signal(
         raise RuntimeError("group exited before signal")
 
     monkeypatch.setattr(run_evidence, "stop_process_group", signal)
-    experiments.stop_preset_run(plan_dir, reason="short task race")
+    experiments.stop_preset_run(plan_dir, "run-000", reason="short task race")
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "stopped"
 
 
@@ -588,7 +592,7 @@ def test_preset_stop_unverified_identity_does_not_record_intent_or_signal(
     monkeypatch.setattr(run_evidence, "process_identity_running", probe)
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args: pytest.fail("must not signal"))
     with pytest.raises(RuntimeError):
-        experiments.stop_preset_run(plan_dir, reason="unsafe probe")
+        experiments.stop_preset_run(plan_dir, "run-000", reason="unsafe probe")
     assert read_run_manifest(preset_runtime["workspace"]) == before
 
 
@@ -597,13 +601,13 @@ def test_preset_stop_uncertain_after_intent_can_be_explicitly_reconciled(tmp_pat
     probes = iter([True, None])
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: next(probes))
     with pytest.raises(RuntimeError, match="after stop intent"):
-        experiments.stop_preset_run(plan_dir, reason="original authorized reason")
+        experiments.stop_preset_run(plan_dir, "run-000", reason="original authorized reason")
     stopping = read_run_manifest(preset_runtime["workspace"])[0]
     assert stopping["status"] == "stopping"
     assert stopping["stop_requested_at"]
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args: pytest.fail("already exited"))
-    experiments.stop_preset_run(plan_dir, reason="retry observation")
+    experiments.stop_preset_run(plan_dir, "run-000", reason="retry observation")
     final = read_run_manifest(preset_runtime["workspace"])[0]
     assert final["status"] == "stopped"
     assert final["stop_reason"] == "original authorized reason"
@@ -615,7 +619,7 @@ def test_preset_monitor_preserves_inflight_stop_intent(tmp_path, preset_runtime,
     probes = iter([True, None])
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: next(probes))
     with pytest.raises(RuntimeError, match="after stop intent"):
-        experiments.stop_preset_run(plan_dir, reason="authorized stop")
+        experiments.stop_preset_run(plan_dir, "run-000", reason="authorized stop")
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: True)
     for _ in range(2):
         experiments.monitor_experiment(preset_runtime["workspace"])
@@ -627,7 +631,7 @@ def test_preset_monitor_preserves_inflight_stop_intent(tmp_path, preset_runtime,
     )
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "stopping"
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
-    experiments.stop_preset_run(plan_dir, reason="repeat stop observation")
+    experiments.stop_preset_run(plan_dir, "run-000", reason="repeat stop observation")
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "stopped"
 
 

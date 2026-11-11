@@ -2,17 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 from agent_tools.progress import read_progress, write_progress
 
 
-def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
-
-
-def test_progress_helper_writes_valid_json_and_cli_reads_it(tmp_path: Path):
+def test_progress_helper_writes_valid_json_and_reader_reads_it(tmp_path: Path):
     write_progress(
         tmp_path,
         status="running",
@@ -29,12 +23,6 @@ def test_progress_helper_writes_valid_json_and_cli_reads_it(tmp_path: Path):
     assert data["task"] == "unit_task"
     assert data["processed"] == 2
     assert read_progress(tmp_path)["status"] == "running"
-
-    result = _run("progress", "--run-dir", str(tmp_path))
-
-    assert result.returncode == 0
-    assert "unit_task running" in result.stdout
-    assert "2 / 4 done" in result.stdout
 
 
 def test_progress_missing_returns_structured_status(tmp_path: Path):
