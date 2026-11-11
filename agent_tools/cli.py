@@ -1,13 +1,11 @@
-"""The ``agent_tools`` command-line surface: 34 subcommands over the kernel.
+"""The ``agent_tools`` command-line surface: 29 subcommands over the kernel.
 
 Mixed bridge -- it forwards the domain commands (``config-summary``,
-``index-summary``, ``preset-summary``, and the four hparam post-processing
-ones) while the rest stay task-agnostic.
+``index-summary``, ``preset-summary``) while the rest stay task-agnostic.
 
 ``test_agent_tools_cli_contract.py`` freezes the subcommand names, their
-kernel/domain/mixed ownership split, the argument contracts, the task/variant
-routing matrix, and the ``cli.export_hparam_logits`` attribute name (a
-monkeypatch anchor). Register subcommands through ``_command()``, which sets a
+kernel/domain/mixed ownership split, the argument contracts, and the
+task/variant routing matrix. Register subcommands through ``_command()``, which sets a
 command's summary and description from one string: every subcommand carries a
 ``help=`` and a ``description=``, and every option carries a ``help=``, because
 this CLI is the agent-facing documentation of its own capabilities.
@@ -45,15 +43,8 @@ from .experiments import (
     stop_preset_run,
     sync_wandb_runs,
 )
-from .hparam_postprocess import (
-    LogitExportRequest,
-    ensemble_hparam_outputs,
-    export_hparam_logits,
-    generate_external_eval,
-    threshold_hparam_outputs,
-)
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, run_hparam_queue, stop_hparam_run
-from .hparam_selection import scan_hparam_checkpoints, select_hparam_candidates
+from .hparam_selection import select_hparam_candidates
 from .manifests import read_rows
 from .markdown import report_text
 from .models import json_ready
@@ -116,10 +107,6 @@ def _add_json(parser: argparse.ArgumentParser) -> None:
 
 def _add_reason(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reason", required=True, help="Reason recorded in the run manifest; required.")
-
-
-def _add_selected(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--selected", required=True, help="Selection report identifying the ranked candidates.")
 
 
 def _add_dry_run_or_execute(parser: argparse.ArgumentParser, *, subject: str, execute_help: str) -> None:
@@ -484,7 +471,7 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
 
 
 def _add_selection_commands(sub: argparse._SubParsersAction) -> None:
-    """Register hparam-stop and the hyper-parameter selection and post-processing commands."""
+    """Register hparam-stop and hparam-select."""
     stop = _command(sub, "hparam-stop", "Stop one hyper-parameter run and record why it was stopped.")
     stop.add_argument("--run-dir", required=True, help="Run directory holding run_manifest.tsv.")
     stop.add_argument("--run-id", required=True, help="Managed run id to stop (e.g. run-000).")
@@ -504,121 +491,6 @@ def _add_selection_commands(sub: argparse._SubParsersAction) -> None:
         help="Selection direction; omit to use the plan's frozen direction.",
     )
     select.set_defaults(func=_cmd_hparam_select)
-
-    external = _command(
-        sub,
-        "hparam-external-eval",
-        "Generate the external-evaluation script for selected hyper-parameter candidates.",
-    )
-    external.add_argument("--run-dir", required=True, help="Run directory holding the completed runs.")
-    _add_selected(external)
-    external.add_argument(
-        "--unlock-final-test",
-        action="store_true",
-        help="Authorize external/final test access for this evaluation.",
-    )
-    external.add_argument("--kaldi-data-root", help="Kaldi data root for the evaluation split.")
-    external.add_argument("--kaldi-manifest", help="Kaldi manifest for the evaluation split.")
-    external.add_argument("--finetune-data-index", help="Index CSV for the evaluation split.")
-    external.add_argument("--eval-split", default="test", help="Dataset split to evaluate on.")
-    external.add_argument("--top-k", type=int, default=1, help="Number of top-ranked candidates to evaluate.")
-    external.add_argument(
-        "--all-candidates",
-        action="store_true",
-        help="Evaluate every ranked candidate instead of the top-k.",
-    )
-    external.set_defaults(func=_cmd_hparam_external_eval)
-
-    export_logits = _command(
-        sub,
-        "hparam-export-logits",
-        "Export validation and test logits for selected candidates, for thresholding and ensembling.",
-    )
-    export_logits.add_argument("--run-dir", required=True, help="Run directory holding the completed runs.")
-    _add_selected(export_logits)
-    export_logits.add_argument(
-        "--unlock-final-test",
-        action="store_true",
-        help="Authorize external/final test access for the test-split export.",
-    )
-    export_logits.add_argument(
-        "--skip-test",
-        action="store_true",
-        help="Export validation logits only, leaving the test split untouched.",
-    )
-    export_logits.add_argument("--label-name", help="Label column the exported logits are scored against.")
-    export_logits.add_argument("--val-split", default="val", help="Validation split name to export.")
-    export_logits.add_argument("--test-split", default="test", help="Test split name to export.")
-    export_logits.add_argument("--val-kaldi-data-root", help="Kaldi data root for the validation split.")
-    export_logits.add_argument("--val-kaldi-manifest", help="Kaldi manifest for the validation split.")
-    export_logits.add_argument("--val-finetune-data-index", help="Index CSV for the validation split.")
-    export_logits.add_argument("--test-kaldi-data-root", help="Kaldi data root for the test split.")
-    export_logits.add_argument("--test-kaldi-manifest", help="Kaldi manifest for the test split.")
-    export_logits.add_argument("--test-finetune-data-index", help="Index CSV for the test split.")
-    export_logits.add_argument("--batch-size", type=int, default=12, help="Inference batch size.")
-    export_logits.add_argument("--num-workers", type=int, default=8, help="Dataloader worker processes.")
-    export_logits.add_argument("--devices", type=int, nargs="+", help="Device indices to run the export on.")
-    export_logits.add_argument(
-        "--accelerator",
-        default="gpu",
-        choices=["cpu", "gpu", "auto"],
-        help="Lightning accelerator to run the export on.",
-    )
-    export_logits.add_argument("--device", default="cuda", help="Torch device string for the export.")
-    export_logits.add_argument("--precision", default="bf16-mixed", help="Trainer precision for the export.")
-    export_logits.add_argument("--seed", type=int, default=4523, help="Random seed for the export.")
-    export_logits.add_argument("--top-k", type=int, default=1, help="Number of top-ranked candidates to export.")
-    export_logits.add_argument(
-        "--all-candidates",
-        action="store_true",
-        help="Export every ranked candidate instead of the top-k.",
-    )
-    export_logits.add_argument(
-        "--execute",
-        action="store_true",
-        help="Run the export now instead of only writing logits_export.sh.",
-    )
-    export_logits.set_defaults(func=_cmd_hparam_export_logits)
-
-    threshold = _command(sub, "hparam-threshold", "Tune decision thresholds from exported validation logits.")
-    threshold.add_argument("--run-dir", required=True, help="Run directory holding the exported logits.")
-    _add_selected(threshold)
-    threshold.set_defaults(func=_cmd_hparam_threshold)
-
-    ensemble = _command(sub, "hparam-ensemble", "Score ensembles of candidates from their exported logits.")
-    ensemble.add_argument("--run-dir", required=True, help="Run directory holding the exported logits.")
-    ensemble.add_argument("--candidates", required=True, help="Candidate list to build ensembles from.")
-    ensemble.add_argument(
-        "--search-combinations",
-        action="store_true",
-        help="Search candidate subsets instead of scoring the single given combination.",
-    )
-    ensemble.add_argument("--max-size", type=int, help="Largest ensemble size to search.")
-    ensemble.add_argument("--metric", default="exploratory_test_auroc", help="Metric to score ensembles by.")
-    ensemble.add_argument(
-        "--mode",
-        choices=["max", "min"],
-        default="max",
-        help="Scoring direction: max keeps the highest metric, min the lowest.",
-    )
-    ensemble.add_argument("--top-k", type=int, help="Number of top-scoring ensembles to report.")
-    ensemble.set_defaults(func=_cmd_hparam_ensemble)
-
-    checkpoint_scan = _command(
-        sub,
-        "hparam-checkpoint-scan",
-        "Rank every saved checkpoint of a hyper-parameter run by a metric.",
-    )
-    checkpoint_scan.add_argument("--run-dir", required=True, help="Run directory holding the saved checkpoints.")
-    checkpoint_scan.add_argument("--metric", required=True, help="Metric to rank checkpoints by.")
-    checkpoint_scan.add_argument(
-        "--mode",
-        choices=["max", "min"],
-        required=True,
-        help="Ranking direction: max ranks the highest metric first, min the lowest.",
-    )
-    checkpoint_scan.add_argument("--top-k", type=int, help="Number of top-ranked checkpoints to report.")
-    checkpoint_scan.set_defaults(func=_cmd_hparam_checkpoint_scan)
 
 
 def _emit(payload: Any, *, as_json: bool) -> None:
@@ -930,79 +802,6 @@ def _cmd_hparam_stop(args: argparse.Namespace) -> int:
 
 def _cmd_hparam_select(args: argparse.Namespace) -> int:
     ranking = select_hparam_candidates(args.run_dir, args.metric, args.mode)
-    print(f"Wrote {ranking}")
-    return 0
-
-
-def _cmd_hparam_external_eval(args: argparse.Namespace) -> int:
-    script = generate_external_eval(
-        args.run_dir,
-        args.selected,
-        unlock_final_test=args.unlock_final_test,
-        kaldi_data_root=args.kaldi_data_root,
-        kaldi_manifest=args.kaldi_manifest,
-        finetune_data_index=args.finetune_data_index,
-        eval_split=args.eval_split,
-        top_k=args.top_k,
-        all_candidates=args.all_candidates,
-    )
-    print(f"Wrote {script}")
-    return 0
-
-
-def _cmd_hparam_export_logits(args: argparse.Namespace) -> int:
-    request = LogitExportRequest(
-        unlock_final_test=args.unlock_final_test,
-        val_split=args.val_split,
-        test_split=args.test_split,
-        skip_test=args.skip_test,
-        label_name=args.label_name,
-        val_kaldi_data_root=args.val_kaldi_data_root,
-        val_kaldi_manifest=args.val_kaldi_manifest,
-        val_finetune_data_index=args.val_finetune_data_index,
-        test_kaldi_data_root=args.test_kaldi_data_root,
-        test_kaldi_manifest=args.test_kaldi_manifest,
-        test_finetune_data_index=args.test_finetune_data_index,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        devices=args.devices,
-        accelerator=args.accelerator,
-        device=args.device,
-        precision=args.precision,
-        seed=args.seed,
-        top_k=args.top_k,
-        all_candidates=args.all_candidates,
-        execute=args.execute,
-    )
-    manifest = export_hparam_logits(args.run_dir, args.selected, request)
-    print(f"Wrote {manifest}")
-    if not args.execute:
-        print(f"Wrote {manifest.parent / 'logits_export.sh'}")
-    return 0
-
-
-def _cmd_hparam_threshold(args: argparse.Namespace) -> int:
-    summary = threshold_hparam_outputs(args.run_dir, args.selected)
-    print(f"Wrote {summary}")
-    return 0
-
-
-def _cmd_hparam_ensemble(args: argparse.Namespace) -> int:
-    summary = ensemble_hparam_outputs(
-        args.run_dir,
-        args.candidates,
-        search_combinations=args.search_combinations,
-        max_size=args.max_size,
-        metric=args.metric,
-        mode=args.mode,
-        top_k=args.top_k,
-    )
-    print(f"Wrote {summary}")
-    return 0
-
-
-def _cmd_hparam_checkpoint_scan(args: argparse.Namespace) -> int:
-    ranking = scan_hparam_checkpoints(args.run_dir, args.metric, args.mode, top_k=args.top_k)
     print(f"Wrote {ranking}")
     return 0
 

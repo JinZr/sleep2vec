@@ -104,8 +104,8 @@ def test_config_summary_blocks_a_tuning_block_that_names_no_preset(tmp_path: Pat
     """A present-but-empty block is the same gap as an absent one.
 
     `finetune.tuning: {}` satisfies `tuning_present`, so the absent-block check above lets it
-    through, but `finetune.tuning.preset` is required by every variant loader and by
-    `finetune_balanced`. Whether the named preset *exists* stays the loader's question.
+    through, but `finetune.tuning.preset` is required by every variant loader. Whether the named
+    preset *exists* stays the loader's question.
     """
     index = tmp_path / "index.csv"
     index.write_text("path,split,duration\nx.npz,train,60\n")

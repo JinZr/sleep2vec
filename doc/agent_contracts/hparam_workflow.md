@@ -53,87 +53,6 @@ explicit user authorization, not an agent inference relabeled as `explicit_recip
   scheduler families. Candidate validation checks each effective combination
   before publishing a runnable plan; WSD's exact phase lengths additionally
   require the training runtime's optimizer-update count.
-- `search.profile: finetune_balanced` is the alternative authored intent for
-  `sleep2vec` and `sleep2vec2` finetuning labels `ahi`, `arousal`, `stage4`,
-  `age`, and `sex`, plus custom labels whose resolved `finetune.task.type`
-  is `survival` or `multilabel_classification`. It is mutually exclusive with authored `parameters` or
-  `configurations`. The hparam adapter resolves config facts and materializes
-  `method: grid`, a default `max_runs` taken from `max_runs_total` in the
-  consultation policy's [`hparam_search_defaults`](../../agent_policies/consultation_policy.yaml),
-  and deterministic complete joint configurations before consultation. An
-  explicit budget override must be in `[4, 32]` and cover every generated level.
-- The profile compiler, owned by
-  `agent_tools/domain/finetune_hparam_profile.py`, searches bounded technical
-  levels for learning rate, weight decay, joint training length/LR schedules, the full LayerMix block,
-  supported dropout fields, full/head-only/LoRA adaptation arms when a
-  pretrained backbone is passed to tuning, and positive
-  scalar `pos_weight` when it exists. A complete explicit
-  `finetune.layer_mix` mapping and an explicit `finetune.tuning` mapping
-  naming a preset are required. Each adaptation arm replaces the whole
-  `finetune.tuning` block rather than its `preset` alone, so the source's
-  `groups` overrides do not carry into a generated arm; a source that carries
-  such overrides therefore contributes its own level alongside the three.
-  Omitted `finetune.tuning.lora`
-  hyper-parameters retain canonical variant loader defaults; the exact generated config
-  and hashes plus runtime/repository identity preserve provenance. Disabled
-  source LayerMix must already use `layer_indices:
-  null` and `shared_across_modalities: false`; single-channel source LayerMix
-  must also disable sharing. Multi-channel enabled levels cover both shared
-  and unshared atomic mappings without spending budget on inert duplicates. It keeps
-  batch size, gradient accumulation, aggregation, EMA, pretrained checkpoint,
-  channels, and class weights frozen. Its first point exactly matches the
-  effective source runtime and all active source config mappings. Omitted
-  runtime defaults are materialized; scheduler-specific `null` values clear
-  inapplicable fields when switching families. A zero source weight
-  decay uses profile-owned `1e-5` and `1e-4` positive anchors so the family is
-  genuinely searched. Remaining points greedily cover missing levels and then
-  missing pairs across the eligible schedule, LayerMix, dropout and adaptation
-  families with stable tie breaking instead of truncating a Cartesian prefix.
-- The profile treats the following schedule settings as complete joint levels:
-  the source schedule; the same schedule with `ceil(epochs / 2)` (at least 1)
-  or `2 * epochs`; ordinary decay with warmup `0` or `null`, floor `0.01` or
-  `1.0`, or the alternate cosine/linear shape; WSD with default warmup and
-  decay ratio `0.2` or `0.5`; and Plateau with factor `0.1`, patience `2`, and
-  no warmup. Other fields retain their source settings except incompatible
-  scheduler options, which are cleared. The shortened level disables
-  warmup for WSD and caps `check_val_every_n_epoch` at its epoch count so
-  scheduled validation still occurs. Other levels retain the source validation
-  interval (default `1`). Duplicate levels are removed.
-  Omitted epochs resolve to `30`. `null` warmup means 3% of total optimizer
-  updates for decay/WSD; Plateau has no warmup. A source explicit warmup
-  step count remains fixed in candidates that retain it, so its fraction may
-  change with epochs. Exact warmup fractions require runtime update counts.
-  The run budget must cover every distinct joint schedule level. Coverage
-  does not isolate the effect of each schedule field or
-  exhaust all combinations with the other families. The audit records this
-  limitation and the fixed batch/accumulation settings.
-- Gradient-norm clipping is a separate bounded family. The first level preserves
-  `runtime.gradient_clip_val` (default `1.0`); a positive source adds disabled
-  clipping (`0.0`) and half the source value. A zero source instead adds `0.5`
-  and `1.0`. Batch size and gradient accumulation are never profile axes;
-  in Cox, accumulation does not combine microbatch risk sets.
-- Early-stopping `runtime.patience` is part of the joint schedule levels and
-  counts validation checks without improvement, not epochs. The baseline
-  preserves the source value (default `100`, nonnegative integer). For the
-  shortened candidate, let `N = floor(epochs / check_val_every_n_epoch)` after
-  capping the validation interval: patience is
-  `min(source_patience, max(1, ceil(N / 2)))`. The doubled-epoch candidate uses
-  `max(source_patience, N)` so ordinary patience exhaustion cannot cut its
-  planned validation horizon short. Other levels retain source patience,
-  except the generated Plateau level uses `max(source_patience, 4)` alongside
-  scheduler patience `2`. This permits training after the first reduction on
-  flat metrics; at least five validation checks are needed to observe a
-  post-reduction result, and short horizons may end before any reduction.
-  These remain joint comparisons, not independent estimates of patience effects.
-- The authored profile remains the only generation intent. The resolved
-  recipe and plan freeze its exact configurations, config digest, runtime/repo
-  identity, budget, searched-family coverage, metric, and split. Reports may
-  claim only the best observed candidate within that frozen search domain,
-  metric, split, and budget. This is an inventory of registered profile axes,
-  not a claim that arbitrary or unknown config fields were searched; only axes
-  with more than one candidate are reported as searched.
-- Existing explicit searches and historical frozen plans are unchanged;
-  profile expansion is not retroactively required by registered-plan readers.
 - A `yaml:/...` value may be a scalar or a complete mapping or list block. An
   override replaces the whole addressed value, so replacing `finetune.tuning`
   removes source `groups` overrides absent from the selected block. Every
@@ -170,11 +89,6 @@ selection policy. Author its own configurations or grid and keep the
 cumulative run count within the total budget. Record the evidence for the round first with an `experiment-note` entry
 that cites the prior results it relies on.
 
-An explicit request may use the supported `finetune_balanced` profile above.
-Without `inputs.pretrained_backbone_path`, the profile's adaptation
-stays fixed at the source `finetune.tuning` block, and a source whose effective
-group table freezes the encoder is rejected rather than searched; whether the
-encoder trains is read from that table, not from the preset's name.
 `inputs.ckpt_path` is final-evaluation-only, not a tuning backbone.
 
 The tuning request alone does not authorize publication or launch. Publication
@@ -204,8 +118,8 @@ task, LayerMix, loss, covariate and enabled LoRA configurations to match. Traine
 optimizer, scheduler and callbacks are not restored. The new trainability
 policy and runtime schedule apply. Source checkpoint task metadata does not
 prove arbitrary same-shaped label identity; the recipe author must retain the
-authorized label. Structural model/head/LayerMix changes and
-`finetune_balanced` are unsupported; use an explicit compatible search.
+authorized label. Structural model/head/LayerMix changes are unsupported; use an
+explicit compatible search.
 Doctor and registration do not construct the model or certify checkpoint
 semantic compatibility; the runtime load performs that check.
 
@@ -216,9 +130,8 @@ temporary directory on the final destination filesystem. The staged frozen
 bundle is recompiled and validated with the same reader used after publication;
 each final candidate config is then checked with the recipe variant's canonical
 `load_finetune_config` and `validate_model_config` in the planner's current Python
-and code environment. This applies equally to profile expansions, explicit
-configurations, and parameter grids after all YAML
-overrides. Consultation checks captured input bytes; registration independently
+and code environment. This applies equally to explicit configurations and
+parameter grids after all YAML overrides. Consultation checks captured input bytes; registration independently
 checks the exact frozen candidate bytes. Launch, including dry-run, repeats the
 frozen config check for prospective `planned`/`pending` runs before submission;
 active/terminal-only calls and monitoring do not load candidate configs.
@@ -427,40 +340,20 @@ example after early stopping before the first periodic save, a completed or
 skipped-test run manifest binds the `best-epoch=` file it names; selection
 freezes its SHA-256 like any other checkpoint.
 
-For test-selected tuning, complete finite checkpoint-level evidence for the
-frozen `test_*` metric globally ranks every compatible regular non-alias saved
-checkpoint before choosing the best per run. The immutable plan-local
-`checkpoint_test_ranking.csv` has plan-local `rank`; the workspace ranking
-retains one row per run and records each winner's global position as
-`checkpoint_rank`. This audit does not add lifecycle rows. Selection binds the
-exact overall winner path/SHA-256, each contributing plan's checkpoint-ranking
-path/hash, and the selection report's path/hash in the canonical manifest.
-The report records metric/mode/split, evaluated count, winner
-run/checkpoint/score, parameters, search overrides, frozen config/script
-paths/hashes, and ranking path. Runtime evidence shape remains owned by
-[the run manifest contract](run_manifest.md#runtime-artifact-evidence).
-Later compatible plans may extend the workspace ranking without rewriting or
-invalidating an earlier plan's frozen audit.
+Selection binds the winner checkpoint path/SHA-256 and the selection report's
+path/hash in the canonical manifest. The report records metric/mode/split,
+evaluated count, winner run/checkpoint/score, parameters, search overrides,
+frozen config/script paths/hashes, and ranking path. Runtime evidence shape
+remains owned by [the run manifest contract](run_manifest.md#runtime-artifact-evidence).
+The test split is never a selection split; recipe validation rejects
+`selection_split: test`.
 
-Selected-candidate consumers refresh lifecycle from the current canonical
-manifest, not a ranking or candidate-table status. For test selection,
-caller-provided rank, checkpoint path, and SHA-256 must match both frozen
-workspace ranking and canonical row before top-k filtering. Physical hash
-revalidation then covers retained candidates only, or every candidate under
-`all_candidates`; generated external-evaluation scripts recheck that hash when
-executed. `hparam-external-eval` accepts only `completed` or `finished` runs.
-It and `hparam-export-logits` reject SSH-owned candidates before writing because
-these direct helpers lack remote config-staging and result-collection protocols.
-Read-only candidate resolution is owned by `hparam_selection`: when canonical
-selection exists it verifies `reports/ranking.csv`, preserves canonical rank,
-and resolves top-K/all over successful per-run winners only. Direct analysis
-helpers may still consume an explicit one-winner-per-run candidate table before
-canonical selection for validation-selected plans; that path validates the
-table without publishing lifecycle state. Test-selected plans require canonical
-selection and raw multi-epoch checkpoint rankings are not postprocess inputs.
+The selected winner's frozen checkpoint path is the only selected-candidate
+input to [final external-test evaluation](external_test_locking.md#final-external-test-boundary);
+there is no other selected-candidate consumer.
 
-Status validates bound audits and reconstructs the global checkpoint/run
-ranking; finalization rehashes every audited checkpoint on its frozen target.
+Status validates the canonical ranking; finalization rehashes every ranked
+checkpoint on its frozen target.
 The detailed [status read-set](experiment_workspace.md#read-only-status-and-advisory-actions)
 and [final report acceptance](experiment_workspace.md#finalization) have one
 workspace owner, including mixed/all-failed cases and historical completed-read

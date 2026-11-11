@@ -47,10 +47,8 @@ Run the selected variant's `finetune --help`, config checks, and targeted runtim
 
 ## Common failure modes
 Missing label, missing preset/index, wrong backend, monitor mismatch, checkpoint
-path errors, and attempting test-based checkpoint selection in a direct finetune
-plan. Explicitly authorized test-selected work instead uses the
-[hparam route, including for one fixed configuration](../../doc/agent_contracts/external_test_locking.md#test-selected-runtime-requirements);
-this does not grant test access or permit direct finetune to select on test.
+path errors, and attempting test-based checkpoint selection: the test split is
+never a [selection split](../../doc/agent_contracts/external_test_locking.md#selection-and-test-access-policy).
 
 ## Relevant owners and index pages
 Owners: `runtime-orchestrator`, `config-task-contract`, `model-integration`, `agent-tooling-maintainer`. Index: finetune workflow.

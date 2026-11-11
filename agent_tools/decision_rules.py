@@ -42,6 +42,16 @@ def recipe_structure_issues(task: Any, recipe: dict[str, Any], *, source_layer: 
     if "decisions" in recipe and not isinstance(recipe["decisions"], dict):
         issues.append(_contract_issue("decisions", "decisions must be a mapping.", recipe["decisions"], source_layer))
     issues.extend(runtime_structure_issues(task, recipe, source_layer=source_layer))
+    evaluation = recipe.get("evaluation_policy")
+    if isinstance(evaluation, dict) and evaluation.get("selection_split") == "test":
+        issues.append(
+            _contract_issue(
+                "evaluation_policy.selection_split",
+                "The test split is never a selection split; use evaluation_policy.selection_split: val.",
+                "test",
+                source_layer,
+            )
+        )
 
     adapter_contract = adapter.section_contract_issues(recipe, source_layer=source_layer)
     if adapter_contract is not None:

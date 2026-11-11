@@ -278,14 +278,6 @@ or invalid are dropped at load time, so an index or preset without `bmi` and
 `bmi_missing` columns fails fast; regenerate presets built before those columns
 existed. `sleep2expert` keeps the `age`/`sex` covariate contract.
 
-The managed `finetune_balanced` search also compares bounded gradient-norm
-clipping levels and couples early-stopping patience to the candidate's epochs
-and validation cadence. Patience counts validation checks without improvement,
-not epochs. Batch size and gradient accumulation stay fixed, and the default
-search budget comes from `hparam_search_defaults` in the
-[consultation policy](agent_policies/consultation_policy.yaml); see the
-[search-space contract](doc/agent_contracts/hparam_workflow.md#search-space).
-
 ### Finetune learning-rate schedules
 
 The `sleep2vec`, `sleep2vec2`, `sleep2expert`, and `sex_age_baseline` finetune

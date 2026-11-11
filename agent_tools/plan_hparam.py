@@ -22,7 +22,6 @@ import re
 import subprocess
 import sys
 from tempfile import NamedTemporaryFile
-from types import SimpleNamespace
 from typing import Any, Sequence, TypedDict, overload
 
 import yaml
@@ -256,17 +255,6 @@ def validate_finetune_config_bytes(recipe: dict, config_bytes: bytes) -> None:
         snapshot.flush()
         bundle = config_module.load_finetune_config(Path(snapshot.name))
         config_module.validate_model_config(bundle.model)
-        inputs_value = recipe.get("inputs")
-        inputs = inputs_value if isinstance(inputs_value, dict) else {}
-        label_name = inputs.get("label_name")
-        search_value = recipe.get("search")
-        search = search_value if isinstance(search_value, dict) else {}
-        if search.get("profile") == "finetune_balanced" and label_name not in (None, "", "ASK_USER"):
-            # Match the final finetune entrypoint's task and imbalance validation before freezing candidate runs.
-            common_module = import_module(rendering.variant_module(recipe, "common"))
-            task_args = SimpleNamespace(label_name=label_name)
-            common_module.apply_task_flags(task_args, bundle.finetune.task)
-            common_module.validate_and_apply_imbalance_config(task_args, bundle.finetune)
 
 
 def validate_hparam_run_configs(recipe: dict, run_configs: list[tuple[dict[str, Any], bytes]]) -> None:
@@ -376,7 +364,6 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
     evaluation_value = recipe.get("evaluation_policy")
     evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
     selection_metric = evaluation.get("selection_metric")
-    selection_split = evaluation.get("selection_split")
     if "selection_metric" in evaluation and selection_metric in (None, ""):
         return [
             DecisionIssue(
@@ -441,22 +428,17 @@ def hparam_yaml_override_issues(recipe: dict, *, config_bytes: bytes) -> list[De
                     data.get("backend") or "npz",
                     "data.backend",
                 ),
+                "selection_metric": (
+                    selection_metric,
+                    task.get("monitor"),
+                    "finetune.task.monitor",
+                ),
+                "selection_mode": (
+                    selection_mode,
+                    task.get("monitor_mod"),
+                    "finetune.task.monitor_mod",
+                ),
             }
-            if selection_split != "test":
-                config_contract.update(
-                    {
-                        "selection_metric": (
-                            selection_metric,
-                            task.get("monitor"),
-                            "finetune.task.monitor",
-                        ),
-                        "selection_mode": (
-                            selection_mode,
-                            task.get("monitor_mod"),
-                            "finetune.task.monitor_mod",
-                        ),
-                    }
-                )
             for field, (decision_value, config_value, config_field) in config_contract.items():
                 if decision_value not in (None, "") and decision_value != config_value:
                     return [
@@ -654,8 +636,6 @@ def compile_hparam_run_contracts(
         rendering.append_option(command_parts, "--wandb-project", execution.get("wandb_project"))
         rendering.append_option(command_parts, "--wandb-group", execution.get("wandb_group"))
         command_parts.append("--test-after-fit" if test_after_fit else "--no-test-after-fit")
-        if selection_split == "test":
-            command_parts.append("--test-all-checkpoints-after-fit")
         runtime_dir = run_cwd / "log-finetune" / identity["version"]
         row = {
             "experiment_id": (recipe.get("experiment") or {}).get("id"),
@@ -704,11 +684,6 @@ def compile_hparam_run_contracts(
                             json.dumps(init_snapshots, sort_keys=True, separators=(",", ":")),
                         ]
                     ),
-                )
-            if selection_split == "test":
-                script_commands.insert(
-                    0,
-                    rendering.render_command(["export", f"_SLEEP2VEC_FROZEN_CHECKPOINT_DIR={row['checkpoint_dir']}"]),
                 )
             script_text = (
                 "\n".join(
@@ -983,7 +958,6 @@ def write_hparam_plan(
     source_config_bytes: bytes,
     source_config_sha256: str,
     final_eval_config: BoundFinalEvalConfigSnapshot | None,
-    profile_audit: dict[str, Any] | None = None,
     run_index_offset: int | None = None,
 ) -> None:
     out = out.expanduser()
@@ -1124,32 +1098,6 @@ def write_hparam_plan(
         ),
         f"Candidate selection uses the frozen {selection_split} split metric.",
     ]
-    if profile_audit is not None:
-        plan_lines.extend(
-            [
-                (
-                    "Selection reports the best observed candidate within frozen search domain, "
-                    f"metric {evaluation.get('selection_metric')}, split {selection_split}, and budget "
-                    f"{profile_audit['budget']}."
-                ),
-                "",
-                "## Automatic Search Profile",
-                "",
-                f"Profile: {profile_audit['id']}",
-                f"Candidate count: {profile_audit['candidate_count']}",
-                "",
-                "| Searched family | Canonical keys | Covered levels |",
-                "|---|---|---:|",
-            ]
-        )
-        for family in profile_audit["searched_families"]:
-            plan_lines.append(f"| {family['id']} | {', '.join(family['keys'])} | {family['covered_levels']} |")
-        plan_lines.append("")
-        plan_lines.extend(profile_audit["schedule_policy"].values())
-        plan_lines.extend(
-            f"Fixed `{parameter['key']}` = `{json.dumps(parameter['value'])}`: {parameter['reason']}"
-            for parameter in profile_audit["fixed_schedule_parameters"]
-        )
     if final_allowed:
         final_command = compile_hparam_final_command(recipe, out)
         assert final_command is not None

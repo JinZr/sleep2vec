@@ -87,7 +87,6 @@ def test_full_init_rejects_unsupported_variants(variant):
     [
         {"inputs": {"pretrained_backbone_path": "/backbone.ckpt"}},
         {"execution": {"target": "ssh"}},
-        {"search": {"profile": "finetune_balanced"}},
     ],
 )
 def test_full_init_rejects_conflicting_or_unsupported_workflows(extra):

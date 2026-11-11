@@ -235,7 +235,6 @@ def test_mixed_modules_acknowledged():
             "decision_hparam",
             "plan_hparam",
             "plan_context",
-            "hparam_postprocess",
             "cli",
         }
     )

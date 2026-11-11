@@ -5,7 +5,7 @@ variant: sleep2vec
 experiment:
   id: tiny-fixture-hparam
   title: Tiny fixture hyper-parameter search
-  objective: Validate managed semantic run generation and test-metric ranking.
+  objective: Validate managed semantic run generation and validation-metric ranking.
   root: artifacts/experiments/tiny-fixture-hparam
   baseline:
     type: none
@@ -28,9 +28,9 @@ artifacts:
   overwrite: false
 
 evaluation_policy:
-  selection_metric: test_ahi_pearson
+  selection_metric: val_ahi_pearson
   selection_mode: max
-  selection_split: test
+  selection_split: val
   external_test_locked: false
   final_eval_split: test
   final_test_unlocked: false
@@ -47,9 +47,8 @@ decisions:
     value: false
     source: explicit_recipe
   train_val_test_policy:
-    value: test
+    value: val
     source: explicit_recipe
-    rationale: Select hyper-parameters on the test metric with test access unlocked.
   overwrite_policy:
     value: false
     source: explicit_recipe

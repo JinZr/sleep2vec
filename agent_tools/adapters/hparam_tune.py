@@ -4,9 +4,8 @@ Layer 1, domain, and the single composite adapter: its ``base_task`` is
 ``finetune``, so recipes carrying ``_base_recipe`` / ``_local_recipe`` layers
 close under its contract.
 
-Binds the hparam decision contract, invokes the ``finetune_balanced`` candidate
-compiler through the effective-recipe hook before consultation, and compiles
-the plan contract for hyper-parameter plans.
+Binds the hparam decision contract and compiles the plan contract for
+hyper-parameter plans.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from typing import Any
 from .. import execution_snapshot, experiment_workspace, plan_contract, plan_hparam, slurm
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
-from ..domain import finetune_hparam_profile
 from ..models import BoundFinalEvalConfigSnapshot, ConfigSummaryInput, JsonValue
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import TaskAdapter
@@ -76,30 +74,6 @@ class HparamTuneAdapter(TaskAdapter):
 
     def recipe_input_issues(self, recipe: dict[str, JsonValue]) -> list[DecisionIssue]:
         return [issue for issue in hparam_search_issues(recipe, high_impact={}) if issue.status == DecisionStatus.FAIL]
-
-    def bind_effective_recipe(
-        self,
-        recipe: dict[str, JsonValue],
-        config_summary: ConfigSummaryInput | None,
-        *,
-        source_recipe: dict[str, Any] | None = None,
-    ) -> list[DecisionIssue]:
-        source = source_recipe or recipe
-        local_recipe = source.get("_local_recipe")
-        if isinstance(local_recipe, dict):
-            source = local_recipe
-        authored_search = source.get("search")
-        if not isinstance(authored_search, dict):
-            authored_search = {}
-        effective_search = recipe.get("search")
-        if not isinstance(effective_search, dict):
-            effective_search = {}
-        if "profile" not in authored_search or "profile" not in effective_search:
-            return []
-        compiled, issues = finetune_hparam_profile.compile_finetune_balanced_profile(recipe, config_summary)
-        if compiled is not None:
-            recipe["search"] = compiled
-        return issues
 
     def task_issues(
         self,
@@ -306,15 +280,6 @@ class HparamTuneAdapter(TaskAdapter):
         source_config_sha256: str,
         final_eval_config: BoundFinalEvalConfigSnapshot | None,
     ) -> None:
-        search = recipe.get("search")
-        if not isinstance(search, dict):
-            search = {}
-        profile_audit = (
-            finetune_hparam_profile.finetune_balanced_profile_audit(search)
-            if search.get("profile") == "finetune_balanced"
-            else None
-        )
-
         plan_hparam.write_hparam_plan(
             recipe,
             out,
@@ -323,7 +288,6 @@ class HparamTuneAdapter(TaskAdapter):
             source_config_bytes=source_config_bytes,
             source_config_sha256=source_config_sha256,
             final_eval_config=final_eval_config,
-            profile_audit=profile_audit,
             run_index_offset=run_index_offset,
         )
 

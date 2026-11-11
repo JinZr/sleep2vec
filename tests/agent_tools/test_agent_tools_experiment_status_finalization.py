@@ -294,25 +294,6 @@ def test_hparam_selection_lifecycle_rejects_misowned_metadata_in_mixed_step(tmp_
         experiment_tracking.hparam_selection_lifecycle(registered_steps, rows, root=tmp_path)
 
 
-def test_experiment_status_rejects_all_failed_hparam_with_stale_checkpoint_rank(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="failed")
-    rows = _read_manifest_rows(root)
-    rows[0]["checkpoint_rank"] = "1"
-    write_rows(root / "run_manifest.tsv", rows)
-    report = tmp_path / "failure.md"
-    report.write_text("# Failure report\n")
-    before = _workspace_files(root)
-
-    with pytest.raises(ValueError, match="stale for all-failed step"):
-        experiments.experiment_status(root)
-    with pytest.raises(ValueError, match="stale for all-failed step"):
-        experiments.finalize_experiment(root, report)
-
-    assert _workspace_files(root) == before
-
-
 def test_experiment_status_keeps_completed_legacy_hparam_selection_readable(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -398,11 +379,6 @@ def test_hparam_checkpoint_rehash_uses_execution_evidence_host(
         "checkpoint_path": "/data/epoch=1.ckpt",
         "checkpoint_sha256": "a" * 64,
     }
-    audit_row = {
-        **row,
-        "checkpoint_path": "/data/epoch=2.ckpt",
-        "checkpoint_sha256": "b" * 64,
-    }
     validated = []
     hashed = []
     monkeypatch.setattr(
@@ -413,20 +389,19 @@ def test_hparam_checkpoint_rehash_uses_execution_evidence_host(
 
     def checkpoint_sha256(evidence_row, checkpoint_path):
         hashed.append((evidence_row, checkpoint_path))
-        return "a" * 64 if checkpoint_path == row["checkpoint_path"] else "b" * 64
+        return "a" * 64
 
     monkeypatch.setattr(experiments.evidence, "checkpoint_file_sha256", checkpoint_sha256)
 
     experiments._validate_hparam_checkpoints(
         [row],
-        [{"ranked": [row], "checkpoint_audit_rows": [row, audit_row]}],
+        [{"ranked": [row]}],
         remote=remote,
     )
 
-    assert validated == [([row], [row, audit_row], remote)]
+    assert validated == [([row], [row], remote)]
     assert [(evidence_row["target"], evidence_row["host"], path) for evidence_row, path in hashed] == [
         ("ssh", expected_host, row["checkpoint_path"]),
-        ("ssh", expected_host, audit_row["checkpoint_path"]),
     ]
 
 

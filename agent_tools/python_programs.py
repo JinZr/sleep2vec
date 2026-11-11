@@ -70,7 +70,6 @@ _PROGRAMS = {
     "plan_rendering.verify_input_snapshots": ("plan_rendering/verify_input_snapshots.py.src",),
     "slurm.worker_bootstrap": ("slurm/worker_bootstrap.py.src",),
     "runtime_sync.sync": (_FRAGMENTS["runtime_guard"], "runtime_sync/sync.py.src"),
-    "hparam_postprocess.verify_checkpoint_sha256": ("hparam_postprocess/verify_checkpoint_sha256.py.src",),
 }
 
 

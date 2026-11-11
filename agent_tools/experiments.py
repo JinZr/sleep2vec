@@ -553,7 +553,7 @@ def _validate_hparam_checkpoints(
     canonical_by_key = {managed_run_key(row): row for row in rows}
     checkpoint_rows_by_path: dict[tuple[str, str, str], dict[str, Any]] = {}
     for step in selected_steps:
-        for row in [*step["ranked"], *step.get("checkpoint_audit_rows", [])]:
+        for row in step["ranked"]:
             checkpoint_rows_by_path.setdefault((*validated_run_key(row), str(row["checkpoint_path"])), row)
     checkpoint_rows = list(checkpoint_rows_by_path.values())
     tracking.validate_checkpoint_evidence_rows(rows, checkpoint_rows, remote=remote)
@@ -568,23 +568,19 @@ def _validate_hparam_checkpoints(
 def _validate_hparam_selection_files_unchanged(
     root: Path,
     selection_report: tracking.HparamSelectionReportSnapshot,
-    checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None],
     *,
     remote: str | None,
 ) -> None:
     expected = {
         str(selection_report["path"]): selection_report["sha256"],
         str(selection_report["ranking_path"]): selection_report["ranking_sha256"],
-        **{path: audit["sha256"] for path, audit in checkpoint_audits.items() if isinstance(audit, dict)},
     }
     current = exp_io.read_managed_files_at(root, [Path(path) for path in expected], remote=remote)
     for path, sha256 in expected.items():
         if current[path]["sha256"] != sha256:
             if path == str(selection_report["path"]):
                 raise ValueError("The hparam selection report changed during finalization.")
-            if path == str(selection_report["ranking_path"]):
-                raise ValueError("The hparam ranking changed during finalization.")
-            raise ValueError(f"The frozen checkpoint test ranking changed during finalization: {path}")
+            raise ValueError("The hparam ranking changed during finalization.")
 
 
 def _finalizable_rows(root: Path, *, remote: str | None) -> list[dict[str, str]]:
@@ -654,7 +650,6 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
         else None
     )
-    checkpoint_audits = _hparam_checkpoint_audits(root, registered_steps, remote=remote)
     snapshot = tracking.experiment_status_snapshot(
         manifest["experiment"],
         registered_steps,
@@ -662,7 +657,6 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         root=root,
         remote=remote,
         hparam_selection_report=selection_report,
-        hparam_checkpoint_audits=checkpoint_audits,
     )
     blocking_codes = sorted(
         {blocker["code"] for blocker in snapshot["blockers"] if blocker["code"] == "unmaterialized_step"}
@@ -674,7 +668,6 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         rows,
         root=root,
         report=selection_report,
-        checkpoint_audits=checkpoint_audits,
     )
     if hparam["pending_steps"]:
         raise ValueError("Successful hparam runs must be selected before experiment finalization.")
@@ -682,7 +675,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
     if hparam["selected_steps"] and (selected_report is None or not hparam["report_valid"]):
         raise ValueError("The hparam selection report is missing or differs from canonical selection evidence.")
     if selected_report is not None:
-        _validate_hparam_selection_files_unchanged(root, selected_report, checkpoint_audits, remote=remote)
+        _validate_hparam_selection_files_unchanged(root, selected_report, remote=remote)
     report_path_is_selection = str(Path(report_path)) == hparam["report_path"]
     if selected_report is not None:
         if hparam["automatic_report_final"]:
@@ -746,7 +739,7 @@ def finalize_experiment(run_dir: str | Path, report_path: str | Path, *, remote:
         manifest["experiment"]["selection_report_sha256"] = selected_report["sha256"]
     exp_io.append_event_at(root, "experiment_finalization_prepared", {"report": str(target)}, remote=remote)
     if selected_report is not None:
-        _validate_hparam_selection_files_unchanged(root, selected_report, checkpoint_audits, remote=remote)
+        _validate_hparam_selection_files_unchanged(root, selected_report, remote=remote)
     if hparam["selected_steps"]:
         _validate_hparam_checkpoints(rows, hparam["selected_steps"], remote=remote)
     # The experiment manifest is the terminal commit, so publish it only after the report is durable.
@@ -921,7 +914,6 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> trac
         if any(plan.get("task") == "hparam_tune" for step in registered_steps for plan in step["plans"])
         else None
     )
-    checkpoint_audits = _hparam_checkpoint_audits(root, registered_steps, remote=remote)
 
     return tracking.experiment_status_snapshot(
         experiment,
@@ -930,7 +922,6 @@ def experiment_status(run_dir: str | Path, *, remote: str | None = None) -> trac
         root=root,
         remote=remote,
         hparam_selection_report=selection_report,
-        hparam_checkpoint_audits=checkpoint_audits,
     )
 
 
@@ -1025,28 +1016,6 @@ def _hparam_selection_report(root: Path, *, remote: str | None) -> tracking.Hpar
         "ranking_text": ranking["text"] if ranking is not None else None,
         "ranking_sha256": ranking["sha256"] if ranking is not None else None,
     }
-
-
-def _hparam_checkpoint_audits(
-    root: Path,
-    registered_steps: list[artifacts.RegisteredPlanStep],
-    *,
-    remote: str | None,
-) -> dict[str, exp_io.ManagedFileSnapshot | None]:
-    checkpoint_audit_paths = sorted(
-        {
-            Path(plan["path"]) / "checkpoint_test_ranking.csv"
-            for registered in registered_steps
-            for plan in registered["plans"]
-            if plan["task"] == "hparam_tune" and plan["selection"] is not None and plan["selection"]["split"] == "test"
-        }
-    )
-    if not checkpoint_audit_paths:
-        return {}
-    exp_io.validate_managed_output_paths(root, checkpoint_audit_paths, remote=remote)
-    existing: list[str | Path] = [path for path in checkpoint_audit_paths if exp_io.path_exists_at(path, remote=remote)]
-    files = exp_io.read_managed_files_at(root, existing, remote=remote)
-    return {str(path): files.get(str(path)) for path in checkpoint_audit_paths}
 
 
 def rank_experiment_candidates(run_dir: str | Path, *, metric: str, mode: str, remote: str | None = None) -> Path:

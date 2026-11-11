@@ -76,7 +76,6 @@ class _HparamSelectionStepCore(TypedDict):
 
 class HparamSelectionReportStep(_HparamSelectionStepCore, total=False):
     ranked: list[dict[str, Any]]
-    checkpoint_audit_rows: list[dict[str, str]]
     legacy_selection: bool
 
 
@@ -231,8 +230,6 @@ WANDB_RUN_FIELDS = {
     "updated_at",
 }
 HPARAM_SELECTION_METADATA_FIELDS = {
-    "checkpoint_ranking",
-    "checkpoint_ranking_sha256",
     "selection_task",
     "selection_mode",
     "selection_split",
@@ -245,7 +242,6 @@ HPARAM_SELECTION_RESULT_FIELDS = {
     "checkpoint_path",
     "checkpoint_sha256",
     "epoch",
-    "checkpoint_rank",
     "source",
 }
 _HPARAM_RANKING_BASE_FIELDS = (
@@ -259,7 +255,7 @@ _HPARAM_RANKING_BASE_FIELDS = (
     "checkpoint_path",
     "checkpoint_sha256",
 )
-_HPARAM_RANKING_OPTIONAL_FIELDS = ("checkpoint_rank", "epoch", "run_manifest", "source", "status")
+_HPARAM_RANKING_OPTIONAL_FIELDS = ("epoch", "run_manifest", "source", "status")
 
 
 def update_experiment_wandb(root: Path, *, entity: str, project: str, group: str, remote: str | None = None) -> None:
@@ -868,7 +864,6 @@ def experiment_status_snapshot(
     root: Path,
     remote: str | None = None,
     hparam_selection_report: HparamSelectionReportSnapshot | None = None,
-    hparam_checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
 ) -> ExperimentStatusSnapshot:
     allowed_statuses = TERMINAL_STATUSES | managed_scheduler.ACTIVE_STATUSES | managed_scheduler.LAUNCHABLE_STATUSES
     for row in rows:
@@ -886,7 +881,6 @@ def experiment_status_snapshot(
         sorted_rows,
         root=root,
         report=hparam_selection_report,
-        checkpoint_audits=hparam_checkpoint_audits,
     )
     missing_stop_reason_rows = stopped_runs_without_reason(sorted_rows)
     completed = experiment.get("status") == "completed"
@@ -1004,7 +998,6 @@ def hparam_selection_lifecycle(
     *,
     root: Path,
     report: HparamSelectionReportSnapshot | None = None,
-    checkpoint_audits: dict[str, exp_io.ManagedFileSnapshot | None] | None = None,
 ) -> HparamSelectionLifecycle:
     hparam_run_keys = {
         tuple(key)
@@ -1069,10 +1062,6 @@ def hparam_selection_lifecycle(
                 "rank",
                 "checkpoint_path",
                 "checkpoint_sha256",
-                # checkpoint_rank is selection-owned; epoch/source may be ordinary runtime evidence.
-                "checkpoint_rank",
-                "checkpoint_ranking",
-                "checkpoint_ranking_sha256",
                 "selection_report",
                 "selection_report_sha256",
             )
@@ -1098,7 +1087,6 @@ def hparam_selection_lifecycle(
             pending_steps.append(step)
         else:
             step["ranked"] = ranked
-            _validate_test_checkpoint_audits(step, checkpoint_audits)
             selected_steps.append(step)
 
     expected_report = hparam_selection_report_text(selected_steps, root=root) if selected_steps else None
@@ -1135,146 +1123,6 @@ def hparam_selection_lifecycle(
         "report_valid": report_valid,
         "automatic_report_final": automatic_report_final,
     }
-
-
-def _validate_test_checkpoint_audits(
-    step: HparamSelectionStep,
-    audit_files: dict[str, exp_io.ManagedFileSnapshot | None] | None,
-) -> None:
-    if step["selection"]["split"] != "test":
-        return
-    if not isinstance(audit_files, dict):
-        raise ValueError(f"Frozen checkpoint test rankings are missing for selected step {step['step_id']}")
-    canonical_by_key = {managed_run_key(row): row for row in step["rows"]}
-    all_audit_rows: list[dict[str, str]] = []
-    reverse = step["selection"]["mode"] == "max"
-    for plan in step["plans"]:
-        plan_keys = set(plan["run_keys"])
-        successful_keys = {
-            key for key in plan_keys if (canonical_by_key.get(key) or {}).get("status", "") in SUCCESS_STATUSES
-        }
-        if not successful_keys:
-            continue
-        audit_path = str(Path(plan["path"]) / "checkpoint_test_ranking.csv")
-        audit_file = audit_files.get(audit_path)
-        if not isinstance(audit_file, dict) or not isinstance(audit_file.get("text"), str):
-            raise ValueError(f"Frozen checkpoint test ranking is missing: {audit_path}")
-        audit_sha256 = str(audit_file.get("sha256") or "")
-        bindings = {
-            (
-                str(canonical_by_key[key].get("checkpoint_ranking") or ""),
-                str(canonical_by_key[key].get("checkpoint_ranking_sha256") or ""),
-            )
-            for key in successful_keys
-        }
-        if re.fullmatch(r"[0-9a-f]{64}", audit_sha256) is None or bindings != {(audit_path, audit_sha256)}:
-            raise ValueError(f"Canonical hparam selection differs from frozen checkpoint test ranking: {audit_path}")
-        try:
-            reader = csv.DictReader(io.StringIO(audit_file["text"]), strict=True)
-            fieldnames = reader.fieldnames or []
-            expected_fields = sorted(
-                {
-                    "step_id",
-                    "run_id",
-                    "run_name",
-                    "parameter_summary",
-                    "version",
-                    "config",
-                    "metric",
-                    "score",
-                    "rank",
-                    "epoch",
-                    "checkpoint_path",
-                    "checkpoint_sha256",
-                    "run_manifest",
-                    "source",
-                    "status",
-                    *(field for key in plan_keys for field in managed_run_parameters(canonical_by_key[key])),
-                }
-            )
-            if fieldnames != expected_fields:
-                raise ValueError("header differs")
-            audit_rows = list(reader)
-            if any(None in row or any(value is None for value in row.values()) for row in audit_rows):
-                raise ValueError("non-rectangular row")
-            validate_managed_run_rows(audit_rows, source="checkpoint test ranking", cardinality="many_per_run")
-            if {managed_run_key(row) for row in audit_rows} != successful_keys:
-                raise ValueError("managed run coverage differs")
-            seen_epochs = set()
-            scores = []
-            for expected_rank, audit in enumerate(audit_rows, start=1):
-                key = managed_run_key(audit)
-                canonical = canonical_by_key[key]
-                validate_frozen_run_update(canonical, audit)
-                validate_checkpoint_ownership(canonical, audit)
-                checkpoint_path = str(audit.get("checkpoint_path") or "")
-                checkpoint_sha256 = str(audit.get("checkpoint_sha256") or "")
-                epoch = artifacts.epoch_number(audit.get("epoch"))
-                score = artifacts.float_or_none(audit.get("score"))
-                epoch_key = (key, epoch)
-                if (
-                    int(audit.get("rank") or 0) != expected_rank
-                    or str(audit.get("metric") or "") != step["selection"]["metric"]
-                    or str(audit.get("source") or "") != "checkpoint_test_results"
-                    or not checkpoint_path
-                    or re.fullmatch(r"[0-9a-f]{64}", checkpoint_sha256) is None
-                    or epoch is None
-                    or artifacts.epoch_number_from_checkpoint_name(Path(checkpoint_path).name) != epoch
-                    or score is None
-                    or epoch_key in seen_epochs
-                ):
-                    raise ValueError("row contract differs")
-                seen_epochs.add(epoch_key)
-                scores.append(score)
-        except (csv.Error, KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"Frozen checkpoint test ranking is invalid: {audit_path}") from exc
-        if any(
-            str(audit.get(field) or "") != str(canonical_by_key[managed_run_key(audit)].get(field) or "")
-            for audit in audit_rows
-            for field in ("run_manifest", "status")
-        ):
-            raise ValueError(f"Canonical hparam selection differs from frozen checkpoint test ranking: {audit_path}")
-        if any((left < right if reverse else left > right) for left, right in zip(scores, scores[1:])):
-            raise ValueError(f"Frozen checkpoint test ranking disagrees with selection mode: {audit_path}")
-        all_audit_rows.extend(audit_rows)
-
-    candidates = sorted(
-        (dict(row) for row in all_audit_rows),
-        key=lambda row: (
-            str(row.get("step_id") or ""),
-            str(row.get("run_id") or ""),
-            int(row["epoch"]),
-            str(row.get("checkpoint_path") or ""),
-        ),
-    )
-    globally_ranked = artifacts.assign_ranks(candidates, key="score", reverse=reverse)
-    best_by_run: dict[tuple[str, str] | None, dict[str, JsonValue]] = {}
-    for row in globally_ranked:
-        candidate = {**row, "checkpoint_rank": row["rank"]}
-        best_by_run.setdefault(managed_run_key(row), candidate)
-    expected = artifacts.assign_ranks(list(best_by_run.values()), key="score", reverse=reverse)
-    selected_by_key = {managed_run_key(row): row for row in step["ranked"]}
-    if set(selected_by_key) != set(best_by_run):
-        raise ValueError(f"Canonical hparam selection differs from frozen checkpoint test rankings: {step['step_id']}")
-    fields = (
-        "rank",
-        "checkpoint_rank",
-        "checkpoint_path",
-        "checkpoint_sha256",
-        "metric",
-        "score",
-        "epoch",
-        "run_manifest",
-        "source",
-        "status",
-    )
-    for audit in expected:
-        canonical = selected_by_key[managed_run_key(audit)]
-        if any(str(canonical.get(field) or "") != str(audit.get(field) or "") for field in fields):
-            raise ValueError(
-                f"Canonical hparam selection differs from frozen checkpoint test rankings: {step['step_id']}"
-            )
-    step["checkpoint_audit_rows"] = all_audit_rows
 
 
 def _hparam_ranking_matches(selected_steps: Sequence[HparamSelectionReportStep], ranking_text: str | None) -> bool:
@@ -1390,17 +1238,11 @@ def validated_hparam_ranking(step: HparamSelectionReportStep) -> list[dict[str, 
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Canonical hparam rank is invalid for {step['step_id']} / {row['run_id']}") from exc
         score = artifacts.float_or_none(row.get("score"))
-        val_provenance_invalid = selection["split"] != "test" and (
-            str(row.get("run_manifest") or "") != str(Path(str(row["runtime_dir"])) / "run_manifest.json")
-            or any(
-                row.get(field) not in (None, "")
-                for field in ("checkpoint_rank", "checkpoint_ranking", "checkpoint_ranking_sha256", "source")
-            )
-        )
         if (
             rank_number < 1
             or score is None
-            or val_provenance_invalid
+            or str(row.get("run_manifest") or "") != str(Path(str(row["runtime_dir"])) / "run_manifest.json")
+            or row.get("source") not in (None, "")
             or row.get("checkpoint_path") in (None, "")
             or re.fullmatch(r"[0-9a-f]{64}", str(row.get("checkpoint_sha256") or "")) is None
             or row.get("config") in (None, "")

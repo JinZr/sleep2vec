@@ -11,8 +11,7 @@ task_defaults:
       meaning: Run the configured test split after each trial unless the recipe or user explicitly opts out.
 
 # When the user names no total budget, the agent sizes an hparam search, across
-# all of its rounds, within this total. The finetune_balanced profile also reads
-# it as its default search.max_runs.
+# all of its rounds, within this total.
 hparam_search_defaults:
   max_runs_total:
     value: 12
@@ -37,8 +36,8 @@ high_impact_fields:
 
   - id: train_val_test_policy
     required_for_tasks: ["finetune", "hparam_tune"]
-    allowed_values: ["val", "test"]
-    question: "Which supported split should be used for model selection: val for direct finetune; val or explicitly authorized test for hparam tuning?"
+    allowed_values: ["val"]
+    question: "Which split should be used for model selection? Only val is supported; the test split is never a selection split."
 
   - id: external_test_locked
     required_for_tasks: ["hparam_tune"]

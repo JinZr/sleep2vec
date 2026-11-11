@@ -12,7 +12,6 @@ import pytest
 from agent_tools import cli, execution_snapshot, models, plans
 from agent_tools.adapters.registry import get_adapter
 from agent_tools.decisions import evaluate_consultation_gates
-from agent_tools.hparam_postprocess import LogitExportRequest
 from agent_tools.manifests import write_rows
 from agent_tools.recipes import load_consultation_policy
 
@@ -40,16 +39,11 @@ SUBCOMMAND_GROUPS = {
         "experiment-rank",
         "hparam-stop",
         "hparam-select",
-        "hparam-checkpoint-scan",
     },
     "Domain": {
         "config-summary",
         "index-summary",
         "preset-summary",
-        "hparam-external-eval",
-        "hparam-export-logits",
-        "hparam-threshold",
-        "hparam-ensemble",
     },
     "Mixed": {"skills", "doctor", "context", "plan"},
 }
@@ -90,11 +84,11 @@ def _subcommand_help(parser: argparse.ArgumentParser, name: str) -> str | None:
     return next((choice.help for choice in subparsers._choices_actions if choice.dest == name), None)
 
 
-def test_cli_has_exactly_34_subcommands():
+def test_cli_has_exactly_29_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == set.union(*SUBCOMMAND_GROUPS.values())
-    assert len(subcommands) == 34
+    assert len(subcommands) == 29
 
 
 def test_every_subcommand_documents_itself():
@@ -178,12 +172,12 @@ def test_architecture_cli_triage_matches_parser_and_ownership():
 @pytest.mark.parametrize(
     ("original", "replacement"),
     [
-        ("34 subcommands", "32 subcommands"),
-        ("Kernel (23)", "Kernel (21)"),
+        ("29 subcommands", "27 subcommands"),
+        ("Kernel (22)", "Kernel (20)"),
         ("infer-launch, ", ""),
         ("infer-launch, ", "unknown-command, "),
         ("infer-launch, infer-stop", "infer-launch, infer-launch"),
-        ("**Domain (7)**", "**Kernel (7)**"),
+        ("**Domain (3)**", "**Kernel (3)**"),
         ("**Mixed (4)**", "**Other (4)**"),
         ("skills, doctor, context, plan", "skills, doctor, context, infer-stop"),
     ],
@@ -198,7 +192,7 @@ def test_architecture_cli_triage_guard_rejects_drift(original: str, replacement:
 
 def test_architecture_cli_triage_guard_rejects_omission_with_matching_counts():
     document = (Path(cli.__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-    document = document.replace("34 subcommands", "33 subcommands").replace("Kernel (23)", "Kernel (22)")
+    document = document.replace("29 subcommands", "28 subcommands").replace("Kernel (22)", "Kernel (21)")
     document = document.replace("infer-launch, ", "", 1)
 
     with pytest.raises(AssertionError):
@@ -652,51 +646,6 @@ def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeyp
         "  rank 2: CUDA out of memory",
         f"Wrote {status}",
     ]
-
-
-def test_hparam_export_logits_cli_delegates_writes_to_postprocess(tmp_path: Path, monkeypatch, capsys):
-    manifest = tmp_path / "logits_export_manifest.tsv"
-    calls = []
-    monkeypatch.setattr(
-        cli,
-        "export_hparam_logits",
-        lambda *args, **kwargs: calls.append((args, kwargs)) or manifest,
-    )
-
-    result = cli.main(["hparam-export-logits", "--run-dir", str(tmp_path), "--selected", "selected.csv", "--skip-test"])
-
-    assert result == 0
-    # Parser defaults and request defaults must agree field for field.
-    assert calls == [((str(tmp_path), "selected.csv", LogitExportRequest(unlock_final_test=False, skip_test=True)), {})]
-    assert capsys.readouterr().out.splitlines() == [
-        f"Wrote {manifest}",
-        f"Wrote {tmp_path / 'logits_export.sh'}",
-    ]
-    assert not (tmp_path / "logits_export.sh").exists()
-
-
-def test_hparam_export_logits_cli_contract():
-    parser, subcommands = _parser_contract()
-    actions = _actions(subcommands["hparam-export-logits"])
-    args = parser.parse_args(["hparam-export-logits", "--run-dir", "run-dir", "--selected", "selected.csv"])
-
-    assert {name for name, action in actions.items() if action.required} == {"run_dir", "selected"}
-    assert actions["accelerator"].choices == ["cpu", "gpu", "auto"]
-    assert args.unlock_final_test is False
-    assert args.skip_test is False
-    assert args.label_name is None
-    assert args.val_split == "val"
-    assert args.test_split == "test"
-    assert args.batch_size == 12
-    assert args.num_workers == 8
-    assert args.devices is None
-    assert args.accelerator == "gpu"
-    assert args.device == "cuda"
-    assert args.precision == "bf16-mixed"
-    assert args.seed == 4523
-    assert args.top_k == 1
-    assert args.all_candidates is False
-    assert args.execute is False
 
 
 def test_experiment_rank_cli_contract():

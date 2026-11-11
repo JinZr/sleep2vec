@@ -3,9 +3,8 @@
 ## When to use
 
 Use for managed `hparam_tune` planning, launch/monitor/select/evaluate, and for
-choosing a further round's points from completed results. Test-selected tuning
-is supported with explicit test access; this skill does not select a scientific
-split for the user.
+choosing a further round's points from completed results. Selection uses the
+validation split; the test split is never a selection split.
 
 On takeover, first read [Takeover and continue execution](../../doc/agent_contracts/experiment_workspace.md#takeover-and-continue-execution).
 It owns evidence-to-action decisions, rolling runtime sync and short heartbeat
@@ -13,12 +12,11 @@ maintenance. Do not infer lifecycle from history.
 
 ## Required inputs
 
-Use the authorized experiment/step, base recipe, search configurations or grid
-or explicitly requested `finetune_balanced` profile, budget, selection
-metric/mode/split, test/final-evaluation policy and execution identity. Read the
-relevant detailed owners before preparing work:
+Use the authorized experiment/step, base recipe, search configurations or grid,
+budget, selection metric/mode/split, test/final-evaluation policy and execution
+identity. Read the relevant detailed owners before preparing work:
 
-- [Search space](../../doc/agent_contracts/hparam_workflow.md#search-space) for grids, exact joint points, further rounds and explicitly requested `finetune_balanced` searches.
+- [Search space](../../doc/agent_contracts/hparam_workflow.md#search-space) for grids, exact joint points and further rounds.
 - [Test-access policy](../../doc/agent_contracts/external_test_locking.md#selection-and-test-access-policy) for selection split, test-after-fit and unlock requirements.
 - [Launch and queue](../../doc/agent_contracts/hparam_workflow.md#launch-and-queue) for local/SSH identity, direct/Slurm resources and capacity.
 
@@ -102,10 +100,7 @@ After a round is terminal and its required results are complete, read the
 canonical results and the configs, manifests, diagnostics and logs they cite.
 Compare every completed round of the step with the incumbent and revisit earlier
 rationale and `RESEARCH_LOG.md`; the previous round's winner is not automatically
-the best result. Inspect `checkpoint_test_results` trajectories,
-`monitor_checkpoint_path` and `stop_reason` when present. Keep validation-monitor
-and test-objective checkpoint identities distinct, and use test feedback only
-under its frozen authorization.
+the best result. Inspect `stop_reason` when present.
 
 Use already-synced W&B history when present to compare the logged training loss
 and validation trajectory, not just each run's best score. Sparse or sampled
@@ -145,8 +140,8 @@ results it relies on and gives this reasoning:
 Use [the worked result-to-proposal example](examples/result_to_proposal.md) for the
 level of reasoning expected. Plan validation establishes identity, completeness
 and allowed values; a well-written note does not by itself establish scientific
-quality. Report only the best observed candidate, with uncertainty and any
-test-feedback selection clearly identified.
+quality. Report only the best observed candidate, with uncertainty clearly
+identified.
 
 ## Stop-and-consult gates
 

@@ -67,9 +67,8 @@ Special cases are explicit:
 - A user `task` may fill a missing recipe task but cannot replace an explicit
   recipe task. For layered hparam recipes, it is compared with the local
   overlay rather than the base finetune task.
-- `train_val_test_policy` must be exactly `val` or `test`; direct finetune
-  rejects `test`, and hparam tuning requires explicit test access.
-  Descriptive text is not interpreted as a split.
+- `train_val_test_policy` must be exactly `val`; the test split is never a
+  selection split. Descriptive text is not interpreted as a split.
 
 ```yaml
 decisions:
@@ -81,12 +80,12 @@ decisions:
   external_test_locked:
     value: false
     source: explicit_user
-    rationale: Allow test data to be used for the explicitly chosen tuning objective.
+    rationale: Allow post-fit test metrics; candidate selection stays on validation.
 
   test_after_fit:
     value: true
     source: explicit_user
-    rationale: Produce test metrics for every saved epoch checkpoint in every tuning trial.
+    rationale: Report post-fit test metrics for every tuning trial.
 
   overwrite_policy:
     value: false

@@ -179,6 +179,7 @@ def test_hparam_skill_recipe_examples_use_explicit_configurations():
         search = recipe["search"]
         assert "adaptive" not in recipe
         assert "profile" not in search
+        assert recipe["evaluation_policy"]["selection_split"] == "val"
         assert recipe["evaluation_policy"]["test_after_fit"] is True
         assert search["max_runs"] == len(search["configurations"]) <= defaults["max_runs_total"]
         assert "parameters" not in search
