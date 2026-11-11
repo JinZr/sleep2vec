@@ -30,8 +30,8 @@ Keep concept planning, publication and launch as the separate stages that the
 `python -m agent_tools doctor --recipe <recipe>` evaluates consultation and
 diagnostics; [read its report and exit status](../../doc/agent_contracts/task_recipe.md#consultation-and-diagnostics),
 not the existence of a questions directory. `experiment-status --run-dir <root>`
-reads recorded state; `context` is diagnostic-only. Monitor commands refresh
-and **write** observations, although they never launch pending work.
+reads recorded state; `context` is diagnostic-only. `experiment-monitor`
+refreshes and **writes** observations, although it never launches pending work.
 
 `plan` creates managed state; it is not merely an information-gathering command.
 Use it only at the appropriate preparation stage below.
@@ -165,8 +165,8 @@ checkout code bytes remain fixed for the whole job.
 Each round follows doctor → `plan` with a fresh `--output-dir` → `hparam-run-queue`
 dry-run → authorized `hparam-run-queue --execute` → terminal monitoring. For a
 direct plan, `--execute` starts one detached queue runner that survives an SSH
-drop and returns its PID and `queue_runner.log`; `hparam-monitor` and
-`experiment-monitor` report whether it is alive and never start one. Read that
+drop and returns its PID and `queue_runner.log`; `experiment-monitor`
+reports whether it is alive and never starts one. Read that
 log before rerunning `--execute` after a runner has died. For a Slurm plan,
 `--execute` submits every launchable run once and returns; Slurm owns the
 queue. A `lost` Slurm run is resolved only by a reasoned stop and is never

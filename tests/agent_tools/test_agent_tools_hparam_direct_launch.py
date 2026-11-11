@@ -28,6 +28,7 @@ import yaml
 from agent_tools import (
     execution_snapshot,
     experiment_workspace,
+    experiments,
     hparam_runtime,
     managed_scheduler,
     manifests,
@@ -89,7 +90,9 @@ def test_hparam_launch_does_not_restart_workspace_terminal_run(tmp_path: Path):
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert _read_table(plan_dir / "run_status.tsv")[0]["status"] == "failed"
+    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
+    # run_manifest.tsv is the only status table; the launch pass projects launch_manifest.tsv alone.
+    assert not (plan_dir / "run_status.tsv").exists()
 
 
 @pytest.mark.parametrize("operation", ["launch", "monitor", "stop"])
@@ -102,7 +105,6 @@ def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: 
     launch_rows = _read_table(tmp_path / "launch_manifest.tsv")
     launch_rows[0].update({"status": "planned", "score": "0.1", "wandb_url": "https://wandb.example/stale"})
     manifests.write_rows(tmp_path / "launch_manifest.tsv", launch_rows)
-    manifests.write_rows(tmp_path / "run_status.tsv", launch_rows)
     canonical_rows = _read_table(tmp_path / "run_manifest.tsv")
     canonical_rows[0].update({"score": "0.9", "wandb_url": "https://wandb.example/current"})
     manifests.write_rows(tmp_path / "run_manifest.tsv", canonical_rows)
@@ -119,7 +121,7 @@ def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: 
     if operation == "launch":
         hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
     elif operation == "monitor":
-        hparam_runtime.monitor_hparam_runs(tmp_path)
+        experiments.monitor_experiment(tmp_path)
     else:
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
 
@@ -298,7 +300,6 @@ def test_hparam_launch_does_not_start_after_canonical_owner_commits_terminal_sta
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
-    assert _read_table(tmp_path / "run_status.tsv")[0]["status"] == "failed"
     assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == "failed"
     launcher.assert_not_started()
     assert not (tmp_path / "events.jsonl").exists()
@@ -472,7 +473,7 @@ def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: 
     if operation == "launch":
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
     else:
-        hparam_runtime.monitor_hparam_runs(plan_dir)
+        experiments.monitor_experiment(tmp_path)
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
     if operation == "launch":
@@ -480,7 +481,7 @@ def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: 
         assert canonical["target"] == "local"
         assert _read_table(plan_dir / "launch_manifest.tsv")[0]["target"] == "local"
     else:
-        assert calls == []
+        assert "start" not in calls
         assert canonical.get("target", "") == ""
 
 
@@ -516,10 +517,6 @@ def test_hparam_launch_binds_conda_gpu_and_pid_identity_only_after_a_launch_slot
     assert canonical[0]["target"] == ""
     assert canonical[0]["gpus"] == ""
     assert canonical[0]["command"] == ""
-    status = _read_table(plan_dir / "run_status.tsv")
-    assert status[0]["target"] == ""
-    assert status[0]["gpus"] == ""
-    assert status[0]["command"] == ""
     script = Path(rows[0]["script"]).read_text()
     assert "--wandb-project sleep2vec-unit-hparam" in script
     assert "--wandb-group unit" in script
@@ -639,7 +636,6 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
     assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
     assert not (plan_dir / "launch_manifest.tsv").exists()
-    assert not (plan_dir / "run_status.tsv").exists()
 
 
 def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch):
@@ -1096,7 +1092,6 @@ def test_hparam_launch_rejects_runtime_preflight_failure_before_managed_writes(t
     launcher.assert_not_started()
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
     assert not (plan_dir / "launch_manifest.tsv").exists()
-    assert not (plan_dir / "run_status.tsv").exists()
 
 
 def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(tmp_path: Path, monkeypatch):
@@ -1122,7 +1117,6 @@ def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(t
     assert all(path.read_bytes() == content for path, content in before.items())
     assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
     assert not (plan_dir / "launch_manifest.tsv").exists()
-    assert not (plan_dir / "run_status.tsv").exists()
     row = _read_table(tmp_path / "run_manifest.tsv")[0]
     assert row["status"] == "planned"
     assert row.get("target", "") == ""
@@ -1400,7 +1394,6 @@ def test_hparam_launch_validates_every_snapshot_before_starting(tmp_path: Path):
 
     launcher.assert_not_started()
     assert not (plan_dir / "launch_manifest.tsv").exists()
-    assert not (plan_dir / "run_status.tsv").exists()
 
 
 def test_hparam_runtime_rejects_legacy_plan_without_side_effects(tmp_path: Path, monkeypatch):
@@ -1418,8 +1411,6 @@ def test_hparam_runtime_rejects_legacy_plan_without_side_effects(tmp_path: Path,
 
     with pytest.raises(ValueError, match="Legacy hparam plan"):
         hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
-    with pytest.raises(ValueError, match="Legacy hparam plan"):
-        hparam_runtime.monitor_hparam_runs(tmp_path)
     with pytest.raises(ValueError, match="Legacy hparam plan"):
         hparam_runtime.stop_hparam_run(tmp_path, "trial_000", reason="legacy")
 

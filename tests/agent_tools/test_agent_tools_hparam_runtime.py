@@ -320,7 +320,6 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
     )
     (root / "run_manifest.tsv.lock").touch()
     manifests.write_rows(root / "launch_manifest.tsv", rows)
-    manifests.write_rows(root / "run_status.tsv", rows)
     return rows
 
 
@@ -415,13 +414,11 @@ def test_hparam_runtime_rewrites_legacy_projection_rows_from_canonical(tmp_path:
     launcher.assert_not_started()
     assert killed == []
     assert "trial_id" not in (tmp_path / "launch_manifest.tsv").read_text()
-    assert "trial_id" not in (tmp_path / "run_status.tsv").read_text()
 
 
-@pytest.mark.parametrize("table", ["launch_manifest.tsv", "run_status.tsv"])
-def test_hparam_runtime_rewrites_header_only_removed_projection_table(tmp_path: Path, monkeypatch, table: str):
+def test_hparam_runtime_rewrites_header_only_removed_projection_table(tmp_path: Path, monkeypatch):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "version": "v0", "status": "launched"}])
-    (tmp_path / table).write_text("trial_id\n")
+    (tmp_path / "launch_manifest.tsv").write_text("trial_id\n")
     launcher = FakeLauncher()
     killed = []
     monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
@@ -430,21 +427,21 @@ def test_hparam_runtime_rewrites_header_only_removed_projection_table(tmp_path: 
 
     launcher.assert_not_started()
     assert killed == []
-    assert "trial_id" not in (tmp_path / table).read_text()
+    assert "trial_id" not in (tmp_path / "launch_manifest.tsv").read_text()
 
 
 def test_hparam_runtime_rejects_legacy_status_filename(tmp_path: Path):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "version": "v0", "status": "planned"}])
     legacy_status = tmp_path / "trial_status.tsv"
     legacy_status.write_text("trial_id\tstatus\ntrial_000\tfailed\n")
-    current_status = (tmp_path / "run_status.tsv").read_bytes()
+    current_launch = (tmp_path / "launch_manifest.tsv").read_bytes()
     launcher = FakeLauncher()
 
     with pytest.raises(ValueError, match="Legacy hparam status"):
         hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert (tmp_path / "run_status.tsv").read_bytes() == current_status
+    assert (tmp_path / "launch_manifest.tsv").read_bytes() == current_launch
 
 
 @pytest.mark.parametrize("field", ["target", "host", "path_context", "path_validation"])

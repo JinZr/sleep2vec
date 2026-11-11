@@ -16,7 +16,7 @@ Run each through `python -m agent_tools`; every subcommand documents itself with
 | 4 | `plan --recipe <recipe> --output-dir <plan-dir> [--user-decisions <decisions.yaml>]` | Publishes a frozen plan in a fresh directory inside `experiment.root`. It does not launch. |
 | 5 | `hparam-run-queue --plan-dir <plan-dir>` | Dry run by default (`infer-launch` and `preset-launch` likewise). Add `--execute` only with explicit launch authorization. |
 
-Monitors (`experiment-monitor`, `hparam-monitor`) refresh observations and never launch. The
+`experiment-monitor` refreshes observations once per call and never launches. The
 [stop-and-consult policy](../../AGENTS.md#agent-stop-and-consult-policy) separates concept
 planning, publication (steps 3–4) and launch (step 5).
 

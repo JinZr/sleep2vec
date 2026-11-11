@@ -381,7 +381,7 @@ def test_launch_validates_prospective_frozen_bytes_including_pending_command(
     assert _workspace_files(plan_dir.parent) == before
 
 
-def test_active_and_terminal_launch_and_monitor_do_not_validate_configs(tmp_path: Path, monkeypatch):
+def test_active_and_terminal_launch_does_not_validate_configs(tmp_path: Path, monkeypatch):
     plan_dir, plan = _frozen_plan(tmp_path, invalid=True)
     plan["runs"] = plan["runs"][2:]
     monkeypatch.setattr(run_artifacts, "read_hparam_plan", lambda *_args, **_kwargs: plan)
@@ -390,10 +390,8 @@ def test_active_and_terminal_launch_and_monitor_do_not_validate_configs(tmp_path
         plan_hparam, "validate_hparam_run_configs", lambda *_args: pytest.fail("Observer path validated configs")
     )
     monkeypatch.setattr(managed_scheduler, "launch_managed_runs", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda _root, rows: rows)
     for dry_run in (False, True):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=dry_run)
-    assert hparam_runtime.monitor_hparam_runs(plan_dir) == plan_dir / "run_status.tsv"
 
 
 def test_direct_observation_cannot_add_launchable_runs_and_removes_running_pending(tmp_path: Path, monkeypatch):

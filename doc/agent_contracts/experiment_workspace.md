@@ -376,23 +376,22 @@ fact should not create an entry.
 | `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](hparam_workflow.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. For a direct plan, `hparam-run-queue --execute` starts one detached [queue runner](hparam_workflow.md#direct-queue-runner) and returns; `--foreground` runs the queue in the calling process. For a Slurm plan, `--execute` makes one [submission pass](run_manifest.md#submission-and-adoption) and returns. |
 | `infer-launch` | Managed ordinary Slurm inference launch; [ordinary inference](task_recipe.md#managed-ordinary-inference). |
 | `preset-launch` | Execution-host local detached preset launch; defaults to dry-run; [managed preset preparation](task_recipe.md#managed-preset-preparation). |
-| `hparam-monitor`, `experiment-monitor` | Observe runs, commit canonical status, write `run_status.tsv` or `reports/monitor.md` and report direct queue-runner liveness; never launch pending work or start a runner. |
+| `experiment-monitor` | Observe every run of the workspace once, commit canonical status and transition events, write `reports/monitor.md` and report direct queue-runner liveness; never launches pending work or starts a runner. |
 | `run-stop` | Reasoned stop of one named run (`--plan-dir`, `--run-id`, `--reason`, all required) of a registered hparam, inference or preset plan, routed by the plan's task; never launches. Authenticated identity rules: [hparam prelaunch stop](hparam_workflow.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-lost-runs), [preset stop](task_recipe.md#managed-preset-preparation). |
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
 | `experiment-status` | Validate and print the [read-only snapshot](#read-only-status-and-advisory-actions), computed on demand; writes nothing. |
 | `experiment-finalize` | Commit completion only under [finalization](#finalization). |
 
-By default `hparam-monitor` rereads canonical state and observes the frozen
-current plan every `--poll-seconds` (60 seconds) until terminal; `--once` makes
-one observation round. Its terminal CLI summary projects structured failure
-evidence from `run_status.tsv`, not a second lifecycle interpretation or a new
-log read. `run_status.tsv` carries the committed rows plus that round's
-per-poll observation fields (such as `log_tail`), which `run_manifest.tsv`
-never persists; `experiment-monitor` likewise puts them only in
-`reports/monitor.md` and its `--json` runs. The raw `log_tail` is printed only
-with `--include-log-tail` because it may contain sensitive data. Neither
-continuous nor single-round monitoring launches pending work.
+`experiment-monitor` makes one observation round per call, with health probes;
+rerun it to poll again. Its text summary prints queue-runner liveness,
+lifecycle counts and structured failure evidence (status, scheduler reason,
+process identity error, log path) projected from the committed rows, not a
+second lifecycle interpretation or a new log read. That round's per-poll
+observation fields (such as `log_tail`), which `run_manifest.tsv` never
+persists, appear only in `reports/monitor.md` and the `--json` runs; the raw
+`log_tail` is never printed in the text summary because it may contain
+sensitive data. Monitoring never launches pending work.
 
 ## Read-only status and advisory actions
 
@@ -401,7 +400,7 @@ step and frozen plan control bundle, and canonical `run_manifest.tsv`, then
 prints a deterministic snapshot computed from those records on demand; it
 writes no report or manifest. It may display already-recorded scheduler,
 process, health, checkpoint and runtime-manifest fields but never refreshes
-them. `run_status.tsv`, `launch_manifest.tsv`, events, logs, runtime manifests,
+them. `launch_manifest.tsv`, events, logs, runtime manifests,
 and W&B state are not alternate lifecycle inputs.
 Modern hparam selection reports and shared rankings are read only as hash-bound
 consistency evidence for canonical selection
