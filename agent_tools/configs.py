@@ -14,7 +14,7 @@ from tempfile import NamedTemporaryFile
 
 import yaml
 
-from .adapters.sleep2stat import looks_like_sleep2stat_config_data, sleep2stat_config_summary
+from .adapters import sleep2stat
 from .domain.finetune_summary import finetune_summary_body, guess_variant
 from .domain.sex_age_summary import looks_like_sex_age_baseline_config_data, sex_age_baseline_config_summary
 from .models import REPO_ROOT, YAML_SAFE_LOADER, ConfigSummary, load_yaml, repo_relative, resolve_repo_path
@@ -49,8 +49,8 @@ def config_summary(
     summary: ConfigSummary
     try:
         # A shape claim wins over any variant the caller names.
-        if looks_like_sleep2stat_config_data(data):
-            summary = sleep2stat_config_summary(summary_path)
+        if sleep2stat.looks_like_sleep2stat_config_data(data):
+            summary = sleep2stat.sleep2stat_config_summary(summary_path)
             summary["config_path"] = repo_relative(resolved)
             return summary
         structural_match = looks_like_sex_age_baseline_config_data(data)
