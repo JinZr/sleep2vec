@@ -364,8 +364,9 @@ class FakeLauncher:
     """Scripted process start for ``hparam_runtime.launch_hparam_runs(..., hooks=launcher.hooks())`` in tests.
 
     Each start records ``(execution, command)`` in ``starts`` and returns the next outcome, repeating the last one:
-    a status such as ``"launched"``, ``"pending"`` or ``"launch_failed"``, an exception to raise, or a callable that
-    takes ``(execution, command)`` and returns a status. ``verify_target=False`` also skips the frozen
+    a status such as ``"launched"`` or ``"launch_failed"``, a ``(status, scheduler_reason)`` pair, an exception to
+    raise, or a callable that takes ``(execution, command)`` and returns either. A bare status starts with an empty
+    reason, as ``start_process`` returns it. ``verify_target=False`` also skips the frozen
     execution-target check and launches without a snapshot, for hand-written plans that froze none and for tests that
     do not exercise the check."""
 
@@ -386,12 +387,13 @@ class FakeLauncher:
             validated_snapshot=None if self.verify_target else lambda *_args: (None, False),
         )
 
-    def start_process(self, execution: dict, command: str) -> str:
+    def start_process(self, execution: dict, command: str) -> tuple[str, str]:
         self.starts.append((execution, command))
         outcome = self.outcomes[min(len(self.starts), len(self.outcomes)) - 1]
         if isinstance(outcome, BaseException):
             raise outcome
-        return outcome(execution, command) if callable(outcome) else outcome
+        result = outcome(execution, command) if callable(outcome) else outcome
+        return result if isinstance(result, tuple) else (result, "")
 
     def assert_not_started(self) -> None:
         assert self.starts == [], f"Unexpected process starts: {self.commands}"

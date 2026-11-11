@@ -58,7 +58,6 @@ from .models import REPO_ROOT, YAML_SAFE_LOADER, JsonValue, is_full_git_object_i
 
 ACTIVE_STATUSES = frozenset({"queued", "launched", "running", "stopping", "lost", "missing_pid"})
 LAUNCH_TIMEOUT_SECONDS = 60
-RETRYABLE_PRE_SPAWN_EXIT_CODE = 75
 QUEUE_RUNNER_LOCK_NAME = "queue_runner.lock"
 QUEUE_RUNNER_LOG_NAME = "queue_runner.log"
 SLURM_EXIT_CODE_NAME = "exit_code"
@@ -77,7 +76,6 @@ __all__ = [
     "CapacityState",
     "LAUNCHABLE_STATUSES",
     "LAUNCH_TIMEOUT_SECONDS",
-    "RETRYABLE_PRE_SPAWN_EXIT_CODE",
     "LaunchResult",
     "MissingPidCapacityError",
     "QUEUE_RUNNER_LOCK_NAME",
@@ -266,7 +264,7 @@ class SchedulerHooks:
     validate_run_update: Callable[..., None] = validate_frozen_run_update
     validated_snapshot: Callable[..., exec_snapshot.ExecutionSnapshotResult] | None = None
     build_command: Callable[..., str] | None = None
-    start_process: Callable[..., str] | None = None
+    start_process: Callable[..., tuple[str, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -772,7 +770,7 @@ def _start_direct_launch_rows(
     missing_pid_blocker: MissingPidCapacityError | None,
     dry_run: bool,
     build_command: Callable[..., str],
-    start: Callable[..., str],
+    start: Callable[..., tuple[str, str]],
     hooks: SchedulerHooks,
 ) -> set[RunKey]:
     started_keys: set[RunKey] = set()
@@ -859,8 +857,10 @@ def _start_direct_launch_rows(
             row.update(committed_by_key[key])
             if row["status"] not in LAUNCHABLE_STATUSES:
                 continue
-            row["status"] = start(execution, row["command"])
+            row["status"], reason = start(execution, row["command"])
             row["launched_at"] = utc_now() if row["status"] == "launched" else ""
+            if reason:
+                row["scheduler_reason"] = reason
             if row["status"] == "launched":
                 try:
                     process_identity = evidence.read_process_identity(row["pid_path"], row)
@@ -1385,16 +1385,17 @@ def build_launch_command(
     return f"cd {_sh(workdir)} && {run_command}"
 
 
-def start_process(
-    execution: Mapping[str, JsonValue],
-    command: str,
-    *,
-    retry_pre_spawn_failure: bool = True,
-) -> str:
+def start_process(execution: Mapping[str, JsonValue], command: str) -> tuple[str, str]:
+    """Run the launch wrapper and return ``(status, scheduler_reason)``.
+
+    A non-zero wrapper exit is a definite ``launch_failed``: before spawn no process exists, and after spawn the
+    wrapper stopped the unrecorded group. The reason is a bounded tail of the wrapper's stderr."""
     result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
-    if retry_pre_spawn_failure and result.returncode == RETRYABLE_PRE_SPAWN_EXIT_CODE:
-        return "pending"
-    return "launched" if result.returncode == 0 else "launch_failed"
+    if result.returncode == 0:
+        return "launched", ""
+    # One line keeps the reason readable in the TSV manifest and the monitor/status tables.
+    tail = " / ".join(line.strip() for line in result.stderr.splitlines() if line.strip())[-1000:]
+    return "launch_failed", f"launch exit {result.returncode}" + (f": {tail}" if tail else "")
 
 
 _sh = transport.sh

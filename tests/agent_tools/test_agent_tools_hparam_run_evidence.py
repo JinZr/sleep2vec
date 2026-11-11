@@ -209,7 +209,7 @@ def test_experiment_monitor_never_launches_pending_hparam_runs(tmp_path: Path, m
 
     def fake_start(_execution, command):
         started.append(command)
-        return "launched"
+        return "launched", ""
 
     monkeypatch.setattr(managed_scheduler, "start_process", fake_start)
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)

@@ -591,7 +591,7 @@ def _cmd_experiment_monitor(args: argparse.Namespace) -> int:
     evidence_rows = [
         row
         for row in result["runs"]
-        if row.get("status") in {"failed", "missing_pid", "lost"} or row.get("process_identity_error")
+        if row.get("status") in {"failed", "launch_failed", "missing_pid", "lost"} or row.get("process_identity_error")
     ]
     if evidence_rows:
         print("Failure evidence:")

@@ -264,10 +264,9 @@ def test_preset_runtime_preflight_claim_and_start_run_in_order(tmp_path, preset_
             events.append("claim")
         return original_merge(workspace, rows, **kwargs)
 
-    def start(_execution, _command, *, retry_pre_spawn_failure):
-        assert retry_pre_spawn_failure is False
+    def start(_execution, _command):
         events.append("start")
-        return "launched"
+        return "launched", ""
 
     monkeypatch.setattr(execution_snapshot, "run_execution_command", probe)
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
@@ -337,7 +336,10 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
 
         assert result.launch_rows[0]["status"] == "launch_failed"
         assert not result.started_keys
-        assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "launch_failed"
+        row = read_run_manifest(preset_runtime["workspace"])[0]
+        assert row["status"] == "launch_failed"
+        # The wrapper's verifier stderr is the recorded reason, so the failure is visible in monitor and status.
+        assert f"Frozen run artifact changed before process start: {artifact_path}" in row["scheduler_reason"]
         assert not preset_runtime["payload"].exists()
         assert not pid_path.exists()
         assert not (Path(run["run_dir"]) / "stdout.log").exists()
@@ -480,7 +482,7 @@ def test_preset_claim_write_failure_never_spawns(tmp_path, preset_runtime, monke
         monkeypatch.setattr(
             managed_scheduler,
             "start_process",
-            lambda _execution, command, **_kwargs: started.append(command) or "launched",
+            lambda _execution, command: started.append(command) or ("launched", ""),
         )
         result = experiments.launch_preset_run(plan_dir, dry_run=False)
         assert started == [row["command"]]
@@ -536,7 +538,7 @@ def test_preset_lifecycle_reads_workspace_state_only_under_run_lock(
     tmp_path, preset_runtime, monkeypatch, operation, expected_status
 ):
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
-    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args, **_kwargs: "launched")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: ("launched", ""))
     call = (
         functools.partial(experiments.launch_preset_run, plan_dir, dry_run=False)
         if operation == "launch"
@@ -550,7 +552,7 @@ def test_preset_lifecycle_reads_workspace_state_only_under_run_lock(
 
 def _recorded_attempt(tmp_path, preset_runtime, monkeypatch):
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
-    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args, **_kwargs: "launched")
+    monkeypatch.setattr(managed_scheduler, "start_process", lambda *_args: ("launched", ""))
     experiments.launch_preset_run(plan_dir, dry_run=False)
     row = read_run_manifest(preset_runtime["workspace"])[0]
     identity = {"pid": 12345, "process_group_id": 12345, "process_start_token": "test-start-token"}

@@ -320,7 +320,8 @@ execute-wave probe above owns live frozen-argv compatibility. Before a direct
 managed child is spawned, one short lock covers the embedded launch verification
 of Python/version, repository root, hostname, module origin, tracked and
 untracked or ignored importable code, and frozen script/config hashes, followed
-by HEAD capture and `Popen`. The lock is released after spawn;
+by HEAD capture and `Popen`. A failure there commits `launch_failed` with the
+verifier's message in `scheduler_reason` and is not retried. The lock is released after spawn;
 this is a point-in-time launch observation, not a promise that checkout code
 bytes remain unchanged throughout the job. A Slurm job takes no lock: it writes
 `git rev-parse HEAD` to `run_dir/runtime_commit` and checks its frozen config

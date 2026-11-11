@@ -216,6 +216,14 @@ For a provenance-aware managed direct launch, embedded verification, HEAD
 capture, and child `Popen` are ordered inside the same short lock. The receipt is
 written afterward; the lock does not cover the child lifetime.
 
+Every launcher failure is definite and is never retried. A frozen artifact hash
+mismatch or missing frozen file, a CLI preflight rejection, runtime identity
+drift, a wrapper error, or a receipt that cannot be written (the launcher then
+stops the unrecorded group) commits terminal `launch_failed`. `scheduler_reason`
+records the launcher exit code and a one-line tail of at most 1000 characters of
+its stderr, which `experiment-monitor` and `experiment-status` show. A runtime
+lock held by `runtime-sync` is not a failure: the launcher waits for it.
+
 - The PID must be the process-group leader.
 - Monitoring compares the file with frozen canonical values and the live OS
   start token, so a reused PID is not accepted as the managed workload.

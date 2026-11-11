@@ -265,7 +265,12 @@ class TaskAdapter:
         if input_snapshots:
             run["input_snapshots"] = input_snapshots
         commands = plan_contract.generic_commands(recipe, run, self, config_bytes)
-        script_text = plan_contract.generic_script_text(recipe, run, self, commands, input_snapshots)
+        # The script re-hashes the run's own frozen config with the other frozen inputs before the workload starts.
+        verified_inputs: list[plan_contract.FrozenInputSnapshot] = [
+            {"field": "config", "path": run["config"], "sha256": config_sha256},
+            *input_snapshots,
+        ]
+        script_text = plan_contract.generic_script_text(recipe, run, self, commands, verified_inputs)
         contract: GenericCompiledPlanContract = {
             "runs": [run],
             "commands": commands,

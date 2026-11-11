@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 from shlex import quote as shlex_quote
+import subprocess
 
 from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
 from test_agent_plan_blocks_on_ambiguity import (
@@ -412,6 +414,16 @@ def test_unlock_final_test_freezes_explicit_config_without_yaml_search(tmp_path:
     script = (output_dir / "final_external_test.sh").read_text()
     assert shlex_quote(str(frozen_config)) in script
     assert shlex_quote(str(selected_config)) not in script
+    # The final script re-hashes the frozen config it evaluates before the evaluation command runs.
+    lines = script.splitlines()
+    verification = next(line for line in lines if "verify_run_snapshot" in line)
+    assert lines.index(verification) < next(index for index, line in enumerate(lines) if ".infer " in line)
+    subprocess.run(shlex.split(verification), cwd=REPO_ROOT, check=True)
+    frozen_config.write_bytes(selected_bytes + b"\n# edited after planning\n")
+    result = subprocess.run(shlex.split(verification), cwd=REPO_ROOT, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Run input snapshot hash changed after planning: final_eval_config: " in result.stderr
+    assert "config.final_eval.yaml" in result.stderr
 
 
 def test_infer_user_decision_ckpt_path_must_exist(tmp_path: Path):

@@ -142,7 +142,8 @@ def test_preset_explicit_identity_runs_real_generated_command_despite_path_chang
     assert payload["cwd"] == preset_runtime["execution"]["workdir"]
     assert payload["argv"] == shlex.split(command)[1:]
     assert payload["status"] == "running"
-    assert preset_runtime["calls"].read_text().splitlines() == ["-c", _PRESET_SCRIPTS[variant], "-c"]
+    # Frozen-config verification, the running commit, the workload, then the terminal commit.
+    assert preset_runtime["calls"].read_text().splitlines() == ["-c", "-c", _PRESET_SCRIPTS[variant], "-c"]
     assert not preset_runtime["poison_marker"].exists()
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "completed"
 

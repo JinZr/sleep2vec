@@ -137,6 +137,21 @@ def test_launch_rejects_index_changed_after_planning(tmp_path: Path):
     assert read_run_manifest(Path(payload["experiment"]["root"]))[0]["status"] == "planned"
 
 
+def test_launch_rejects_frozen_config_changed_after_planning(tmp_path: Path):
+    recipe, plan_dir, payload = _write_recipe(tmp_path)
+    assert build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
+    config = Path(json.loads((plan_dir / "plan.json").read_text())["runs"][0]["config"])
+    config.write_bytes(config.read_bytes() + b"\n# edited after planning\n")
+
+    result = subprocess.run(["bash", str(plan_dir / "run.sh")], text=True, capture_output=True)
+
+    # The generic run.sh re-hashes the run's own frozen config before committing running or starting the workload.
+    assert result.returncode != 0
+    assert f"Run input snapshot hash changed after planning: config: {config}" in result.stderr
+    assert not Path(payload["artifacts"]["embedding_dir"]).exists()
+    assert read_run_manifest(Path(payload["experiment"]["root"]))[0]["status"] == "planned"
+
+
 def test_status_rejects_frozen_input_snapshot_omission(tmp_path: Path):
     recipe, plan_dir, payload = _write_recipe(tmp_path)
     assert build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0

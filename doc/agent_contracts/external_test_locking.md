@@ -32,6 +32,10 @@ checkpoint guessing. Hparam recipes with `yaml:/...` overrides also require an
 explicit selected final-test config path. Any explicit final-test config is
 captured and semantically validated during preflight, frozen with its SHA-256,
 and referenced by the generated script rather than its mutable source path.
+Before evaluation starts, `final_external_test.sh` re-hashes the frozen config it
+evaluates (`config.final_eval.yaml`, or `config.source.yaml` when no explicit
+final-test config is required) against its plan-time SHA-256 and stops on a
+mismatch.
 If final script generation is skipped, stale `final_external_test.sh` and
 frozen final-test config artifacts must be blocked or removed under explicit
 overwrite approval.
