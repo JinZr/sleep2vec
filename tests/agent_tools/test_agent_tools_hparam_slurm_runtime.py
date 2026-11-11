@@ -83,7 +83,9 @@ def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path, variant: str
         str(device) for device in range(gpus_per_run)
     ]
     assert command[devices_index + 1 + gpus_per_run].startswith("--")
-    assert "sbatch --parsable" in _read_table(plan_dir / "launch_manifest.tsv")[0]["command"]
+    # The one-line sbatch submission is printed in full by the dry-run preview.
+    assert f"- {run['step_id']} / {run['run_id']}: status=planned; command=" in preview.stdout
+    assert "sbatch --parsable" in preview.stdout
 
 
 @pytest.mark.parametrize("artifact_name", ["job.sbatch", "slurm.log"])

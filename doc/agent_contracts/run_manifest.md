@@ -70,7 +70,7 @@ Managed tables declare either one row per run or many rows per run. Both forms r
 
 ## Canonical state and projections
 
-`launch_manifest.tsv` keeps its plan-local path and fields but is written only from rows returned by a successful canonical commit. It is a projection and is never read to restore lifecycle status or execution identity. No current command writes or reads `run_status.tsv`; a copy left in an older plan directory is inert. `reports/monitor.md`, rankings, and events are also derived artifacts. `RESEARCH_LOG.md` is an append-only narrative record rather than a projection, but it likewise never owns or restores lifecycle state. `experiment-status` computes its snapshot from `run_manifest.tsv` on demand and writes nothing.
+No current command writes or reads `launch_manifest.tsv` or `run_status.tsv`; a copy left in an older plan directory is inert. A `hparam-run-queue` dry run prints its launch preview to stdout and commits none of the previewed execution identity. `reports/monitor.md`, rankings, and events are derived artifacts. `RESEARCH_LOG.md` is an append-only narrative record rather than a projection, but it likewise never owns or restores lifecycle state. `experiment-status` computes its snapshot from `run_manifest.tsv` on demand and writes nothing.
 
 Per-poll observation fields are never persisted in `run_manifest.tsv`: the
 canonical merge drops `log_tail`, `log_age_seconds`, `monitored_at`,
@@ -107,7 +107,7 @@ observed evidence, and none of them restores run status.
 | File | Location | Written by | Lifecycle role |
 | --- | --- | --- | --- |
 | `run_manifest.tsv` | `<experiment.root>/` | Canonical [atomic commit](#atomic-commit) from plan registration, launch, monitor and stop | Only mutable lifecycle and execution-identity owner; one row per run |
-| `launch_manifest.tsv` | Hparam plan directory | Rewritten from the rows of each hparam launch pass or stop commit | Projection; never read to restore state |
+| `launch_manifest.tsv` | Older hparam plan directories | None | Removed projection; a leftover copy is inert and never read |
 | `experiment_manifest.tsv` | `<experiment.root>/` | `experiment-init` | Optional one-row index that must match `experiment.yaml` |
 | `trial_status.tsv` | Historical trees | None | Removed format; managed commands refuse a tree that contains it |
 | `run_status.tsv` | Older hparam plan directories | None | Removed projection; a leftover copy is inert and never read |
@@ -180,7 +180,7 @@ Mutation-facing evidence must first resolve to a canonical managed row. Any supp
 - Workspace rankings and candidate tables prove scope through the validated workspace plus managed key.
 - Candidate and ranking tables are completely validated before other-step or earlier-plan rows are filtered.
 - Checkpoint evidence must exist as a direct child file of the matched frozen checkpoint directory, revalidated before selection or finalization.
-- Launch/status projections never contribute evidence.
+- Leftover `launch_manifest.tsv` or `run_status.tsv` copies never contribute evidence.
 
 Foreign, unmatched, incomplete, or drifting evidence fails or remains in raw inventory; it does not update canonical rows.
 
@@ -195,7 +195,7 @@ the snapshot never replaces the commit owner's fresh read or concurrency checks.
 - Commits hold the run lock (`run_manifest.tsv.lock`) from canonical read through same-directory temporary write, `fsync` and `os.replace`, so a reader sees the old or the new table, never a partial one.
 - New keys must carry the owning experiment id.
 
-The owner returns the rows actually committed. Callers use those rows for plan-local projections, the monitor report, and transition events. A later projection/report failure makes the command nonzero but does not roll back canonical state; the next command may regenerate derived artifacts.
+The owner returns the rows actually committed. Callers use those rows for the monitor report and transition events. A later report or event failure makes the command nonzero but does not roll back canonical state; the next command may regenerate derived artifacts.
 
 No caller reads or writes `run_manifest.tsv` directly.
 

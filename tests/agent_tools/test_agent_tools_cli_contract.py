@@ -513,9 +513,49 @@ def test_hparam_run_queue_runs_in_process_without_a_detached_runner(monkeypatch,
 
     assert queue_calls == [not execute]
     assert start_calls == (["start"] if execute else [])
+    preview = [
+        "Launch preview (--execute starts only as many launchable runs as capacity allows):",
+        "- tune / run-001: status=planned",
+    ]
     assert capsys.readouterr().out.splitlines() == [
         "Mode: execute (state changes enabled)" if execute else "Mode: dry-run (no launch attempted)",
         "Lifecycle states: planned=1",
+        *([] if execute else preview),
+    ]
+
+
+def test_hparam_run_queue_dry_run_prints_each_run_preview(monkeypatch, capsys):
+    rows = [
+        {
+            "step_id": "tune",
+            "run_id": "run-000",
+            "status": "planned",
+            "gpus": "0,1",
+            "script": "/w/run-000/launch.sh",
+            "command": "cd /w && env CUDA_VISIBLE_DEVICES=0,1 python -c 'import os\nimport sys' /w/run-000/launch.sh",
+        },
+        {
+            "step_id": "tune",
+            "run_id": "run-001",
+            "status": "planned",
+            "gpus": "",
+            "script": "/w/run-001/launch.sh",
+            "command": "env -u SLURM_CLUSTERS sbatch --parsable /w/run-001/job.sbatch",
+        },
+        {"step_id": "tune", "run_id": "run-002", "status": "completed", "gpus": "", "command": ""},
+    ]
+    monkeypatch.setattr(cli, "run_hparam_queue", lambda *_args, **_kwargs: rows)
+
+    assert cli.main(["hparam-run-queue", "--plan-dir", "plan-dir"]) == 0
+
+    # A multi-line direct command embeds the launcher program, so the preview names the run script instead.
+    assert capsys.readouterr().out.splitlines() == [
+        "Mode: dry-run (no launch attempted)",
+        "Lifecycle states: completed=1, planned=2",
+        "Launch preview (--execute starts only as many launchable runs as capacity allows):",
+        "- tune / run-000: status=planned; gpus=0,1; script=/w/run-000/launch.sh",
+        "- tune / run-001: status=planned; command=env -u SLURM_CLUSTERS sbatch --parsable /w/run-001/job.sbatch",
+        "- tune / run-002: status=completed",
     ]
 
 

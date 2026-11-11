@@ -43,7 +43,7 @@ from .experiment_workspace import (
     validate_frozen_run_update,
     validated_run_key,
 )
-from .manifests import utc_now, write_rows
+from .manifests import utc_now
 from .models import JsonValue
 
 LAUNCH_TIMEOUT_SECONDS = scheduler.LAUNCH_TIMEOUT_SECONDS
@@ -75,13 +75,15 @@ def launch_hparam_runs(
     dry_run: bool = True,
     fail_on_missing_pid_blocker: bool = False,
     hooks: scheduler.SchedulerHooks | None = None,
-) -> Path:
-    """Attempt one scheduling pass for a registered hparam plan and return launch_manifest.tsv.
+) -> scheduler.LaunchResult:
+    """Attempt one scheduling pass for a registered hparam plan and return its LaunchResult.
 
     Validates frozen inputs and serializes the pass with the workspace run lock.
     dry_run=True previews scheduling without starting processes or submitting
-    jobs, but still writes the launch_manifest.tsv projection and may merge
-    manifest rows; it is not a read-only operation. Execution can observe local
+    jobs: its launch_rows carry each untargeted launchable run's prospective GPU
+    group and command, which are never committed. It still re-commits the plan's
+    canonical rows and creates run directories, so it is not a read-only
+    operation. Execution can observe local
     runs, launch eligible work within capacity and record lifecycle evidence;
     for a Slurm plan it is one submit pass that submits or adopts every
     launchable run.
@@ -89,7 +91,7 @@ def launch_hparam_runs(
     fail_on_missing_pid_blocker makes an unresolved process-identity blocker an
     execution error for queue callers. Handled observation or launch failures can
     be recorded as statuses such as lost or launch_failed and return
-    normally. Inspect canonical run status: the returned path does not imply a
+    normally. Inspect canonical run status: a returned result does not imply a
     successful launch. Unhandled exceptions propagate; already recorded launches
     are not rolled back on later failure.
 
@@ -176,11 +178,12 @@ def run_hparam_queue(
     *,
     dry_run: bool = True,
     poll_seconds: float = 60,
-) -> list[dict[str, str]]:
-    """Advance a registered hparam queue and return the plan's canonical run rows.
+) -> Sequence[Mapping[str, JsonValue]]:
+    """Advance a registered hparam queue and return the plan's run rows.
 
-    With dry_run=True, performs one launch preview, including that preview's
-    launch_manifest.tsv write. With dry_run=False, a direct plan repeatedly runs
+    With dry_run=True, performs one launch preview and returns its launch_rows:
+    the canonical rows with each untargeted launchable run's prospective GPU
+    group and command. With dry_run=False, a direct plan repeatedly runs
     launch passes in the calling process, each of which observes the plan's runs
     and launches eligible ones, until every run in this plan is terminal.
     Terminal includes failed/stopped runs and does not imply selection succeeded.
@@ -208,8 +211,7 @@ def run_hparam_queue(
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
     if dry_run:
-        launch_hparam_runs(run_dir, dry_run=True)
-        return _canonical_plan_rows(workspace, plan)
+        return launch_hparam_runs(run_dir, dry_run=True).launch_rows
     with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(run_dir)
     if not _is_direct_plan(plan):
@@ -267,7 +269,7 @@ def _launch_hparam_runs(
     manifest_lock_held: bool,
     fail_on_missing_pid_blocker: bool,
     hooks: scheduler.SchedulerHooks | None,
-) -> Path:
+) -> scheduler.LaunchResult:
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
@@ -277,8 +279,7 @@ def _launch_hparam_runs(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    manifest = run_dir / "launch_manifest.tsv"
-    exp_io.validate_managed_output_paths(workspace, [manifest, run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME])
+    exp_io.validate_managed_output_paths(workspace, [run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME])
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
     runtime_value = recipe.get("runtime")
@@ -297,9 +298,6 @@ def _launch_hparam_runs(
         )
         if not dry_run:
             plan_hparam.validate_hparam_output_paths(run_dir, plan, runs=launchable_runs)
-
-    def write_projections(result: scheduler.LaunchResult) -> None:
-        write_rows(manifest, result.launch_rows)
 
     # Built per pass so a patched public owner takes effect; hooks replace only the process effects.
     launch_hooks = scheduler.SchedulerHooks(
@@ -321,7 +319,7 @@ def _launch_hparam_runs(
             build_command=hooks.build_command or launch_hooks.build_command,
             start_process=hooks.start_process or launch_hooks.start_process,
         )
-    scheduler.launch_managed_runs(
+    return scheduler.launch_managed_runs(
         workspace,
         run_dir,
         plan["runs"],
@@ -329,11 +327,9 @@ def _launch_hparam_runs(
         runtime,
         dry_run=dry_run,
         fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
-        projection_writer=write_projections,
         hooks=launch_hooks,
         lock_held=manifest_lock_held,
     )
-    return manifest
 
 
 def _inspect_execution_target(
@@ -351,11 +347,9 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     plan = artifacts.read_hparam_plan(root, require_workspace_state=False)
     recipe_value = plan.get("recipe")
     recipe = recipe_value if isinstance(recipe_value, dict) else {}
-    manifest_path = root / "launch_manifest.tsv"
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    exp_io.validate_managed_output_paths(workspace, [manifest_path])
     with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(root)
         expected_keys = {validated_run_key(run) for run in plan["runs"]}
@@ -374,7 +368,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
         previous = workspace_by_key[key]
         backend = scheduler_type(previous)
         if backend == "slurm":
-            committed, metadata_stop = scheduler.stop_slurm_run_locked(
+            _committed, metadata_stop = scheduler.stop_slurm_run_locked(
                 workspace,
                 workspace_rows,
                 key,
@@ -400,7 +394,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                         "stop_reason": reason,
                     },
                 )
-                committed = merge_run_manifest(workspace, [final], lock_held=True)
+                merge_run_manifest(workspace, [final], lock_held=True)
             else:
                 missing_execution_identity = {
                     field for field in EXECUTION_IDENTITY_FIELDS - PROCESS_IDENTITY_FIELDS if field not in previous
@@ -452,9 +446,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                         "stop_reason": reason,
                     },
                 )
-                committed = merge_run_manifest(workspace, [final], lock_held=True)
-        committed_by_key = {validated_run_key(item): item for item in committed}
-        write_rows(manifest_path, [committed_by_key[validated_run_key(run)] for run in plan["runs"]])
+                merge_run_manifest(workspace, [final], lock_held=True)
         if backend != "slurm" or metadata_stop:
             append_event(
                 workspace,

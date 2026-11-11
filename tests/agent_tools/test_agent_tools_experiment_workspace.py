@@ -357,8 +357,8 @@ def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=FakeLauncher(verify_target=False).hooks())
-    row = list(csv.DictReader((plan_dir / "launch_manifest.tsv").open(), delimiter="\t"))[0]
+    launch = hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=FakeLauncher(verify_target=False).hooks())
+    row = launch.launch_rows[0]
     pid_path = Path(row["pid_path"])
     identity = {"pid": 123, "process_group_id": 123, "process_start_token": "proc:unit-start"}
     pid_path.write_text(json.dumps(identity) + "\n")

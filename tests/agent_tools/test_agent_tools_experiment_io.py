@@ -196,7 +196,7 @@ def test_managed_output_reader_does_not_hide_permission_errors(tmp_path):
 
 @pytest.mark.parametrize("header", ["trial_id\n", "run_id\n", "step_id\tstep_id\trun_id\n"])
 def test_managed_table_reader_rejects_removed_or_malformed_header_only_tables(tmp_path: Path, header: str):
-    path = tmp_path / "launch_manifest.tsv"
+    path = tmp_path / "run_manifest.tsv"
     path.write_text(header)
 
     with pytest.raises(ValueError):
@@ -204,7 +204,7 @@ def test_managed_table_reader_rejects_removed_or_malformed_header_only_tables(tm
 
 
 def test_managed_table_reader_accepts_current_header_only_table(tmp_path: Path):
-    path = tmp_path / "launch_manifest.tsv"
+    path = tmp_path / "run_manifest.tsv"
     path.write_text("step_id\trun_id\n")
 
     assert experiment_io.read_rows_at(path, require_managed_identity=True) == []
@@ -240,7 +240,7 @@ def test_managed_table_reader_accepts_current_header_only_table(tmp_path: Path):
 def test_managed_header_contract_messages_are_identical_across_readers(
     tmp_path: Path, reader, header: str, message: str
 ):
-    path = tmp_path / "launch_manifest.tsv"
+    path = tmp_path / "run_manifest.tsv"
     path.write_text(header)
 
     with pytest.raises(ValueError) as excinfo:

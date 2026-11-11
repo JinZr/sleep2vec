@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Mapping, Sequence
 import json
 import os
 from pathlib import Path
@@ -43,7 +44,7 @@ from .hparam_runtime import run_hparam_queue, start_hparam_queue_runner, stop_hp
 from .hparam_selection import select_hparam_candidates
 from .manifests import read_json
 from .markdown import report_text
-from .models import json_ready
+from .models import JsonValue, json_ready
 from .plans import (
     build_plan,
     doctor_runtime_card,
@@ -281,7 +282,8 @@ def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
         sub,
         "hparam-run-queue",
         "Drain a hyper-parameter plan's run queue within its GPU capacity until every run is terminal. "
-        "Dry run unless --execute is given; --execute starts one detached runner per direct plan "
+        "Dry run unless --execute is given; a dry run prints each run's prospective GPU group and launch command. "
+        "--execute starts one detached runner per direct plan "
         "(logging to queue_runner.log) and returns; --foreground runs the queue in this process. "
         "For a Slurm plan, --execute submits every launchable run once and returns.",
     )
@@ -535,11 +537,24 @@ def _cmd_hparam_run_queue(args: argparse.Namespace) -> int:
     mode = "execute (state changes enabled)" if args.execute else "dry-run (no launch attempted)"
     print(f"Mode: {mode}")
     print(f"Lifecycle states: {_lifecycle_states(rows)}")
+    if not args.execute:
+        print("Launch preview (--execute starts only as many launchable runs as capacity allows):")
+        for row in rows:
+            details = [f"status={row.get('status') or 'unknown'}"]
+            if row.get("gpus"):
+                details.append(f"gpus={row['gpus']}")
+            command = str(row.get("command") or "")
+            # A direct command embeds the multi-line launcher program; name the run script it starts instead.
+            if "\n" in command:
+                details.append(f"script={row['script']}")
+            elif command:
+                details.append(f"command={command}")
+            print(f"- {row['step_id']} / {row['run_id']}: {'; '.join(details)}")
     return 0
 
 
-def _lifecycle_states(rows: list[dict[str, str]]) -> str:
-    counts = Counter(row.get("status") or "unknown" for row in rows)
+def _lifecycle_states(rows: Sequence[Mapping[str, JsonValue]]) -> str:
+    counts = Counter(str(row.get("status") or "unknown") for row in rows)
     return ", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "none"
 
 
