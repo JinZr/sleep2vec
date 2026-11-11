@@ -275,7 +275,6 @@ class LaunchOptions:
 
     dry_run: bool
     fail_on_missing_pid_blocker: bool
-    projection_writer: Callable[[LaunchResult], None] | None
     hooks: SchedulerHooks
 
 
@@ -452,7 +451,6 @@ def launch_managed_runs(
     *,
     dry_run: bool = True,
     fail_on_missing_pid_blocker: bool = False,
-    projection_writer: Callable[[LaunchResult], None] | None = None,
     hooks: SchedulerHooks | None = None,
     lock_held: bool = False,
 ) -> LaunchResult:
@@ -461,7 +459,6 @@ def launch_managed_runs(
     options = LaunchOptions(
         dry_run=dry_run,
         fail_on_missing_pid_blocker=fail_on_missing_pid_blocker,
-        projection_writer=projection_writer,
         hooks=hooks or SchedulerHooks(),
     )
     if lock_held:
@@ -596,8 +593,6 @@ def _launch_managed_runs(
         status_changes=observed.changes,
         external_status_changes=external_status_changes,
     )
-    if options.projection_writer is not None:
-        options.projection_writer(result)
     for committed_row in committed_rows:
         key = validated_run_key(committed_row)
         if key in observed.changes:
@@ -1029,8 +1024,6 @@ def _launch_slurm_runs(
         status_changes=status_changes,
         external_status_changes={},
     )
-    if options.projection_writer is not None:
-        options.projection_writer(result)
     for key, (before, after) in status_changes.items():
         options.hooks.append_event(
             workspace,

@@ -115,9 +115,8 @@ def test_hparam_plan_and_launch_use_merged_effective_recipe(tmp_path: Path):
     assert f"--results-csv-path {output_dir / 'effective/results.csv'}" in command
     assert plan["recipe"]["runtime"]["devices"] == [4]
     assert plan["recipe"]["_base_recipe"]["runtime"]["devices"] != [4]
-    with (output_dir / "launch_manifest.tsv").open(newline="") as file_obj:
-        launch_rows = list(csv.DictReader(file_obj, delimiter="\t"))
-    assert launch_rows[0]["gpus"] == "4"
+    run = plan["runs"][0]
+    assert f"- {run['step_id']} / {run['run_id']}: status=planned; gpus=4; script={run['script']}" in launched.stdout
 
 
 def test_plan_rejects_symlink_output_root_before_writing(tmp_path: Path):

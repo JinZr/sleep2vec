@@ -52,7 +52,6 @@ def test_hparam_launch_rejects_unregistered_plan_copy_before_start(tmp_path: Pat
         hparam_runtime.launch_hparam_runs(copied_plan, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert not (copied_plan / "launch_manifest.tsv").exists()
 
 
 def test_hparam_launch_rejects_completed_experiment_without_writes(tmp_path: Path):
@@ -91,8 +90,9 @@ def test_hparam_launch_does_not_restart_workspace_terminal_run(tmp_path: Path):
 
     launcher.assert_not_started()
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
-    # run_manifest.tsv is the only status table; the launch pass projects launch_manifest.tsv alone.
+    # run_manifest.tsv is the only status table; a launch pass writes no status or launch projection.
     assert not (plan_dir / "run_status.tsv").exists()
+    assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
 @pytest.mark.parametrize("operation", ["launch", "monitor", "stop"])
@@ -102,9 +102,9 @@ def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: 
         [{"run_id": "run-000", "status": "running", **_process_identity()}],
     )
     _write_process_identity(rows[0]["pid_path"])
-    launch_rows = _read_table(tmp_path / "launch_manifest.tsv")
-    launch_rows[0].update({"status": "planned", "score": "0.1", "wandb_url": "https://wandb.example/stale"})
-    manifests.write_rows(tmp_path / "launch_manifest.tsv", launch_rows)
+    # A launch_manifest.tsv left in an older plan directory is inert.
+    stale_launch_row = {**rows[0], "status": "planned", "score": "0.1", "wandb_url": "https://wandb.example/stale"}
+    manifests.write_rows(tmp_path / "launch_manifest.tsv", [stale_launch_row])
     canonical_rows = _read_table(tmp_path / "run_manifest.tsv")
     canonical_rows[0].update({"score": "0.9", "wandb_url": "https://wandb.example/current"})
     manifests.write_rows(tmp_path / "run_manifest.tsv", canonical_rows)
@@ -300,7 +300,6 @@ def test_hparam_launch_does_not_start_after_canonical_owner_commits_terminal_sta
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
-    assert _read_table(tmp_path / "launch_manifest.tsv")[0]["status"] == "failed"
     launcher.assert_not_started()
     assert not (tmp_path / "events.jsonl").exists()
 
@@ -330,7 +329,6 @@ def test_hparam_launch_rejects_workspace_frozen_drift_before_start(tmp_path: Pat
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
 def test_hparam_runtime_rejects_tampered_relative_workdir_before_start(tmp_path: Path):
@@ -347,7 +345,6 @@ def test_hparam_runtime_rejects_tampered_relative_workdir_before_start(tmp_path:
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
 def test_hparam_runtime_rejects_workdir_that_differs_from_frozen_runtime_path(tmp_path: Path):
@@ -364,7 +361,6 @@ def test_hparam_runtime_rejects_workdir_that_differs_from_frozen_runtime_path(tm
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
 @pytest.mark.parametrize(
@@ -445,6 +441,7 @@ def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: 
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
+    # A launch_manifest.tsv left in an older plan directory is inert.
     manifests.write_rows(
         plan_dir / "launch_manifest.tsv",
         [
@@ -479,7 +476,6 @@ def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: 
     if operation == "launch":
         assert calls == ["start"]
         assert canonical["target"] == "local"
-        assert _read_table(plan_dir / "launch_manifest.tsv")[0]["target"] == "local"
     else:
         assert "start" not in calls
         assert canonical.get("target", "") == ""
@@ -504,10 +500,8 @@ def test_hparam_launch_binds_conda_gpu_and_pid_identity_only_after_a_launch_slot
     plan_dir = tmp_path / "plan"
 
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    result = run_cli("hparam-run-queue", "--plan-dir", str(plan_dir))
+    rows = hparam_runtime.run_hparam_queue(plan_dir)
 
-    assert result.returncode == 0, result.stderr
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert rows[0]["status"] == "planned"
     assert rows[0]["target"] == "local"
     assert rows[0]["gpus"] == "6,7"
@@ -528,7 +522,7 @@ def test_hparam_launch_binds_conda_gpu_and_pid_identity_only_after_a_launch_slot
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    rows = _read_table(tmp_path / "run_manifest.tsv")
     assert rows[0]["status"] == "launched"
     assert rows[0]["target"] == "local"
     assert rows[0]["gpus"] == "6,7"
@@ -635,7 +629,6 @@ def test_hparam_launch_rejects_pre_identity_plan_without_writes(tmp_path: Path, 
     launcher.assert_not_started()
     assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
     assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
-    assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
 def test_execution_probe_uses_target_cwd_and_isolated_pythonpath(monkeypatch):
@@ -1091,7 +1084,6 @@ def test_hparam_launch_rejects_runtime_preflight_failure_before_managed_writes(t
 
     launcher.assert_not_started()
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
-    assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
 def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(tmp_path: Path, monkeypatch):
@@ -1116,7 +1108,6 @@ def test_hparam_launch_rejects_missing_target_cli_option_before_managed_writes(t
     launcher.assert_not_started()
     assert all(path.read_bytes() == content for path, content in before.items())
     assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).exists()
-    assert not (plan_dir / "launch_manifest.tsv").exists()
     row = _read_table(tmp_path / "run_manifest.tsv")[0]
     assert row["status"] == "planned"
     assert row.get("target", "") == ""
@@ -1183,7 +1174,7 @@ def test_hparam_launch_accepts_runtime_commit_drift_before_next_wave(tmp_path: P
     _set_execution_probe(monkeypatch, plan_dir)
     launcher = FakeLauncher()
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-    first = _read_table(plan_dir / "launch_manifest.tsv")[0]
+    first = _read_table(tmp_path / "run_manifest.tsv")[0]
     merge_run_manifest(
         tmp_path,
         [{"step_id": first["step_id"], "run_id": first["run_id"], "status": "finished"}],
@@ -1236,7 +1227,6 @@ def test_repeated_dry_run_does_not_observe_runtime_before_execute(tmp_path: Path
 
     assert observations == []
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
-    assert _read_table(plan_dir / "launch_manifest.tsv")[0]["status"] == "planned"
     launcher = FakeLauncher()
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
@@ -1274,7 +1264,7 @@ def test_hparam_launch_remaps_scalar_runtime_device_pool(tmp_path: Path):
 
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    rows = _read_table(tmp_path / "run_manifest.tsv")
     assert rows[0]["gpus"] == "2"
     assert "--devices 0 --precision" in Path(rows[0]["script"]).read_text()
     assert "start_new_session=True" in rows[0]["command"]
@@ -1282,7 +1272,7 @@ def test_hparam_launch_remaps_scalar_runtime_device_pool(tmp_path: Path):
     assert launcher.commands == [rows[0]["command"]]
 
 
-def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
+def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "relative_plan"
     runner = Path(__file__).with_name("agent_tools_cli_stub.py")
@@ -1302,23 +1292,11 @@ def test_hparam_launch_resolves_relative_plan_dir_before_cd(tmp_path: Path):
         capture_output=True,
         env={**os.environ, "PYTHONPATH": str(Path.cwd())},
     )
-    launch = subprocess.run(
-        [
-            sys.executable,
-            str(runner),
-            "hparam-run-queue",
-            "--plan-dir",
-            "relative_plan",
-        ],
-        cwd=tmp_path,
-        text=True,
-        capture_output=True,
-        env={**os.environ, "PYTHONPATH": str(Path.cwd())},
-    )
-
     assert plan.returncode == 0, plan.stderr
-    assert launch.returncode == 0, launch.stderr
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
+    monkeypatch.chdir(tmp_path)
+
+    rows = hparam_runtime.run_hparam_queue("relative_plan")
+
     assert rows[0]["script"] == str(plan_dir / "runs" / "run-000--lr-1e-6" / "launch.sh")
     assert rows[0]["log_path"] == str(plan_dir / "runs" / "run-000--lr-1e-6" / "stdout.log")
     assert "relative_plan/relative_plan" not in rows[0]["command"]
@@ -1341,7 +1319,7 @@ def test_hparam_launch_does_not_retry_missing_pid(tmp_path: Path):
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    status = {row["run_id"]: row["status"] for row in _read_table(plan_dir / "launch_manifest.tsv")}
+    status = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
     assert status == {"run-000": "missing_pid", "run-001": "pending"}
 
 
@@ -1373,7 +1351,6 @@ def test_hparam_launch_fail_flag_reports_owned_missing_pid_before_start(tmp_path
     assert exc_info.value.run_id == runs[0]["run_id"]
     launcher.assert_not_started()
     expected = {runs[0]["run_id"]: "missing_pid", runs[1]["run_id"]: "pending"}
-    assert {row["run_id"]: row["status"] for row in _read_table(plan_dir / "launch_manifest.tsv")} == expected
     assert {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")} == expected
 
 
@@ -1393,7 +1370,6 @@ def test_hparam_launch_validates_every_snapshot_before_starting(tmp_path: Path):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
 def test_hparam_runtime_rejects_legacy_plan_without_side_effects(tmp_path: Path, monkeypatch):

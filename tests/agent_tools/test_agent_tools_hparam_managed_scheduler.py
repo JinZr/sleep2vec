@@ -82,9 +82,8 @@ def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher()
 
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
+    rows = hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks()).launch_rows
 
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert len(launcher.starts) == 2
     assert [row["gpus"] for row in rows] == ["0", "1", "", ""]
     assert [row["status"] for row in rows] == ["launched", "launched", "pending", "pending"]
@@ -95,9 +94,8 @@ def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group
         [{"step_id": rows[1]["step_id"], "run_id": rows[1]["run_id"], "status": "finished"}],
     )
     launcher.starts.clear()
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
+    rows = hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks()).launch_rows
 
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert len(launcher.starts) == 1
     assert "CUDA_VISIBLE_DEVICES=1" in launcher.commands[0]
     assert [row["gpus"] for row in rows] == ["0", "1", "1", ""]
@@ -109,17 +107,23 @@ def test_hparam_run_queue_dry_run_returns_after_one_preview(tmp_path: Path, monk
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     calls = []
-    monkeypatch.setattr(
-        hparam_runtime,
-        "launch_hparam_runs",
-        lambda plan_dir, *, dry_run: calls.append((Path(plan_dir), dry_run)),
-    )
+    real_launch = hparam_runtime.launch_hparam_runs
+
+    def launch(plan_dir, *, dry_run):
+        calls.append((Path(plan_dir), dry_run))
+        return real_launch(plan_dir, dry_run=dry_run)
+
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", launch)
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda _seconds: pytest.fail("dry-run must not sleep"))
 
     rows = hparam_runtime.run_hparam_queue(plan_dir)
 
-    assert rows == _read_table(tmp_path / "run_manifest.tsv")
-    assert [row["status"] for row in rows] == ["planned"]
+    canonical = _read_table(tmp_path / "run_manifest.tsv")
+    assert [row["status"] for row in rows] == [row["status"] for row in canonical] == ["planned"]
+    # The preview carries the prospective launch identity; the canonical row stays unbound.
+    assert rows[0]["target"] == "local"
+    assert rows[0]["command"]
+    assert canonical[0]["target"] == canonical[0]["command"] == ""
     assert calls == [(plan_dir.resolve(), True)]
 
 
@@ -343,9 +347,8 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_
         validated_snapshot=lambda *_args, **_kwargs: pytest.fail("full capacity must not probe"),
     )
 
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=hooks)
+    rows = hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=hooks).launch_rows
 
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert [row["status"] for row in rows] == ["running", "pending"]
     assert [row["gpus"] for row in rows] == ["", ""]
     launcher.assert_not_started()
@@ -376,9 +379,8 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_other_active_identity_is
     assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     launcher = FakeLauncher()
 
-    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks())
+    row = hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks()).launch_rows[0]
 
-    row = _read_table(second_plan / "launch_manifest.tsv")[0]
     assert row["status"] == "pending"
     assert row["gpus"] == ""
     launcher.assert_not_started()
@@ -398,8 +400,8 @@ def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path)
     assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     launcher = FakeLauncher()
 
-    hparam_runtime.launch_hparam_runs(second_plan, dry_run=True, hooks=launcher.hooks())
-    assert [row["gpus"] for row in _read_table(second_plan / "launch_manifest.tsv")] == ["0", "1"]
+    preview = hparam_runtime.launch_hparam_runs(second_plan, dry_run=True, hooks=launcher.hooks()).launch_rows
+    assert [row["gpus"] for row in preview] == ["0", "1"]
     second_keys = {
         (row["step_id"], row["run_id"]) for row in json.loads((second_plan / "plan.json").read_text())["runs"]
     }
@@ -410,9 +412,8 @@ def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path)
     )
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
     launcher.starts.clear()
-    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks())
+    rows = hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks()).launch_rows
 
-    rows = _read_table(second_plan / "launch_manifest.tsv")
     assert len(launcher.starts) == 1
     assert "CUDA_VISIBLE_DEVICES=1" in launcher.commands[0]
     assert [row["gpus"] for row in rows] == ["1", ""]
@@ -437,14 +438,12 @@ def test_hparam_launch_full_previous_plan_keeps_replacement_pending(tmp_path: Pa
     assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
     launcher = FakeLauncher()
 
-    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
-    first_rows = _read_table(first_plan / "launch_manifest.tsv")
+    first_rows = hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks()).launch_rows
     assert [row["gpus"] for row in first_rows] == ["0", "1"]
     launcher.starts.clear()
 
-    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks())
+    row = hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks()).launch_rows[0]
 
-    row = _read_table(second_plan / "launch_manifest.tsv")[0]
     assert row["status"] == "pending"
     assert row["gpus"] == ""
     launcher.assert_not_started()
@@ -469,9 +468,8 @@ def test_hparam_launch_keeps_cpu_only_concurrency_plan_local(tmp_path: Path):
 
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
     launcher.starts.clear()
-    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks())
+    rows = hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks()).launch_rows
 
-    rows = _read_table(second_plan / "launch_manifest.tsv")
     assert len(launcher.starts) == 1
     assert [row["status"] for row in rows] == ["launched", "pending"]
 
@@ -499,9 +497,8 @@ def test_hparam_launch_explicit_gpu_oversubscription_warns_and_balances_groups(t
     assert "GPU oversubscription is explicitly enabled" in result.stdout
     launcher = FakeLauncher()
 
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
+    rows = hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks()).launch_rows
 
-    rows = _read_table(plan_dir / "launch_manifest.tsv")
     assert len(launcher.starts) == 4
     assert [row["gpus"] for row in rows] == ["0", "1", "0", "1"]
     assert {row["status"] for row in rows} == {"launched"}
@@ -533,9 +530,8 @@ def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_g
 
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
     launcher.starts.clear()
-    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks())
+    rows = hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks()).launch_rows
 
-    rows = _read_table(second_plan / "launch_manifest.tsv")
     assert len(launcher.starts) == 3
     assert "CUDA_VISIBLE_DEVICES=2" in launcher.commands[0]
     assert [row["gpus"] for row in rows] == ["2", "0", "1", ""]
@@ -565,9 +561,8 @@ def test_hparam_launch_shares_active_gpu_load_across_local_workdirs(tmp_path: Pa
 
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
     launcher.starts.clear()
-    hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks())
+    rows = hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks()).launch_rows
 
-    rows = _read_table(second_plan / "launch_manifest.tsv")
     assert len(launcher.starts) == 1
     assert [row["gpus"] for row in rows] == ["1", ""]
     assert [row["status"] for row in rows] == ["launched", "pending"]

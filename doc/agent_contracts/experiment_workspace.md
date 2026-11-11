@@ -373,7 +373,7 @@ fact should not create an entry.
 | `doctor`, `context` | Consultation/diagnostics and diagnostic bundles, not execution authority; [diagnostic contract](task_recipe.md#consultation-and-diagnostics). |
 | `runtime-sync` | Inspect `origin/main` by default; with `--execute`, fast-forward one clean existing checkout in place under the short runtime lock. It does not clone, reset, or launch work. |
 | `plan` | Freeze and register recipe, config, commands, hashes and planned runs; [publication](#publication-and-registration). |
-| `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](hparam_workflow.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. For a direct plan, `hparam-run-queue --execute` starts one detached [queue runner](hparam_workflow.md#direct-queue-runner) and returns; `--foreground` runs the queue in the calling process. For a Slurm plan, `--execute` makes one [submission pass](run_manifest.md#submission-and-adoption) and returns. |
+| `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](hparam_workflow.md#launch-and-queue). CLI names preview/execute and prints recorded state counts; a dry run also prints each run's prospective GPU group and launch command and writes no preview file. For a direct plan, `hparam-run-queue --execute` starts one detached [queue runner](hparam_workflow.md#direct-queue-runner) and returns; `--foreground` runs the queue in the calling process. For a Slurm plan, `--execute` makes one [submission pass](run_manifest.md#submission-and-adoption) and returns. |
 | `infer-launch` | Managed ordinary Slurm inference launch; [ordinary inference](task_recipe.md#managed-ordinary-inference). |
 | `preset-launch` | Execution-host local detached preset launch; defaults to dry-run; [managed preset preparation](task_recipe.md#managed-preset-preparation). |
 | `experiment-monitor` | Observe every run of the workspace once, commit canonical status and transition events, write `reports/monitor.md` and report direct queue-runner liveness; never launches pending work or starts a runner. |
@@ -400,7 +400,7 @@ step and frozen plan control bundle, and canonical `run_manifest.tsv`, then
 prints a deterministic snapshot computed from those records on demand; it
 writes no report or manifest. It may display already-recorded scheduler,
 process, health, checkpoint and runtime-manifest fields but never refreshes
-them. `launch_manifest.tsv`, events, logs, runtime manifests,
+them. Events, logs, runtime manifests,
 and W&B state are not alternate lifecycle inputs.
 Modern hparam selection reports and shared rankings are read only as hash-bound
 consistency evidence for canonical selection

@@ -231,7 +231,13 @@ The optional `execution` block configures the managed launcher.
 Preview with the `hparam-run-queue` dry run before execute and inspect frozen
 identity, scheduler/resources, GPU assignment, W&B project/group, log and lifecycle
 identity paths, and test policy. Dry-run is the default; `--execute` is the
-launch action. It does not grant scientific or test-access decisions.
+launch action. The dry run prints each run's lifecycle status, prospective GPU
+group and launch command to stdout; a direct command embeds the multi-line
+launcher program, so the preview names the run script it starts instead. It
+assigns a group to every launchable run, while `--execute` starts only as many
+as capacity allows. No preview file is written: `run_manifest.tsv` stays the
+only run record, and `launch_hparam_runs` returns the preview as the
+`LaunchResult.launch_rows` of a dry run. It does not grant scientific or test-access decisions.
 Python callers may pass `managed_scheduler.SchedulerHooks` to
 `hparam_runtime.launch_hparam_runs` to replace only the execution-snapshot
 check, launch-command, and process-start effects; the CLI has no such option,
@@ -270,7 +276,7 @@ and log path, and never starts a runner; `experiment-status` advises
 `run-stop --run-id <id>` with a non-empty reason can cancel a canonical `planned` or
 `pending` run before any execution identity is bound. It rereads the canonical
 row under the same lock as launch, records `stopped`, the reason, and stop time,
-then updates the plan's `launch_manifest.tsv` projection and records the `run_stopped` event. This applies to
+then records the `run_stopped` event. This applies to
 direct plans without process or scheduler probes. A Slurm plan first looks
 the run's job name up in `squeue`, so a job submitted outside the canonical row
 is still cancelled; see [stopping and lost runs](run_manifest.md#stopping-and-lost-runs).

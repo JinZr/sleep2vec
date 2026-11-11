@@ -278,7 +278,6 @@ def test_hparam_stop_records_intent_before_scancel_and_monitor_commits_stopped(t
     assert queue["cancelled"] == ["3880"]
     assert canonical["status"] == "stopping"
     assert canonical.get("stopped_at", "") == ""
-    assert _read_table(plan_dir / "launch_manifest.tsv")[0] == canonical
     with pytest.raises(ValueError, match="pending stop request"):
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="repeat request")
     hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="validation diverged")

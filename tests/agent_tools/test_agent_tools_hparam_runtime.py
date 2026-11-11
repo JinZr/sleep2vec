@@ -28,7 +28,6 @@ from agent_tools import (
     plan_hparam,
     python_programs,
     run_artifacts,
-    run_evidence,
 )
 from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256
 from agent_tools.models import REPO_ROOT
@@ -308,7 +307,6 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
         rows,
     )
     (root / "run_manifest.tsv.lock").touch()
-    manifests.write_rows(root / "launch_manifest.tsv", rows)
     return rows
 
 
@@ -325,7 +323,6 @@ def test_hparam_launch_rejects_plan_without_workspace_binding_before_start(tmp_p
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
 def test_hparam_plan_canonicalizes_relative_workspace_root_consistently(tmp_path: Path):
@@ -390,47 +387,18 @@ def test_hparam_plan_rejects_environment_semantic_aliases(tmp_path: Path, env_na
     assert f"execution.env.{env_name}" in result.stdout
 
 
-def test_hparam_runtime_rewrites_legacy_projection_rows_from_canonical(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "version": "v0", "status": "launched"}])
-    legacy_rows = [{**rows[0], "trial_id": "trial_000"}]
-    manifests.write_rows(tmp_path / "launch_manifest.tsv", legacy_rows)
-    launcher = FakeLauncher()
-    killed = []
-    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=True, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-    assert killed == []
-    assert "trial_id" not in (tmp_path / "launch_manifest.tsv").read_text()
-
-
-def test_hparam_runtime_rewrites_header_only_removed_projection_table(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "version": "v0", "status": "launched"}])
-    (tmp_path / "launch_manifest.tsv").write_text("trial_id\n")
-    launcher = FakeLauncher()
-    killed = []
-    monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
-
-    hparam_runtime.launch_hparam_runs(tmp_path, dry_run=True, hooks=launcher.hooks())
-
-    launcher.assert_not_started()
-    assert killed == []
-    assert "trial_id" not in (tmp_path / "launch_manifest.tsv").read_text()
-
-
 def test_hparam_runtime_rejects_legacy_status_filename(tmp_path: Path):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "version": "v0", "status": "planned"}])
     legacy_status = tmp_path / "trial_status.tsv"
     legacy_status.write_text("trial_id\tstatus\ntrial_000\tfailed\n")
-    current_launch = (tmp_path / "launch_manifest.tsv").read_bytes()
+    current_manifest = (tmp_path / "run_manifest.tsv").read_bytes()
     launcher = FakeLauncher()
 
     with pytest.raises(ValueError, match="Legacy hparam status"):
         hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert (tmp_path / "launch_manifest.tsv").read_bytes() == current_launch
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == current_manifest
 
 
 @pytest.mark.parametrize("field", ["target", "host", "path_context", "path_validation"])

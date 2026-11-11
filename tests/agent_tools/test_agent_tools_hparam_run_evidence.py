@@ -150,7 +150,6 @@ def test_experiment_monitor_marks_clean_hparam_exit_completed_once(tmp_path: Pat
     workspace_rows = _read_table(tmp_path / "run_manifest.tsv")
     workspace_rows[0]["status"] = "running"
     manifests.write_rows(tmp_path / "run_manifest.tsv", workspace_rows)
-    (tmp_path / "launch_manifest.tsv").unlink()
 
     experiments.monitor_experiment(tmp_path)
     experiments.monitor_experiment(tmp_path)

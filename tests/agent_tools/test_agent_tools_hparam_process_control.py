@@ -49,8 +49,7 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Pat
     plan = run_artifacts.read_hparam_plan(plan_dir)
     run = plan["runs"][0]
     if dry_run:
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True)
-        assert _read_table(plan_dir / "launch_manifest.tsv")[0]["target"] == "local"
+        assert hparam_runtime.launch_hparam_runs(plan_dir, dry_run=True).launch_rows[0]["target"] == "local"
     merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": status}])
     frozen_paths = [plan_dir / "plan.json", plan_dir / "recipe.resolved.yaml", Path(run["script"]), Path(run["config"])]
     frozen = {path: path.read_bytes() for path in frozen_paths}
@@ -71,8 +70,8 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Pat
     assert hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason) == tmp_path / "run_manifest.tsv"
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert canonical == _read_table(plan_dir / "launch_manifest.tsv")[0]
     assert not (plan_dir / "run_status.tsv").exists()
+    assert not (plan_dir / "launch_manifest.tsv").exists()
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == reason
     assert canonical["stopped_at"] == now
@@ -132,10 +131,7 @@ def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, mon
 
 
 @pytest.mark.parametrize("backend", ["direct", "slurm"])
-@pytest.mark.parametrize("publication", ["write_rows", "append_event"])
-def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
-    tmp_path: Path, monkeypatch, backend, publication
-):
+def test_hparam_metadata_stop_event_failure_keeps_terminal_commit(tmp_path: Path, monkeypatch, backend):
     if backend == "slurm":
         plan_dir, plan = _write_slurm_plan(tmp_path)
         # A launchable Slurm row is looked up by job name first; no job means a metadata-only stop.
@@ -152,12 +148,12 @@ def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
     stopped_at = "2026-08-30T04:05:06Z"
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: stopped_at)
 
-    def fail_publication(*_args, **_kwargs):
-        raise RuntimeError(f"{publication} failed")
+    def fail_event(*_args, **_kwargs):
+        raise RuntimeError("append_event failed")
 
-    monkeypatch.setattr(hparam_runtime, publication, fail_publication)
+    monkeypatch.setattr(hparam_runtime, "append_event", fail_event)
 
-    with pytest.raises(RuntimeError, match=f"{publication} failed"):
+    with pytest.raises(RuntimeError, match="append_event failed"):
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason)
 
     canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
@@ -165,7 +161,7 @@ def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
     assert canonical["stop_reason"] == reason
     assert canonical["stopped_at"] == stopped_at
     before_retry = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    for name in ("merge_run_manifest", "write_rows", "append_event"):
+    for name in ("merge_run_manifest", "append_event"):
         monkeypatch.setattr(hparam_runtime, name, lambda *_a, **_k: pytest.fail("terminal retry must not write"))
 
     with pytest.raises(ValueError, match="already terminal"):
@@ -322,83 +318,6 @@ def test_hparam_unlaunched_stop_survives_stale_monitor_commit(tmp_path: Path, mo
     assert [event["event_type"] for event in events].count("run_stopped") == 1
 
 
-def test_hparam_concurrent_stops_keep_plan_projections_canonical(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["search"]["max_runs"] = 2
-    payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    plan_dir = tmp_path / "plan"
-    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    assert result.returncode == 0, result.stderr
-    runs = run_artifacts.read_hparam_plan(plan_dir)["runs"]
-    projection_ready = threading.Event()
-    release_projection = threading.Event()
-    second_attempted = threading.Event()
-    second_done = threading.Event()
-    projection_lock_held = []
-    failures = []
-    real_write = hparam_runtime.write_rows
-    real_lock = hparam_runtime.experiment_workspace.managed_run_lock
-
-    def write_projection(path, rows):
-        if threading.current_thread().name == "first-stop" and path == plan_dir / "launch_manifest.tsv":
-            with (tmp_path / "run_manifest.tsv.lock").open("a+") as lock_file:
-                try:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    projection_lock_held.append(True)
-                else:
-                    projection_lock_held.append(False)
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            projection_ready.set()
-            assert release_projection.wait(timeout=5)
-        return real_write(path, rows)
-
-    @contextmanager
-    def track_lock(root):
-        if threading.current_thread().name == "second-stop":
-            second_attempted.set()
-        with real_lock(root):
-            yield
-
-    def stop(index):
-        try:
-            hparam_runtime.stop_hparam_run(plan_dir, runs[index]["run_id"], reason=f"cancel candidate {index}")
-        except BaseException as exc:
-            failures.append(exc)
-        finally:
-            if index == 1:
-                second_done.set()
-
-    monkeypatch.setattr(hparam_runtime, "write_rows", write_projection)
-    monkeypatch.setattr(hparam_runtime.experiment_workspace, "managed_run_lock", track_lock)
-    first = threading.Thread(target=stop, args=(0,), name="first-stop")
-    second = threading.Thread(target=stop, args=(1,), name="second-stop")
-    first.start()
-    try:
-        assert projection_ready.wait(timeout=5), failures
-        second.start()
-        assert second_attempted.wait(timeout=5)
-        if not projection_lock_held[0]:
-            assert second_done.wait(timeout=5), failures
-    finally:
-        release_projection.set()
-        first.join(timeout=5)
-        if second.ident is not None:
-            second.join(timeout=5)
-    assert not first.is_alive() and not second.is_alive()
-    assert failures == []
-    canonical = _read_table(tmp_path / "run_manifest.tsv")
-    assert [row["status"] for row in canonical] == ["stopped", "stopped"]
-    assert _read_table(plan_dir / "launch_manifest.tsv") == canonical
-    assert projection_lock_held == [True]
-    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert sorted(event["run_id"] for event in events if event["event_type"] == "run_stopped") == [
-        run["run_id"] for run in runs
-    ]
-
-
 def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -414,7 +333,6 @@ def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
     assert manifest_path == tmp_path / "run_manifest.tsv"
-    assert _read_table(plan_dir / "launch_manifest.tsv") == [canonical]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "cancel during monitor commit"
 
@@ -472,7 +390,7 @@ def test_hparam_plan_commit_rereads_workspace_state_only_under_run_lock(tmp_path
 
 def test_stop_signal_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running", **_process_identity()}])
-    before_launch = (tmp_path / "launch_manifest.tsv").read_bytes()
+    before_manifest = (tmp_path / "run_manifest.tsv").read_bytes()
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda _path, _row: _process_identity())
     monkeypatch.setattr(
         run_evidence,
@@ -483,7 +401,7 @@ def test_stop_signal_failure_does_not_commit_stopped_state(tmp_path: Path, monke
     with pytest.raises(RuntimeError, match="Failed to stop process group"):
         hparam_runtime.stop_hparam_run(tmp_path, rows[0]["run_id"], reason="validation diverged")
 
-    assert (tmp_path / "launch_manifest.tsv").read_bytes() == before_launch
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == before_manifest
     assert not (tmp_path / "events.jsonl").exists()
 
 
@@ -1126,7 +1044,6 @@ def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Pa
     monkeypatch.setattr(run_evidence, "read_pid", lambda *_args: calls.append("read_pid") or 123)
     monkeypatch.setattr(run_evidence.os, "kill", lambda *_args: calls.append("kill"))
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda *_args: calls.append("merge"))
-    monkeypatch.setattr(hparam_runtime, "write_rows", lambda *_args: calls.append("write"))
     monkeypatch.setattr(hparam_runtime, "append_event", lambda *_args: calls.append("event"))
 
     with pytest.raises(ValueError, match="already terminal"):
@@ -1136,7 +1053,7 @@ def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Pa
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-def test_hparam_stop_commits_one_final_row_to_all_manifests(tmp_path: Path, monkeypatch):
+def test_hparam_stop_commits_one_final_canonical_row(tmp_path: Path, monkeypatch):
     rows = _write_runtime_rows(
         tmp_path,
         [{"run_id": "run-000", "status": "running", **_process_identity()}],
@@ -1148,7 +1065,6 @@ def test_hparam_stop_commits_one_final_row_to_all_manifests(tmp_path: Path, monk
     hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert canonical == _read_table(tmp_path / "launch_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "manual stop"
     assert stopped == [_process_identity()]
@@ -1238,45 +1154,12 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "manual stop"
-    assert _read_table(tmp_path / "launch_manifest.tsv")[0] == canonical
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stopped") == 1
     assert not any(
         event.get("event_type") == "run_status_changed" and event.get("to") in {"finished", "completed"}
         for event in events
     )
-
-
-@pytest.mark.parametrize(
-    ("field", "changed"),
-    [
-        ("target", "other-target"),
-        ("workdir", "/other/workdir"),
-        ("gpus", "7"),
-        ("pid_path", "/tmp/other.pid"),
-        ("log_path", "/tmp/other.log"),
-        ("command", "other-command"),
-    ],
-)
-def test_hparam_stop_ignores_execution_identity_drift_in_projection(
-    tmp_path: Path, monkeypatch, field: str, changed: str
-):
-    rows = _write_runtime_rows(
-        tmp_path,
-        [{"run_id": "run-000", "status": "running", **_process_identity()}],
-    )
-    _write_process_identity(rows[0]["pid_path"])
-    merge_run_manifest(tmp_path, [rows[0]])
-    rows[0][field] = changed
-    manifests.write_rows(tmp_path / "launch_manifest.tsv", rows)
-    calls = []
-    monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args: calls.append("stop"))
-
-    hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
-
-    assert calls == ["stop"]
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert _read_table(tmp_path / "launch_manifest.tsv")[0][field] == canonical[field]
 
 
 def _publish_queue_plan(tmp_path: Path, backend: str) -> Path:

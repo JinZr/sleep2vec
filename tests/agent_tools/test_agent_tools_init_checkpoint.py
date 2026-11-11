@@ -72,7 +72,6 @@ def test_hparam_init_checkpoint_is_hashed_and_not_used_for_resume(tmp_path, monk
         with pytest.raises(ValueError, match="input snapshot hash changed"):
             hparam_runtime.launch_hparam_runs(out, dry_run=dry_run, hooks=launcher.hooks())
     launcher.assert_not_started()
-    assert not (out / "launch_manifest.tsv").exists()
 
 
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2expert", "sex_age_baseline"])
