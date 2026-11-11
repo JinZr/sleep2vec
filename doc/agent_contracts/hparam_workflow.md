@@ -171,12 +171,11 @@ Python executable/version reported by that target. Variant, runtime module,
 actual config loader, architecture, and channels come from each final generated
 config and are grouped with their run IDs. The card is a projection for audit;
 it names the frozen scheduler and, for Slurm, the single-node task/GPU/rank
-topology plus per-task resources and controller routing. The topology is
+topology plus per-task resources. The topology is
 derived from the same normalized scheduler request used by the launcher. The
 frozen generated config bytes and hashes remain semantic authority. This
 deterministic preflight does not inspect free bytes, estimate checkpoint storage,
-or turn unavailable Slurm accounting into a plan blocker; accounting capability
-remains a time-stamped `doctor` diagnostic.
+or query the Slurm cluster.
 
 Rendering this audit projection does not rescan data indexes or label sidecars;
 consultation and final-evaluation validation remain separate gates.
@@ -195,13 +194,10 @@ The optional `execution` block configures the managed launcher.
 - `execution.scheduler.type: slurm` runs Slurm client commands on the host where
   agent tools run and submits every frozen run as its own single-node allocation. It
   requires `partition`, `cpus_per_task`, `memory`, and `walltime`; optional scheduler
-  fields are `nice`, `nodelist`, and boolean `direct_controller`. The latter
-  defaults to false: follow-up commands route to the bound cluster with
-  `--clusters`. Set it to true only when the submission endpoint already talks
-  directly to that controller and federation routing is unavailable. This
-  topology is never inferred. `gpus_per_run` is a positive YAML integer,
+  fields are `nice` and `nodelist`, frozen as plain `sbatch` directives.
+  `gpus_per_run` is a positive YAML integer,
   defaults to one, and becomes the allocation GPU count plus logical
-  `runtime.devices=[0, ..., N-1]`. The allocation wrapper starts one foreground
+  `runtime.devices=[0, ..., N-1]`. The frozen `job.sbatch` starts one foreground
   `srun` step containing exactly N tasks, one per GPU. `cpus_per_task` applies
   to each task, so the total CPU request is `N * cpus_per_task`; `memory` is
   the allocation's whole-node memory limit. `sex_age_baseline` uses the same
@@ -209,15 +205,14 @@ The optional `execution` block configures the managed launcher.
   Registration preflight reports both each job's resources and the aggregate
   request across all actually planned allocations if active together. This
   deterministic plan report uses the frozen run count and does not query live
-  node capacity; live fixed-node feasibility remains a `doctor` diagnostic.
-  Neither report changes scheduler resources, and
+  node capacity. It does not change scheduler resources, and
   Slurm launch still submits every frozen leaf job for scheduler queuing.
   Slurm recipes reject `gpu_pool`, `max_concurrent`, `conda_env`, locally
   authored `runtime.devices`, unknown scheduler fields, and arbitrary sbatch
   arguments. They also reject `SLURM_*`, `RANK`, `LOCAL_RANK`, `WORLD_SIZE`,
   `MASTER_*`, and `CUDA_VISIBLE_DEVICES` entries in `execution.env` because
   allocation identity, distributed rank identity, and GPU isolation belong to
-  the scheduler. The allocation wrapper removes ambient generic distributed
+  the scheduler. The job script removes ambient generic distributed
   rank and rendezvous variables before starting `srun`, so Slurm task identity
   remains canonical.
 - Only the canonical manager runtime—`REPO_ROOT` without a conda wrapper—may
@@ -226,9 +221,11 @@ The optional `execution` block configures the managed launcher.
   targets must author both values explicitly.
 - With direct scheduling, `hparam-launch` starts one capacity-limited wave and
   `hparam-run-queue --execute` starts one detached queue runner that keeps
-  filling that capacity (see [queue runner](#direct-queue-runner)). With Slurm, the
-  launch owner submits every launchable leaf job without applying host-global
-  GPU capacity to scheduler allocations.
+  filling that capacity (see [queue runner](#direct-queue-runner)). With Slurm,
+  `hparam-launch --execute` and `hparam-run-queue --execute` both make one
+  [submission pass](run_manifest.md#submission-and-adoption) over every
+  launchable leaf job and return without polling; host-global GPU capacity does
+  not apply to scheduler allocations.
 - Generated leaf scripts use only `execution.workdir` on `PYTHONPATH`;
   `execution.env.PYTHONPATH` is rejected rather than merged.
 
@@ -266,7 +263,7 @@ display only, and releases the lock when it exits. That lock is taken outside,
 and is distinct from, the workspace run lock. Queue errors end the runner and
 land in the log; rerun `--execute` after inspecting it. `--foreground` runs the
 same loop in the calling process under the same lock. A Slurm plan's
-`--execute` still runs the queue in the calling process and takes no runner
+`--execute` submits every launchable run once and returns; it takes no runner
 lock. `hparam-monitor` and `experiment-monitor` report runner liveness from a
 non-blocking shared-lock probe of `queue_runner.lock`, with the recorded PID
 and log path, and never start a runner; `experiment-status` advises
@@ -276,9 +273,11 @@ and log path, and never start a runner; `experiment-status` advises
 `pending` run before any execution identity is bound. It rereads the canonical
 row under the same lock as launch, records `stopped`, the reason, and stop time,
 then updates the existing projections and `run_stopped` event. This applies to
-direct and Slurm plans without process, sidecar, or scheduler probes.
-Dry-run preview identity does not count; Slurm's plan-owned log path and
-preflight snapshot also do not prove submission. Any partial or complete launch
+direct plans without process or scheduler probes. A Slurm plan first looks
+the run's job name up in `squeue`, so a job submitted outside the canonical row
+is still cancelled; see [stopping and lost runs](run_manifest.md#stopping-and-lost-runs).
+Dry-run preview identity does not count; Slurm's plan-owned log path also does
+not prove submission. Any partial or complete launch
 identity, launch time, or existing stop request keeps the authenticated runtime
 stop path mandatory. Already terminal runs still reject another stop request.
 Post-commit publication failures propagate without rolling back the canonical
@@ -317,22 +316,20 @@ execute-wave probe above owns live frozen-argv compatibility. Before a direct
 managed child is spawned, one short lock covers the embedded launch verification
 of Python/version, repository root, hostname, module origin, tracked and
 untracked or ignored importable code, and frozen script/config hashes, followed
-by HEAD capture and `Popen`. A small Slurm bootstrap preserves terminal evidence
-when the checkout worker cannot import or start. The allocation worker takes the
-short lock for preflight, HEAD snapshot, allocation-sidecar publication, and
-`srun` `Popen`. The locks are released after spawn;
-these are point-in-time launch observations, not a promise that checkout code
-bytes remain unchanged throughout the job.
+by HEAD capture and `Popen`. The lock is released after spawn;
+this is a point-in-time launch observation, not a promise that checkout code
+bytes remain unchanged throughout the job. A Slurm job takes no lock: it writes
+`git rev-parse HEAD` to `run_dir/runtime_commit` and checks its frozen config
+and launch-script hashes before `srun`.
 Target and leaf `PYTHONPATH` contain only `execution.workdir`; another manager
 checkout cannot satisfy missing imports.
 
-For Slurm execute, the launcher freezes the snapshot's raw SHA-256 in every
-canonical run before submission and passes it to the batch job. Allocation
-verification is detailed in [terminal evidence](run_manifest.md#terminal-evidence).
-The shared lifecycle owner also defines
-[submission/routing](run_manifest.md#submission-and-routing),
-[sidecar reads and monitor reuse](run_manifest.md#sidecar-reads-and-monitor-round-reuse),
-and [stopping/uncertain states](run_manifest.md#stopping-and-uncertain-states).
+For Slurm execute, the live snapshot probe runs once before the submission
+pass. The shared lifecycle owner defines the
+[frozen job script](run_manifest.md#frozen-job-script),
+[submission and adoption](run_manifest.md#submission-and-adoption),
+the [monitor state table](run_manifest.md#monitor-state-table),
+and [stopping and lost runs](run_manifest.md#stopping-and-lost-runs).
 
 Supported historical boundary: a missing snapshot can be established only
 while every run is `planned` or `pending` with no committed execution target.

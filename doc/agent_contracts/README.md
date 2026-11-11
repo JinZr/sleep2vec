@@ -42,9 +42,8 @@ Other exceptions are bugs and keep their traceback.
 | How do I launch or queue a frozen plan? | [Hparam launch and queue](hparam_workflow.md#launch-and-queue), [ordinary inference](task_recipe.md#managed-ordinary-inference), or [managed preset preparation](task_recipe.md#managed-preset-preparation) |
 | When is the execution snapshot frozen and rechecked? | [Execution snapshot and launch revalidation](hparam_workflow.md#execution-snapshot-and-launch-revalidation) |
 | Which `.tsv` owns lifecycle state, and what are the others? | [Table index](run_manifest.md#table-index) |
-| What establishes Slurm job/cluster identity? | [Submission and routing](run_manifest.md#submission-and-routing) |
-| Did SSH loss mean no submission, or may I stop/retry? | [Stopping and uncertain states](run_manifest.md#stopping-and-uncertain-states) |
-| Can a purged job finish when accounting is disabled? | [Terminal evidence](run_manifest.md#terminal-evidence) |
+| What establishes a Slurm job binding? | [Submission and adoption](run_manifest.md#submission-and-adoption) |
+| What does a Slurm status mean, and how is `lost` resolved? | [Monitor state table](run_manifest.md#monitor-state-table) and [stopping and lost runs](run_manifest.md#stopping-and-lost-runs) |
 | Read recorded status or refresh observations? | [Read-only status](experiment_workspace.md#read-only-status-and-advisory-actions) versus [entrypoint effects](experiment_workspace.md#lifecycle-entrypoints) |
 | Why is selection/finalization blocked? | [Selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers), then [finalization](experiment_workspace.md#finalization) |
 | How does a further tuning round proceed? | [Search space](hparam_workflow.md#search-space) |

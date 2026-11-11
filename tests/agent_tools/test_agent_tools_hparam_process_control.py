@@ -61,7 +61,7 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Pat
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: pytest.fail("no identity read"))
     monkeypatch.setattr(run_evidence, "run_row_command", lambda *_a, **_k: pytest.fail("no process command"))
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
-    monkeypatch.setattr(slurm, "active_jobs", lambda *_a, **_k: pytest.fail("no scheduler lookup"))
+    monkeypatch.setattr(slurm, "user_jobs", lambda *_a, **_k: pytest.fail("no scheduler lookup"))
     monkeypatch.setattr(slurm, "cancel", lambda *_a, **_k: pytest.fail("no scheduler cancel"))
     launcher = FakeLauncher()
     # Stop and the queue take no hooks, so the public owner guards them against starting a process.
@@ -1039,30 +1039,28 @@ def test_status_fails_closed_without_monitor_owned_exit_code(tmp_path: Path, mon
     assert observed["status"] == "failed"
 
 
-@pytest.mark.parametrize("prefix", ["", "0: "])
 @pytest.mark.parametrize(("exit_code", "expected"), [(0, False), (7, True)])
-def test_log_failure_projection_recognizes_monitor_exit_code(
-    tmp_path: Path, prefix: str, exit_code: int, expected: bool
-):
+def test_log_failure_projection_recognizes_monitor_exit_code(tmp_path: Path, exit_code: int, expected: bool):
     log_path = tmp_path / "managed.log"
-    log_path.write_text(f"{prefix}{MONITOR_EXIT_CODE_PREFIX}{exit_code}\n")
-    row = {"scheduler_type": "slurm"} if prefix else None
+    log_path.write_text(f"{MONITOR_EXIT_CODE_PREFIX}{exit_code}\n")
 
-    assert run_evidence.log_has_failure(log_path, row, require_exit_code=True) is expected
+    assert run_evidence.log_has_failure(log_path, require_exit_code=True) is expected
 
 
-def test_log_failure_projection_rejects_nonzero_rank_exit_marker(tmp_path: Path):
+@pytest.mark.parametrize("prefix", ["0: ", "1: "])
+def test_log_failure_projection_rejects_rank_labelled_exit_marker(tmp_path: Path, prefix: str):
+    # Slurm runs report their exit through run_dir/exit_code, so no srun rank label is a terminal marker.
     log_path = tmp_path / "managed.log"
-    log_path.write_text(f"1: {MONITOR_EXIT_CODE_PREFIX}0\n")
+    log_path.write_text(f"{prefix}{MONITOR_EXIT_CODE_PREFIX}0\n")
 
-    assert run_evidence.log_has_failure(log_path, {"scheduler_type": "slurm"}, require_exit_code=True) is True
+    assert run_evidence.log_has_failure(log_path, require_exit_code=True) is True
 
 
 def test_log_failure_projection_keeps_labeled_traceback_detection(tmp_path: Path):
     log_path = tmp_path / "managed.log"
     log_path.write_text("2: Traceback: CUDA out of memory\n")
 
-    assert run_evidence.log_has_failure(log_path, {"scheduler_type": "slurm"}) is True
+    assert run_evidence.log_has_failure(log_path) is True
 
 
 def test_status_marks_lifecycle_owned_running_run_with_missing_pid_as_missing_pid(tmp_path: Path):

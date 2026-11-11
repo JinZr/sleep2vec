@@ -16,9 +16,9 @@ import subprocess
 import sys
 from typing import Any
 
-from .. import execution_snapshot, experiment_workspace, plan_contract, plan_hparam, slurm
+from .. import execution_snapshot, experiment_workspace, plan_contract, plan_hparam
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
-from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status
+from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision
 from ..models import BoundFinalEvalConfigSnapshot, ConfigSummaryInput, JsonValue
 from ..plan_rendering import FINETUNE_RUNTIME_FIELDS, INFER_RUNTIME_FIELDS, variant_module
 from .base import TaskAdapter
@@ -114,121 +114,6 @@ class HparamTuneAdapter(TaskAdapter):
             config_summary,
             unlock_final_test=unlock_final_test,
         )
-
-    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
-        execution = recipe.get("execution")
-        if not isinstance(execution, dict):
-            execution = {}
-        scheduler = execution.get("scheduler")
-        if not isinstance(scheduler, dict):
-            scheduler = {}
-        if scheduler.get("type") != "slurm" or report.blocking_issues():
-            return report
-        try:
-            capabilities = slurm.cluster_scheduling_capabilities(execution, str(scheduler["partition"]))
-        except (slurm.SlurmCommandError, subprocess.TimeoutExpired, ValueError) as exc:
-            capability_issue = DecisionIssue(
-                DecisionStatus.WARN,
-                "execution.scheduler.capabilities",
-                f"Read-only Slurm capability inspection was unavailable: {exc}",
-                None,
-                {"error": str(exc)},
-            )
-        else:
-            priority_type = capabilities["priority_type"] or "unknown priority policy"
-            scheduler_type = capabilities["scheduler_type"] or "unknown scheduler"
-            accounting_type = capabilities["accounting_storage_type"] or "unknown accounting storage"
-            message = (
-                f"Read-only Slurm inspection reports {priority_type}, {scheduler_type}, {accounting_type}, and "
-                f"{capabilities['reservation_count']} visible reservation(s). "
-            )
-            if priority_type == "priority/basic":
-                message += (
-                    "Submit time and fitting credible short resource requests into backfill are the practical "
-                    "user-side levers; no setting can guarantee first priority."
-                )
-            elif priority_type == "priority/multifactor":
-                message += (
-                    "Priority may also depend on cluster-controlled age, fair-share, QOS, and association policy; no "
-                    "setting can guarantee first priority."
-                )
-            else:
-                message += "Cluster policy determines ordering; no user-side setting can guarantee first priority."
-            capability_issue = DecisionIssue(
-                DecisionStatus.WARN,
-                "execution.scheduler.capabilities",
-                message,
-                None,
-                dict(capabilities),
-            )
-        planned_runs = len(plan_hparam.hparam_combos(recipe))
-        resources = slurm.normalize_resources(scheduler, execution.get("gpus_per_run", 1))
-        try:
-            capacity: slurm.NodeResourceCapacity = slurm.fixed_node_resource_capacity(
-                execution, resources, planned_runs
-            )
-        except (slurm.SlurmCommandError, subprocess.TimeoutExpired, ValueError) as exc:
-            capacity = {"status": "unknown", "reason": str(exc), "planned_runs": planned_runs}
-            capacity_issue = DecisionIssue(
-                DecisionStatus.WARN,
-                "execution.scheduler.capacity",
-                f"Slurm fixed-node resource capacity unknown: read-only inspection was unavailable: {exc}",
-                None,
-                dict(capacity),
-            )
-        else:
-            if capacity["status"] == "unknown":
-                capacity_issue = DecisionIssue(
-                    DecisionStatus.WARN,
-                    "execution.scheduler.capacity",
-                    f"Slurm fixed-node resource capacity unknown: {capacity['reason']}.",
-                    None,
-                    dict(capacity),
-                )
-            else:
-                per_run = capacity["per_run"]
-                limits = capacity["limits"]
-                limiting = ", ".join(capacity["limiting_resources"])
-                resource_word = "resource" if len(capacity["limiting_resources"]) == 1 else "resources"
-                details = (
-                    f"Per run: {per_run['gpus']} GPUs, {per_run['cpus']} CPUs, {per_run['memory']}. "
-                    "Empty-node theoretical limits if co-resident: "
-                    f"GPU={limits['gpu']}, CPU={limits['cpu']}, memory={limits['memory']}, "
-                    f"overall={capacity['overall_empty_node_limit']}; limiting {resource_word}: {limiting}."
-                )
-                if capacity["overall_empty_node_limit"] == 0:
-                    capacity_issue = DecisionIssue(
-                        DecisionStatus.FAIL,
-                        "execution.scheduler.capacity",
-                        f"Fixed node {capacity['node']}: one job cannot fit. {details}",
-                        None,
-                        dict(capacity),
-                    )
-                elif planned_runs > capacity["overall_empty_node_limit"]:
-                    capacity_issue = DecisionIssue(
-                        DecisionStatus.WARN,
-                        "execution.scheduler.capacity",
-                        (
-                            f"Fixed node {capacity['node']} has an empty-node theoretical limit of "
-                            f"{capacity['overall_empty_node_limit']} run(s); {planned_runs} planned run(s), "
-                            f"if co-resident, require at least {capacity['minimum_waves']} waves. {details}"
-                        ),
-                        None,
-                        dict(capacity),
-                    )
-                else:
-                    capacity_issue = DecisionIssue(
-                        DecisionStatus.PASS,
-                        "execution.scheduler.capacity",
-                        (
-                            f"All {planned_runs} planned run(s) fit if co-resident on otherwise empty fixed node "
-                            f"{capacity['node']}. {details}"
-                        ),
-                        None,
-                        dict(capacity),
-                    )
-        issues = [*report.issues, capability_issue, capacity_issue]
-        return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
     def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
         execution = recipe.get("execution")
@@ -344,14 +229,7 @@ class HparamTuneAdapter(TaskAdapter):
                 [run_dir / "launch.sh", run_dir / "config.yaml", run_dir / "run.json", run_dir / "artifacts.json"]
             )
             if scheduler.get("type") == "slurm":
-                paths.extend(
-                    [
-                        run_dir / "job.sbatch",
-                        run_dir / "slurm_terminal.json",
-                        run_dir / "allocation_identity.json",
-                        run_dir / "slurm.log",
-                    ]
-                )
+                paths.extend([run_dir / "job.sbatch", run_dir / "slurm.log"])
         paths.append(out / "final_external_test.sh")
         return paths
 

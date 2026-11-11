@@ -14,12 +14,11 @@ from agent_tools.manifests import write_rows
 def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    _plan, canonical = _add_plan(root, step_id="train", status="unknown_scheduler", task="hparam_tune")
+    _plan, canonical = _add_plan(root, step_id="train", status="lost", task="hparam_tune")
     canonical.update(
         {
             "scheduler_raw_state": "MISSING",
             "scheduler_reason": "Scheduler identity is incomplete.",
-            "scheduler_observed_at": "2026-08-25T01:02:03Z",
             "checkpoint_count": "50",
             "run_manifest": str(root / "runtime" / "train" / "run_manifest.json"),
         }
@@ -42,10 +41,11 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
     }
     assert "schema_version" not in first
     assert "generated_at" not in first
-    assert first["summary"] == {"state": "blocked", "run_count": 1, "status_counts": {"unknown_scheduler": 1}}
+    assert first["summary"] == {"state": "blocked", "run_count": 1, "status_counts": {"lost": 1}}
     assert first["steps"][0]["plan_controller"] == "ordinary"
     assert first["runs"][0]["execution"] == {"target": None}
-    assert first["runs"][0]["scheduler"]["observed_at"] == "2026-08-25T01:02:03Z"
+    assert first["runs"][0]["scheduler"]["raw_state"] == "MISSING"
+    assert set(first["runs"][0]["scheduler"]) == {"type", "job_id", "node", "raw_state", "reason"}
     assert first["runs"][0]["process"]["pid"] is None
     assert first["runs"][0]["evidence"]["checkpoint_count"] == "50"
     assert first["decision"]["recommended_next"]["id"] == "experiment-monitor"
@@ -112,7 +112,7 @@ def test_experiment_status_rejects_process_identity_on_launchable_direct_runs(tm
         experiments.experiment_status(root)
 
 
-@pytest.mark.parametrize("status", ["unknown_scheduler", "missing_pid", "submitting"])
+@pytest.mark.parametrize("status", ["lost", "missing_pid"])
 def test_experiment_status_uncertain_states_block_planned_launch_and_recommend_only_monitor(tmp_path, status):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -144,7 +144,7 @@ def test_experiment_status_active_states_recommend_monitor(tmp_path, status):
 def test_experiment_status_preserves_active_blockers_with_uncertain_runs(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    _add_plan(root, step_id="uncertain", status="unknown_scheduler")
+    _add_plan(root, step_id="uncertain", status="lost")
     _add_plan(root, step_id="active", status="running")
 
     snapshot = experiments.experiment_status(root)
@@ -153,7 +153,7 @@ def test_experiment_status_preserves_active_blockers_with_uncertain_runs(tmp_pat
     assert snapshot["summary"]["state"] == "blocked"
     assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
     assert snapshot["decision"]["blocked_actions"] == ["finalize", "launch", "resubmit"]
-    assert blockers_by_step == {"active": ["active_runs"], "uncertain": ["unknown_scheduler"]}
+    assert blockers_by_step == {"active": ["active_runs"], "uncertain": ["lost"]}
 
 
 def test_experiment_status_empty_workspace_does_not_guess_a_command(tmp_path):
@@ -258,7 +258,7 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
 
 @pytest.mark.parametrize(
     ("status", "state", "code"),
-    [("running", "in_progress", "active_runs"), ("unknown_scheduler", "blocked", "unknown_scheduler")],
+    [("running", "in_progress", "active_runs"), ("lost", "blocked", "lost")],
 )
 def test_experiment_status_prioritizes_active_hparam_plan_over_ordinary_launch(tmp_path, status, state, code):
     root = tmp_path / "experiment"
@@ -277,13 +277,13 @@ def test_experiment_status_prioritizes_active_hparam_plan_over_ordinary_launch(t
 def test_experiment_status_attributes_blockers_by_full_managed_run_key(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    _add_plan(root, step_id="first", status="unknown_scheduler")
-    _add_plan(root, step_id="second", status="unknown_scheduler")
+    _add_plan(root, step_id="first", status="lost")
+    _add_plan(root, step_id="second", status="lost")
     _add_plan(root, step_id="terminal", status="failed")
 
     snapshot = experiments.experiment_status(root)
     blockers_by_step = {run["step_id"]: run["blockers"] for run in snapshot["runs"]}
 
-    assert blockers_by_step["first"] == ["unknown_scheduler"]
-    assert blockers_by_step["second"] == ["unknown_scheduler"]
+    assert blockers_by_step["first"] == ["lost"]
+    assert blockers_by_step["second"] == ["lost"]
     assert blockers_by_step["terminal"] == []

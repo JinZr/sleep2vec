@@ -65,7 +65,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Managed run key extraction | `experiment_workspace.managed_run_key` for optional identity; `validated_run_key` for rows already validated by the canonical reader or validator | caller-local identity tuples or repeated full-row validation |
 | Managed direct process identity and stopping | [`agent_tools/run_evidence.py`](../../agent_tools/run_evidence.py), consumed by the hparam and preset launch/stop entrypoints | PID-only checks or caller-local signals |
 | Managed log evidence | [`agent_tools/run_evidence.py`](../../agent_tools/run_evidence.py) owns bounded log tails and log-age reads, including Slurm health evidence | monitor-local log readers or cross-observation caches |
-| Managed scheduler lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) with Slurm primitives in [`agent_tools/slurm.py`](../../agent_tools/slurm.py); shared scheduler queries stay within one round and frozen route, never launch/stop/reconciliation; snapshot hooks distinguish missing from empty snapshots and request writes only for present snapshots | hparam-local capacity, scheduler commands, observation, reconciliation, snapshot, start, or stop implementations |
+| Managed scheduler lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) with Slurm primitives in [`agent_tools/slurm.py`](../../agent_tools/slurm.py); one `squeue --me` snapshot serves a whole submission pass or monitor round; snapshot hooks distinguish missing from empty snapshots and request writes only for present snapshots | hparam-local capacity, scheduler commands, observation, adoption, snapshot, start, or stop implementations |
 | GPU pool partitioning | `gpu_group_plan` in [`agent_tools/gpu_rules.py`](../../agent_tools/gpu_rules.py); live capacity and process placement stay in `managed_scheduler` | scheduler-, planner-, or adapter-local device arithmetic |
 | Registered plan reads | `is_registered_blocked_plan` for exact nested blocked-plan envelopes and strict plan-owned artifacts in root-resident workspaces, `read_registered_plan` for materialized control bundles reusing the static recipe structure owner, and `read_hparam_plan` for stronger local launch-time validation in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | status- or launcher-specific parsing |
 | Public hparam operations | [`agent_tools/hparam_runtime.py`](../../agent_tools/hparam_runtime.py) for launch, queue, monitor, and stop; [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) for selection | direct private cross-module imports |
@@ -191,8 +191,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   [selection](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers).
   Append semantic notes through `experiments.append_experiment_note` and `research_log`,
   not direct Markdown writes; see [research-log ownership](../agent_contracts/experiment_workspace.md#research-log).
-- Reuse `managed_scheduler` for backend lifecycle and `slurm` for resource, command, state,
-  and sidecar primitives; [run-manifest evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
+- Reuse `managed_scheduler` for backend lifecycle and `slurm` for resource, `job.sbatch`, command,
+  and state primitives; [run-manifest evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
   owns their interpretation.
   Drive hparam launch tests through `launch_hparam_runs(..., hooks=SchedulerHooks(...))`, which replaces
   only the execution-snapshot, command, and process-start effects, not private launch helpers; entries
@@ -200,9 +200,9 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Reuse `runtime-sync` for a clean in-place `origin/main` fast-forward and the shared runtime lock for
   launch/update coordination. Keep the planned commit in frozen artifacts and record the actual start commit
   in the canonical run manifest; do not clone or rewrite a published plan to follow HEAD. Its remote path sends
-  the manager's self-contained sync kernel, so it also bootstraps checkouts that predate the command. The
-  embedded `slurm.worker_bootstrap` forwards termination and records import/start failures; checkout-local
-  `run_frozen_job` uses the short runtime lock for final identity, artifact, and `srun` spawn checks.
+  the manager's self-contained sync kernel, so it also bootstraps checkouts that predate the command. A
+  Slurm job takes no lock: its frozen `job.sbatch` records HEAD in `run_dir/runtime_commit` and checks the
+  frozen run-file hashes before `srun`.
 - Reuse `python_programs.source` and `transport.remote_python_program_command` for embedded kernels;
   keep byte-preserving sources under `agent_tools/python_program_sources`, not inline copies.
 

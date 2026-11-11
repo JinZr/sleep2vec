@@ -244,9 +244,10 @@ carry those choices into launch and recovery.
    with [snapshot revalidation](../agent_contracts/hparam_workflow.md#execution-snapshot-and-launch-revalidation).
    For a direct plan, `hparam-run-queue --execute` starts one detached
    [queue runner](../agent_contracts/hparam_workflow.md#direct-queue-runner) and returns; monitors report its liveness.
+   For a Slurm plan, `--execute` submits every launchable run once and returns.
    A rolling checkout may use a newer commit, but it must expose the current managed launch protocol before a direct
-   claim or Slurm submission. Direct and Slurm starts use point-in-time identity and artifact checks under the short
-   runtime lock; the self-contained Slurm bootstrap forwards signals and records checkout-local import/start failures.
+   claim or Slurm submission. Direct starts use point-in-time identity and artifact checks under the short runtime
+   lock; a Slurm job records HEAD in `run_dir/runtime_commit` and checks its frozen run-file hashes.
    Other ordinary routes use the
    [non-hparam runtime contract](../agent_contracts/task_recipe.md#non-hparam-runtime-identity);
    `preset-launch` / `preset-stop` use

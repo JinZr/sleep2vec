@@ -2,7 +2,8 @@
 
 Layer 0 leaf. Dispatches through ``managed_scheduler`` for capacity and process
 lifecycle. A direct plan's queue runs as one detached runner per plan, guarded by
-the plan's ``queue_runner.lock``.
+the plan's ``queue_runner.lock``; a Slurm plan's queue is one submit pass, since
+Slurm itself queues the jobs.
 """
 
 from __future__ import annotations
@@ -39,7 +40,6 @@ from .experiment_workspace import (
     merge_run_manifest,
     merge_run_row,
     read_run_manifest,
-    scheduler_direct_controller,
     scheduler_type,
     validate_frozen_run_update,
     validated_run_key,
@@ -84,11 +84,13 @@ def launch_hparam_runs(
     dry_run=True previews scheduling without starting processes or submitting
     jobs, but still writes launch/status projections and may merge manifest
     rows; it is not a read-only operation. Execution can observe local
-    runs, launch eligible work within capacity and record lifecycle evidence.
+    runs, launch eligible work within capacity and record lifecycle evidence;
+    for a Slurm plan it is one submit pass that submits or adopts every
+    launchable run.
 
     fail_on_missing_pid_blocker makes an unresolved process-identity blocker an
     execution error for queue callers. Handled observation or launch failures can
-    be recorded as statuses such as unknown_scheduler or launch_failed and return
+    be recorded as statuses such as lost or launch_failed and return
     normally. Inspect canonical run status: the returned path does not imply a
     successful launch. Unhandled exceptions propagate; already recorded launches
     are not rolled back on later failure.
@@ -128,8 +130,8 @@ def start_hparam_queue_runner(plan_dir: str | Path, *, poll_seconds: float = 60)
     ``hparam-run-queue --execute --foreground`` in a new session, with stdin from
     /dev/null and stdout/stderr appended to queue_runner.log, so it outlives the
     caller's terminal or SSH session; the runner takes the lock itself. Returns
-    None without starting anything for a Slurm plan, whose queue still runs in the
-    caller's process."""
+    None without starting anything for a Slurm plan, whose execution is one
+    submit pass in the caller's process."""
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("poll_seconds must be positive.")
     run_dir = Path(plan_dir).expanduser()
@@ -180,18 +182,19 @@ def run_hparam_queue(
     """Advance a registered hparam queue and return its status-table path.
 
     With dry_run=True, performs one launch preview and returns launch_manifest.tsv,
-    including that preview's projection writes. With dry_run=False, repeatedly
-    monitors and launches eligible runs in the calling process, writing canonical
-    state and projections, until every run in this plan is terminal; returns
-    run_status.tsv then. Terminal includes failed/stopped runs and does not imply
-    selection succeeded. A direct plan's loop holds the plan's queue_runner.lock
-    (recording this PID) and fails at once if another runner holds it; a Slurm
-    plan's loop takes no runner lock.
+    including that preview's projection writes. With dry_run=False, a direct plan
+    repeatedly monitors and launches eligible runs in the calling process, writing
+    canonical state and projections, until every run in this plan is terminal, and
+    returns run_status.tsv then. Terminal includes failed/stopped runs and does not
+    imply selection succeeded. A direct plan's loop holds the plan's
+    queue_runner.lock (recording this PID) and fails at once if another runner
+    holds it. A Slurm plan makes one submit pass, which submits or adopts every
+    launchable run, and returns run_status.tsv without polling; Slurm queues the jobs.
 
-    poll_seconds must be finite and positive. Missing process identity and
-    unresolved scheduler/launch outcomes can raise instead of advancing the
-    queue; other validation and runtime errors propagate. This function launches
-    work only in execution mode and does not select or finalize the experiment."""
+    poll_seconds must be finite and positive. Missing process identity can raise
+    instead of advancing the queue; other validation and runtime errors propagate.
+    This function launches work only in execution mode and does not select or
+    finalize the experiment."""
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("poll_seconds must be positive.")
     run_dir = Path(plan_dir).expanduser()
@@ -214,7 +217,8 @@ def run_hparam_queue(
     status_path = run_dir / "run_status.tsv"
     exp_io.validate_managed_output_paths(workspace, [status_path])
     if not _is_direct_plan(plan):
-        return _drain_hparam_queue(run_dir, workspace, plan, expected_keys, status_path, poll_seconds)
+        launch_hparam_runs(run_dir, dry_run=False)
+        return status_path
     # Taken outside the run lock and held for the whole loop, which takes the run lock repeatedly.
     exp_io.validate_managed_output_paths(workspace, [run_dir / scheduler.QUEUE_RUNNER_LOCK_NAME])
     with scheduler.queue_runner_lock(run_dir, record_pid=True):
@@ -249,18 +253,6 @@ def _drain_hparam_queue(
             rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}
         if all(rows_by_key[key].get("status") in TERMINAL_STATUSES for key in expected_keys):
             return status_path
-        unresolved_scheduler = sorted(
-            key
-            for key in expected_keys
-            if scheduler_type(rows_by_key[key]) == "slurm"
-            and rows_by_key[key].get("status") in {"submitting", "unknown_scheduler"}
-        )
-        if unresolved_scheduler:
-            step_id, run_id = unresolved_scheduler[0]
-            raise RuntimeError(
-                f"Hparam queue cannot advance because {step_id} / {run_id} has unresolved Slurm state "
-                f"{rows_by_key[unresolved_scheduler[0]].get('status')}."
-            )
         missing_pid = sorted(key for key in expected_keys if rows_by_key[key].get("status") == "missing_pid")
         if missing_pid:
             step_id, run_id = missing_pid[0]
@@ -427,24 +419,18 @@ def monitor_hparam_runs(
             step_id, run_id = sorted(missing)[0]
             raise ValueError(f"Canonical run is missing for the current hparam plan: {step_id} / {run_id}")
         previous_rows = {key: workspace_by_key[key] for key in expected_keys}
-        # Anchor CLI-relative owners without resolving aliases or removing raw '..' components.
-        monitor_context = scheduler.SlurmMonitorContext(previous_rows.values(), owner_dir=root.absolute())
+        slurm_jobs = scheduler.slurm_job_snapshot(previous_rows.values())
         rows: list[Mapping[str, JsonValue]] = []
         for run in plan["runs"]:
             key = validated_run_key(run)
             prior = previous_rows[key]
-            if prior.get("target") in (None, ""):
+            # A stop can bind a job to a run whose submit pass never recorded its execution identity.
+            if prior.get("target") in (None, "") and prior.get("scheduler_job_id") in (None, ""):
                 rows.append(prior)
                 continue
             if scheduler_type(prior) == "slurm":
-                execution: dict[str, JsonValue] = {}
-                if scheduler_direct_controller(prior):
-                    execution["scheduler"] = {"direct_controller": True}
-                rows.append(
-                    scheduler.observe_slurm_run(
-                        monitor_context.owner_dir, execution, prior, health=health, monitor_context=monitor_context
-                    )
-                )
+                # Anchor CLI-relative owners without resolving aliases or removing raw '..' components.
+                rows.append(scheduler.observe_slurm_run(root.absolute(), prior, slurm_jobs, health=health))
             else:
                 rows.append(
                     scheduler.observe_run(

@@ -324,24 +324,8 @@ class TaskAdapter:
             execution = recipe["execution"]
             resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
             run.update({"command": commands[0], "script_sha256": hashlib.sha256(script_text.encode()).hexdigest()})
-            token = slurm.submit_token(run, resources, execution["runtime_commit"])
-            scheduler_text = slurm.render_batch_script(
-                run=run,
-                execution=execution,
-                resources=resources,
-                token=token,
-                result_path=run["scheduler_result_path"],
-                allocation_identity_path=run["allocation_identity_path"],
-                execution_snapshot_path=out / "execution_snapshot.json",
-                log_path=run["log_path"],
-                module=self.frozen_command_prefix(recipe)[2],
-            )
-            run.update(
-                {
-                    "scheduler_submit_token": token,
-                    "scheduler_script_sha256": hashlib.sha256(scheduler_text.encode()).hexdigest(),
-                }
-            )
+            scheduler_text = slurm.render_batch_script(run=run, execution=execution, resources=resources)
+            run["scheduler_script_sha256"] = hashlib.sha256(scheduler_text.encode()).hexdigest()
             contract["scheduler_script_text"] = scheduler_text
         launch_subcommand = None
         if run.get("scheduler_type") == "slurm":

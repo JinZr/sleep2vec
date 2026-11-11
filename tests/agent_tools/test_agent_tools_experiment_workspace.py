@@ -576,8 +576,10 @@ def test_managed_run_parameters_reject_legacy_prefix():
         ("running", {"status": "pending"}, "running"),
         ("stopping", {"status": "planned"}, "stopping"),
         ("stopping", {"status": "pending"}, "stopping"),
-        ("unknown_scheduler", {"status": "planned"}, "unknown_scheduler"),
-        ("unknown_scheduler", {"status": "pending"}, "unknown_scheduler"),
+        ("lost", {"status": "planned"}, "lost"),
+        ("lost", {"status": "pending"}, "lost"),
+        ("lost", {"status": "completed"}, "completed"),
+        ("lost", {"status": "failed"}, "failed"),
         ("missing_pid", {"status": "pending"}, "missing_pid"),
         ("running", {"status": "failed"}, "failed"),
         ("planned", {"status": "superseded"}, "superseded"),
@@ -605,7 +607,7 @@ def test_merge_run_row_preserves_status_precedence(existing_status: str, incomin
     assert merged["status"] == expected_status
 
 
-@pytest.mark.parametrize("incoming_status", ["queued", "running", "unknown_scheduler", "completed", "failed"])
+@pytest.mark.parametrize("incoming_status", ["queued", "running", "lost", "completed", "failed"])
 @pytest.mark.parametrize(
     "incoming_stop_fields",
     [
@@ -641,7 +643,7 @@ def test_merge_run_row_preserves_stop_intent_against_stale_observations(
     assert merged["scheduler_raw_state"] == "RUNNING"
 
 
-@pytest.mark.parametrize("incoming_status", ["stopping", "stopped", "completed", "failed", "unknown_scheduler"])
+@pytest.mark.parametrize("incoming_status", ["stopping", "stopped", "completed", "failed", "lost"])
 def test_merge_run_row_accepts_observation_bound_to_current_stop_intent(incoming_status: str):
     existing = {
         "step_id": "train",
@@ -2008,11 +2010,8 @@ def test_planning_reads_canonical_rows_only_under_run_lock(tmp_path: Path, monke
 def _slurm_identity(tmp_path: Path) -> dict[str, str]:
     return {
         "scheduler_type": "slurm",
-        "scheduler_submit_token": "unit-token",
         "scheduler_script": str(tmp_path / "job.sbatch"),
         "scheduler_script_sha256": "a" * 64,
-        "scheduler_result_path": str(tmp_path / "slurm_terminal.json"),
-        "allocation_identity_path": str(tmp_path / "allocation_identity.json"),
     }
 
 
@@ -2021,12 +2020,7 @@ def _slurm_identity(tmp_path: Path) -> dict[str, str]:
 def test_managed_launch_evidence_ignores_status_and_slurm_plan_identity(tmp_path: Path, backend: str, status: str):
     row = {"scheduler_type": backend, "status": status}
     if backend == "slurm":
-        row.update(
-            **_slurm_identity(tmp_path),
-            scheduler_direct_controller="false",
-            execution_snapshot_sha256="b" * 64,
-            log_path=str(tmp_path / "slurm-%j.log"),
-        )
+        row.update(**_slurm_identity(tmp_path), log_path=str(tmp_path / "slurm.log"))
 
     assert not experiment_workspace.has_managed_launch_evidence(row)
 
@@ -2034,7 +2028,7 @@ def test_managed_launch_evidence_ignores_status_and_slurm_plan_identity(tmp_path
 @pytest.mark.parametrize("backend", ["direct", "slurm"])
 @pytest.mark.parametrize(
     "field",
-    sorted(EXECUTION_IDENTITY_FIELDS | {"scheduler_job_id", "scheduler_cluster", "launched_at", "stop_requested_at"}),
+    sorted(EXECUTION_IDENTITY_FIELDS | {"scheduler_job_id", "launched_at", "stop_requested_at"}),
 )
 def test_managed_launch_evidence_recognizes_each_runtime_binding(tmp_path: Path, backend: str, field: str):
     row = {"scheduler_type": backend, "status": "planned", field: "recorded"}
@@ -2052,12 +2046,7 @@ def test_manifest_accepts_metadata_only_stop_without_launch_evidence(tmp_path: P
     initialize_run_manifest(tmp_path)
     identity = {"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "scheduler_type": backend}
     if backend == "slurm":
-        identity.update(
-            **_slurm_identity(tmp_path),
-            scheduler_direct_controller="false",
-            execution_snapshot_sha256="b" * 64,
-            log_path=str(tmp_path / "slurm-%j.log"),
-        )
+        identity.update(**_slurm_identity(tmp_path), log_path=str(tmp_path / "slurm.log"))
     merge_run_manifest(tmp_path, [{**identity, "status": status}])
 
     stopped = merge_run_manifest(
@@ -2076,31 +2065,30 @@ def test_manifest_accepts_metadata_only_stop_without_launch_evidence(tmp_path: P
     assert stopped["status"] == "stopped"
     assert stopped["stop_reason"] == "budget withdrawn"
     assert stopped["stopped_at"] == "2026-08-30T03:41:00Z"
-    for field in {"scheduler_job_id", "scheduler_cluster", "launched_at", "stop_requested_at"}:
+    for field in {"scheduler_job_id", "launched_at", "stop_requested_at"}:
         assert not stopped.get(field)
     for field, value in identity.items():
         assert stopped[field] == value
     assert read_run_manifest(tmp_path)[0] == stopped
 
 
-@pytest.mark.parametrize(
-    "field",
-    sorted((EXECUTION_IDENTITY_FIELDS - {"log_path"}) | {"scheduler_cluster", "launched_at", "stop_requested_at"}),
-)
-def test_scheduler_identity_rejects_stopped_without_job_when_launch_evidence_exists(tmp_path: Path, field: str):
-    row = {"status": "stopped", field: "recorded", **_slurm_identity(tmp_path)}
-    expected = "PID process identity" if field in PROCESS_IDENTITY_FIELDS else "scheduler_job_id"
-
-    with pytest.raises(ValueError, match=expected):
-        validate_scheduler_run_identity(row)
+@pytest.mark.parametrize("status", ["lost", "stopped"])
+def test_scheduler_identity_allows_lost_and_stopped_runs_without_a_job(tmp_path: Path, status: str):
+    # A job that aged out of squeue before its id was recorded is lost; a reasoned stop then resolves it.
+    validate_scheduler_run_identity({"status": status, "target": "local", **_slurm_identity(tmp_path)})
+    validate_scheduler_run_identity({"status": status, "scheduler_job_id": "3880", **_slurm_identity(tmp_path)})
 
 
-@pytest.mark.parametrize(
-    "status", ["queued", "running", "stopping", "unknown_scheduler", "completed", "finished", "failed"]
-)
+@pytest.mark.parametrize("status", ["queued", "running", "stopping", "completed", "finished", "failed"])
 def test_scheduler_identity_requires_job_for_other_active_and_terminal_states(tmp_path: Path, status: str):
     with pytest.raises(ValueError, match="requires scheduler_job_id"):
         validate_scheduler_run_identity({"status": status, **_slurm_identity(tmp_path)})
+
+
+@pytest.mark.parametrize("status", ["planned", "pending", "launch_failed", "superseded"])
+def test_scheduler_identity_rejects_job_on_unsubmitted_states(tmp_path: Path, status: str):
+    with pytest.raises(ValueError, match="cannot define scheduler_job_id"):
+        validate_scheduler_run_identity({"status": status, "scheduler_job_id": "3880", **_slurm_identity(tmp_path)})
 
 
 def test_scheduler_identity_allows_one_trusted_job_binding(tmp_path: Path):
@@ -2108,214 +2096,24 @@ def test_scheduler_identity_allows_one_trusted_job_binding(tmp_path: Path):
         "step_id": "train",
         "run_id": "run-000",
         "target": "local",
-        "status": "submitting",
-        "execution_snapshot_sha256": "a" * 64,
-        **_slurm_identity(tmp_path),
-    }
-
-    validate_frozen_run_update(
-        existing,
-        {"scheduler_job_id": "3880", "scheduler_cluster": "wuji-h20"},
-        allow_execution_identity_fill=True,
-    )
-    for field in SCHEDULER_BINDING_FIELDS:
-        changed = "b" * 64 if field == "execution_snapshot_sha256" else "3881"
-        with pytest.raises(ValueError, match=field):
-            validate_frozen_run_update(
-                {**existing, "scheduler_job_id": "3880", "scheduler_cluster": "wuji-h20"},
-                {field: changed},
-                allow_execution_identity_fill=True,
-            )
-
-
-@pytest.mark.parametrize("status", ["submitting", "launch_failed"])
-def test_scheduler_identity_accepts_prebound_cluster_before_job_id(tmp_path: Path, status: str):
-    validate_scheduler_run_identity({"status": status, "scheduler_cluster": "wuji-h20", **_slurm_identity(tmp_path)})
-
-
-@pytest.mark.parametrize(
-    "status",
-    [
-        "planned",
-        "pending",
-        "superseded",
-        "launched",
-        "queued",
-        "running",
-        "stopping",
-        "unknown_scheduler",
-        "completed",
-        "finished",
-        "failed",
-        "stopped",
-    ],
-)
-def test_scheduler_identity_rejects_prebound_cluster_outside_submission_states(tmp_path: Path, status: str):
-    with pytest.raises(ValueError, match="scheduler_cluster"):
-        validate_scheduler_run_identity(
-            {"status": status, "scheduler_cluster": "wuji-h20", **_slurm_identity(tmp_path)}
-        )
-
-
-def test_manifest_prebinds_scheduler_cluster_before_job_id(tmp_path: Path):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(tmp_path)
-    identity = {
-        "experiment_id": "unit",
-        "step_id": "train",
-        "run_id": "run-000",
-        "target": "local",
-        **_slurm_identity(tmp_path),
-    }
-    merge_run_manifest(tmp_path, [{**identity, "status": "planned"}])
-
-    submitted = merge_run_manifest(
-        tmp_path,
-        [{**identity, "status": "submitting", "scheduler_cluster": "wuji-h20"}],
-    )[0]
-
-    assert submitted["scheduler_cluster"] == "wuji-h20"
-    assert submitted.get("scheduler_job_id", "") == ""
-    queued = merge_run_manifest(
-        tmp_path,
-        [{"step_id": "train", "run_id": "run-000", "status": "queued", "scheduler_job_id": "3880"}],
-    )[0]
-    assert queued["scheduler_cluster"] == "wuji-h20"
-    assert queued["scheduler_job_id"] == "3880"
-
-
-@pytest.mark.parametrize("incoming_cluster", ["other-cluster", ""])
-def test_manifest_rejects_changing_or_clearing_prebound_cluster(tmp_path: Path, incoming_cluster: str):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(tmp_path)
-    identity = {
-        "experiment_id": "unit",
-        "step_id": "train",
-        "run_id": "run-000",
-        "target": "local",
-        **_slurm_identity(tmp_path),
-    }
-    merge_run_manifest(tmp_path, [{**identity, "status": "submitting", "scheduler_cluster": "wuji-h20"}])
-    before = (tmp_path / "run_manifest.tsv").read_bytes()
-
-    with pytest.raises(ValueError, match="scheduler_cluster"):
-        merge_run_manifest(
-            tmp_path,
-            [{"step_id": "train", "run_id": "run-000", "scheduler_cluster": incoming_cluster}],
-        )
-
-    assert (tmp_path / "run_manifest.tsv").read_bytes() == before
-
-
-@pytest.mark.parametrize("incoming_status", ["running", "completed", "stopping"])
-def test_merge_run_row_preserves_submission_cluster_mismatch(incoming_status: str):
-    existing = {
-        "step_id": "train",
-        "run_id": "run-000",
-        "scheduler_type": "slurm",
-        "status": "unknown_scheduler",
-        "scheduler_raw_state": "SUBMISSION_CLUSTER_MISMATCH",
-        "scheduler_reason": "Submission returned other-cluster instead of prebound wuji-h20.",
-        "scheduler_job_id": "3880",
-        "scheduler_cluster": "wuji-h20",
-    }
-    stale = {
-        "status": incoming_status,
-        "scheduler_raw_state": "COMPLETED" if incoming_status == "completed" else "RUNNING",
-        "scheduler_reason": "stale scheduler reason",
-        "scheduler_observed_at": "2026-08-30T12:00:00Z",
-    }
-
-    merged = merge_run_row(existing, stale)
-
-    assert merged["status"] == "unknown_scheduler"
-    assert merged["scheduler_raw_state"] == "SUBMISSION_CLUSTER_MISMATCH"
-    assert merged["scheduler_reason"] == existing["scheduler_reason"]
-    assert merged["scheduler_job_id"] == "3880"
-    assert merged["scheduler_cluster"] == "wuji-h20"
-    assert merged["scheduler_observed_at"] == stale["scheduler_observed_at"]
-    assert merge_run_row(merged, stale) == merged
-
-
-@pytest.mark.parametrize("incoming_status", ["running", "completed", "stopping"])
-def test_manifest_preserves_submission_cluster_mismatch_against_stale_observation(tmp_path: Path, incoming_status: str):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(tmp_path)
-    identity = {
-        "experiment_id": "unit",
-        "step_id": "train",
-        "run_id": "run-000",
-        "target": "local",
-        **_slurm_identity(tmp_path),
-    }
-    reason = "Submission returned other-cluster instead of prebound wuji-h20."
-    merge_run_manifest(
-        tmp_path,
-        [
-            {
-                **identity,
-                "status": "unknown_scheduler",
-                "scheduler_job_id": "3880",
-                "scheduler_cluster": "wuji-h20",
-                "scheduler_raw_state": "SUBMISSION_CLUSTER_MISMATCH",
-                "scheduler_reason": reason,
-            }
-        ],
-    )
-
-    committed = merge_run_manifest(
-        tmp_path,
-        [
-            {
-                "step_id": "train",
-                "run_id": "run-000",
-                "status": incoming_status,
-                "scheduler_raw_state": "COMPLETED" if incoming_status == "completed" else "RUNNING",
-                "scheduler_reason": "stale scheduler reason",
-            }
-        ],
-    )
-
-    assert committed[0]["status"] == "unknown_scheduler"
-    assert committed[0]["scheduler_raw_state"] == "SUBMISSION_CLUSTER_MISMATCH"
-    assert committed[0]["scheduler_reason"] == reason
-    assert committed[0]["scheduler_job_id"] == "3880"
-    assert committed[0]["scheduler_cluster"] == "wuji-h20"
-    assert read_run_manifest(tmp_path)[0] == committed[0]
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [(None, False), ("", False), ("false", False), ("true", True)],
-)
-def test_scheduler_direct_controller_parses_canonical_manifest_values(value, expected: bool):
-    assert experiment_workspace.scheduler_direct_controller({"scheduler_direct_controller": value}) is expected
-
-
-@pytest.mark.parametrize("value", [False, True, 0, 1, "False", "True", "yes"])
-def test_scheduler_direct_controller_rejects_noncanonical_manifest_values(value):
-    with pytest.raises(ValueError, match="scheduler_direct_controller must be true or false"):
-        experiment_workspace.scheduler_direct_controller({"scheduler_direct_controller": value})
-
-
-def test_scheduler_direct_controller_is_frozen_plan_identity(tmp_path: Path):
-    existing = {
-        "step_id": "train",
-        "run_id": "run-000",
         "status": "planned",
-        "scheduler_direct_controller": "true",
         **_slurm_identity(tmp_path),
     }
 
-    validate_frozen_run_update(existing, {"scheduler_direct_controller": "true"})
-    with pytest.raises(ValueError, match="scheduler_direct_controller"):
-        validate_frozen_run_update(existing, {"scheduler_direct_controller": "false"})
+    validate_frozen_run_update(existing, {"scheduler_job_id": "3880"}, allow_execution_identity_fill=True)
+    assert SCHEDULER_BINDING_FIELDS == {"scheduler_job_id"}
+    with pytest.raises(ValueError, match="scheduler_job_id"):
+        validate_frozen_run_update(
+            {**existing, "scheduler_job_id": "3880"},
+            {"scheduler_job_id": "3881"},
+            allow_execution_identity_fill=True,
+        )
 
 
 def test_scheduler_identity_is_backend_specific(tmp_path: Path):
     validate_scheduler_run_identity({"scheduler_type": "direct", "status": "planned"})
     validate_scheduler_run_identity({"status": "planned"})
-    validate_scheduler_run_identity({"status": "submitting", **_slurm_identity(tmp_path)})
+    validate_scheduler_run_identity({"status": "planned", "target": "local", **_slurm_identity(tmp_path)})
     validate_scheduler_run_identity({"status": "queued", "scheduler_job_id": "3880", **_slurm_identity(tmp_path)})
     validate_scheduler_run_identity({"status": "stopping", "scheduler_job_id": "3880", **_slurm_identity(tmp_path)})
 
@@ -2325,12 +2123,12 @@ def test_scheduler_identity_is_backend_specific(tmp_path: Path):
         )
     with pytest.raises(ValueError, match="cannot define Slurm"):
         validate_scheduler_run_identity(
-            {"scheduler_type": "direct", "scheduler_submit_token": "unit-token", "status": "planned"}
+            {"scheduler_type": "direct", "scheduler_script": "/plan/job.sbatch", "status": "planned"}
         )
     with pytest.raises(ValueError, match="cannot define Slurm"):
-        validate_scheduler_run_identity(
-            {"scheduler_type": "direct", "scheduler_direct_controller": "false", "status": "planned"}
-        )
+        validate_scheduler_run_identity({"scheduler_type": "direct", "scheduler_job_id": "3880", "status": "queued"})
+    with pytest.raises(ValueError, match="missing scheduler plan identity"):
+        validate_scheduler_run_identity({"scheduler_type": "slurm", "status": "planned"})
     with pytest.raises(ValueError, match="requires scheduler_job_id"):
         validate_scheduler_run_identity({"status": "queued", **_slurm_identity(tmp_path)})
 
@@ -2346,7 +2144,6 @@ def test_manifest_binds_scheduler_job_once_and_updates_observation(tmp_path: Pat
         **_slurm_identity(tmp_path),
     }
     merge_run_manifest(tmp_path, [{**identity, "status": "planned"}])
-    merge_run_manifest(tmp_path, [{"step_id": "train", "run_id": "run-000", "status": "submitting"}])
     committed = merge_run_manifest(
         tmp_path,
         [
@@ -2355,19 +2152,18 @@ def test_manifest_binds_scheduler_job_once_and_updates_observation(tmp_path: Pat
                 "run_id": "run-000",
                 "status": "queued",
                 "scheduler_job_id": "3880",
-                "scheduler_cluster": "wuji-h20",
-                "scheduler_state": "PENDING",
+                "scheduler_raw_state": "PENDING",
             }
         ],
     )
 
     assert committed[0]["scheduler_job_id"] == "3880"
-    assert committed[0]["scheduler_state"] == "PENDING"
+    assert committed[0]["scheduler_raw_state"] == "PENDING"
     updated = merge_run_manifest(
         tmp_path,
-        [{"step_id": "train", "run_id": "run-000", "scheduler_state": "RUNNING"}],
+        [{"step_id": "train", "run_id": "run-000", "scheduler_raw_state": "RUNNING"}],
     )
-    assert updated[0]["scheduler_state"] == "RUNNING"
+    assert updated[0]["scheduler_raw_state"] == "RUNNING"
     with pytest.raises(ValueError, match="scheduler_job_id"):
         merge_run_manifest(
             tmp_path,
@@ -2376,7 +2172,7 @@ def test_manifest_binds_scheduler_job_once_and_updates_observation(tmp_path: Pat
 
 
 def test_scheduler_active_status_does_not_regress_to_pending():
-    for status in ("submitting", "queued"):
+    for status in ("queued", "lost"):
         assert merge_run_row({"status": status}, {"status": "pending"})["status"] == status
 
 

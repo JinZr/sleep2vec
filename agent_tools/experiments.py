@@ -125,7 +125,6 @@ def _record_definitely_unlaunched_failure(workspace: Path, key: tuple[str, str],
                     "run_id": key[1],
                     "status": "launch_failed",
                     "scheduler_reason": reason,
-                    "scheduler_observed_at": utc_now(),
                 }
             ],
             lock_held=True,
@@ -345,6 +344,10 @@ def _read_infer_slurm_plan(plan_dir: Path) -> tuple[Path, artifacts.RegisteredPl
 
 
 def launch_infer_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_scheduler.LaunchResult:
+    """Make one Slurm submit pass for a registered inference plan's run under the workspace run lock.
+
+    A pre-submission gate failure records launch_failed; once the run carries launch
+    evidence, a failed squeue or sbatch raises and the next pass adopts the job by name."""
     owner_dir = Path(plan_dir).absolute()
     workspace = _infer_slurm_workspace(owner_dir)
     with experiment_workspace.managed_run_lock(workspace):
@@ -692,7 +695,8 @@ def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
     """Observe managed runs once and commit their current status without launching work.
 
     Requires an active, valid managed workspace. Reads local process,
-    scheduler and artifact evidence, merges observations into run_manifest.tsv
+    artifact and Slurm evidence (one ``squeue --me`` query when a Slurm run
+    needs a state), merges observations into run_manifest.tsv
     and its projections, then writes reports/monitor.md. Also probes the queue
     runner of every registered plan that has a queue_runner.lock (only a direct
     hparam queue creates one) without starting any runner. Returns run_dir, the
@@ -717,10 +721,8 @@ def monitor_experiment(run_dir: str | Path) -> tracking.ExperimentMonitorResult:
     )
     # Observe the owner-validated input snapshot; the commit still reads fresh under its lock/CAS.
     run_rows = previous_rows
-    monitor_context = managed_scheduler.SlurmMonitorContext(run_rows, owner_dir=root)
-    observations = [
-        tracking.monitor_run_row(root, row, previous_rows, monitor_context=monitor_context) for row in run_rows
-    ]
+    slurm_jobs = managed_scheduler.slurm_job_snapshot(run_rows)
+    observations = [tracking.monitor_run_row(root, row, previous_rows, slurm_jobs=slurm_jobs) for row in run_rows]
     committed = merge_run_manifest(root, observations)
     # Registered plans own canonical rows, and _managed_rows checked every row's experiment_id.
     step_manifests = read_registered_steps(root, experiment_id=str(run_rows[0]["experiment_id"])) if run_rows else []

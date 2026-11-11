@@ -52,23 +52,14 @@ PLAN_CONTROLLERS = {"ordinary"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
 SUCCESS_STATUSES = frozenset({"completed", "finished"})
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
-SUBMISSION_CLUSTER_MISMATCH = "SUBMISSION_CLUSTER_MISMATCH"
 MONITOR_EXIT_CODE_PREFIX = "AGENT_TOOLS_EXIT_CODE="
 PROCESS_IDENTITY_FIELDS: set[Literal["pid", "process_group_id", "process_start_token"]] = {
     "pid",
     "process_group_id",
     "process_start_token",
 }
-SCHEDULER_PLAN_IDENTITY_FIELDS = {
-    "scheduler_type",
-    "scheduler_direct_controller",
-    "scheduler_submit_token",
-    "scheduler_script",
-    "scheduler_script_sha256",
-    "scheduler_result_path",
-    "allocation_identity_path",
-}
-SCHEDULER_BINDING_FIELDS = {"scheduler_job_id", "scheduler_cluster", "execution_snapshot_sha256"}
+SCHEDULER_PLAN_IDENTITY_FIELDS = {"scheduler_type", "scheduler_script", "scheduler_script_sha256"}
+SCHEDULER_BINDING_FIELDS = {"scheduler_job_id"}
 SCHEDULER_IDENTITY_FIELDS = SCHEDULER_PLAN_IDENTITY_FIELDS | SCHEDULER_BINDING_FIELDS
 RUNTIME_PROVENANCE_FIELDS = {"planned_runtime_commit", "runtime_commit"}
 EXECUTION_IDENTITY_FIELDS = {
@@ -122,8 +113,6 @@ MANAGED_RUN_PATH_FIELDS = {
     "val_predictions_path",
     "workdir",
     "scheduler_script",
-    "scheduler_result_path",
-    "allocation_identity_path",
 }
 RESEARCH_LOG_NAME = research_log.RESEARCH_LOG_NAME
 RESEARCH_LOG_KINDS = research_log.RESEARCH_LOG_KINDS
@@ -981,14 +970,6 @@ def merge_run_row(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> d
         and incoming.get("stop_requested_at") != existing_stop_requested_at
     )
     merged: dict[str, JsonValue] = {**existing, **json_ready(dict(incoming))}
-    # A conflicting submission receipt is quarantined; later scheduler observations cannot authenticate its route.
-    if existing.get("scheduler_raw_state") == SUBMISSION_CLUSTER_MISMATCH:
-        merged.update(
-            status="unknown_scheduler",
-            scheduler_raw_state=SUBMISSION_CLUSTER_MISMATCH,
-            scheduler_reason=existing.get("scheduler_reason", ""),
-        )
-        return merged
     if existing_status in TERMINAL_STATUSES:
         if incoming_status == "failed" and existing_status in {"completed", "finished"}:
             merged["status"] = "failed"
@@ -999,12 +980,11 @@ def merge_run_row(existing: Mapping[str, Any], incoming: Mapping[str, Any]) -> d
     elif incoming_status == "superseded" and existing_status not in {"planned", "pending"}:
         merged["status"] = existing_status
     elif existing_status in {
-        "submitting",
         "queued",
         "launched",
         "running",
         "stopping",
-        "unknown_scheduler",
+        "lost",
         "missing_pid",
     } and incoming_status in {
         "planned",
@@ -1117,24 +1097,9 @@ def scheduler_type(row: Mapping[str, Any]) -> str:
     return value
 
 
-def scheduler_direct_controller(row: Mapping[str, Any]) -> bool:
-    raw_value = row.get("scheduler_direct_controller")
-    if raw_value in (None, ""):
-        return False
-    value = str(raw_value)
-    if value not in {"false", "true"}:
-        raise ValueError(f"scheduler_direct_controller must be true or false: {value!r}")
-    return value == "true"
-
-
 def has_managed_launch_evidence(row: Mapping[str, Any]) -> bool:
-    fields = EXECUTION_IDENTITY_FIELDS | {
-        "scheduler_job_id",
-        "scheduler_cluster",
-        "launched_at",
-        "stop_requested_at",
-    }
-    # Slurm freezes its log path in the plan; a preflight snapshot likewise does not prove submission.
+    fields = EXECUTION_IDENTITY_FIELDS | {"scheduler_job_id", "launched_at", "stop_requested_at"}
+    # Slurm freezes its log path in the plan, so only the submit pass's identity proves a launch attempt.
     if scheduler_type(row) == "slurm":
         fields -= {"log_path"}
     return any(row.get(field) not in (None, "") for field in fields)
@@ -1142,7 +1107,6 @@ def has_managed_launch_evidence(row: Mapping[str, Any]) -> bool:
 
 def validate_scheduler_run_identity(row: Mapping[str, JsonValue]) -> None:
     backend = scheduler_type(row)
-    scheduler_direct_controller(row)
     populated_process = {field for field in PROCESS_IDENTITY_FIELDS if row.get(field) not in (None, "")}
     populated_scheduler = {
         field for field in SCHEDULER_IDENTITY_FIELDS - {"scheduler_type"} if row.get(field) not in (None, "")
@@ -1155,7 +1119,7 @@ def validate_scheduler_run_identity(row: Mapping[str, JsonValue]) -> None:
         return
     if populated_process:
         raise ValueError("Slurm managed run cannot define PID process identity.")
-    required_plan_fields = SCHEDULER_PLAN_IDENTITY_FIELDS - {"scheduler_type", "scheduler_direct_controller"}
+    required_plan_fields = SCHEDULER_PLAN_IDENTITY_FIELDS - {"scheduler_type"}
     missing_plan_fields = sorted(field for field in required_plan_fields if row.get(field) in (None, ""))
     if missing_plan_fields:
         raise ValueError(f"Slurm managed run is missing scheduler plan identity: {', '.join(missing_plan_fields)}")
@@ -1163,28 +1127,10 @@ def validate_scheduler_run_identity(row: Mapping[str, JsonValue]) -> None:
     if job_id and re.fullmatch(r"[1-9][0-9]*", job_id) is None:
         raise ValueError(f"Slurm scheduler_job_id must be a positive integer: {job_id!r}")
     status = str(row.get("status") or "planned")
-    if row.get("scheduler_cluster") not in (None, "") and not job_id and status not in {"submitting", "launch_failed"}:
-        raise ValueError("Slurm scheduler_cluster requires scheduler_job_id outside submitting or launch_failed.")
-    execution_snapshot_sha256 = str(row.get("execution_snapshot_sha256") or "")
-    if execution_snapshot_sha256 and re.fullmatch(r"[0-9a-f]{64}", execution_snapshot_sha256) is None:
-        raise ValueError("Slurm execution_snapshot_sha256 must be 64 lowercase hexadecimal characters.")
-    if status in {"planned", "pending", "submitting", "launch_failed", "superseded"} and job_id:
+    if status in {"planned", "pending", "launch_failed", "superseded"} and job_id:
         raise ValueError(f"Slurm managed run status {status} cannot define scheduler_job_id.")
-    if (
-        status
-        in {
-            "queued",
-            "running",
-            "stopping",
-            "unknown_scheduler",
-            "completed",
-            "finished",
-            "failed",
-            "stopped",
-        }
-        and not job_id
-        and (status != "stopped" or has_managed_launch_evidence(row))
-    ):
+    # A lost run, and a run stopped while lost or before submission, may never have bound a job id.
+    if status in {"queued", "running", "stopping", "completed", "finished", "failed"} and not job_id:
         raise ValueError(f"Slurm managed run status {status} requires scheduler_job_id.")
 
 

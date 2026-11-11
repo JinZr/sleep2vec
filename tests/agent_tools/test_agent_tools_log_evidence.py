@@ -129,9 +129,9 @@ def test_local_tail_missing_keeps_failure_policy(tmp_path):
 
 @pytest.mark.parametrize(
     "exit_line,failed",
-    [("AGENT_TOOLS_EXIT_CODE=0", False), ("AGENT_TOOLS_EXIT_CODE=17", True), ("0: AGENT_TOOLS_EXIT_CODE=0", False)],
+    [("AGENT_TOOLS_EXIT_CODE=0", False), ("AGENT_TOOLS_EXIT_CODE=17", True), ("0: AGENT_TOOLS_EXIT_CODE=0", True)],
 )
 def test_local_failure_tail_keeps_terminal_marker_priority(tmp_path, exit_line, failed):
     path = tmp_path / "log.txt"
     path.write_text("RuntimeError old\n" + "normal\n" * 20000 + exit_line + "\n")
-    assert run_evidence.log_has_failure(path, {"scheduler_type": "slurm"}, require_exit_code=True) is failed
+    assert run_evidence.log_has_failure(path, require_exit_code=True) is failed

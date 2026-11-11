@@ -13,9 +13,9 @@ Command choice, status advice, and finalization belong to
 - [Canonical state and projections](#canonical-state-and-projections), its [table index](#table-index), and [runtime artifact evidence](#runtime-artifact-evidence)
 - [Status reducer](#status-reducer), [evidence ownership](#evidence-ownership), and [atomic commit](#atomic-commit)
 - [PID and runtime evidence](#pid-and-runtime-evidence)
-- [Slurm evidence](#slurm-scheduler-evidence): [submission/routing](#submission-and-routing),
-  [sidecar reads and monitor reuse](#sidecar-reads-and-monitor-round-reuse),
-  [terminal evidence](#terminal-evidence), and [stopping/uncertainty](#stopping-and-uncertain-states)
+- [Slurm evidence](#slurm-scheduler-evidence): [frozen job script](#frozen-job-script),
+  [submission and adoption](#submission-and-adoption), [monitor state table](#monitor-state-table),
+  and [stopping and lost runs](#stopping-and-lost-runs)
 - [Consumer requirements](#consumer-requirements)
 
 ## Identity and frozen fields
@@ -33,8 +33,9 @@ runtime/checkpoint directories, and execution identity are frozen after
 registration. `planned_runtime_commit` is the plan's full lowercase
 40-character baseline Git commit ID; `runtime_commit` is the corresponding
 full lowercase commit ID observed under the short runtime lock
-immediately before a provenance-aware direct child is spawned or before the
-Slurm allocation wrapper spawns `srun`. A script-owned direct route without the
+immediately before a provenance-aware direct child is spawned. A Slurm job
+writes `git rev-parse HEAD` to `run_dir/runtime_commit` at allocation start and
+the monitor copies it. A script-owned direct route without the
 new outer receipt observes it at its own `running` boundary. Each is a trusted
 first fill and immutable once non-empty. The observed SHA is point-in-time
 provenance, not a guarantee that checkout code bytes remain unchanged for the
@@ -43,12 +44,10 @@ They may differ: that difference is recorded rolling provenance, not a lifecycle
 error or scientific variable. Shared execution identity otherwise consists of
 target (always `local` once launched), workdir, GPUs, log path, and command. Direct execution additionally
 owns the PID path, launched PID, process-group id, and OS process-start token.
-Slurm execution instead freezes scheduler type, optional
-`scheduler_direct_controller` topology, submit token, sbatch path/hash,
-allocation-identity path, and terminal-sidecar path; the execution-snapshot
-SHA-256, numeric scheduler job id, and optional cluster are trusted one-time
-bindings. New Slurm plans materialize the topology as `true` or `false`; older
-rows may omit it and retain the default bound-cluster routing. PID and scheduler
+Slurm execution instead freezes scheduler type and the sbatch path and
+SHA-256 in the plan; the numeric scheduler job id is a trusted one-time binding.
+Slurm observation adds `scheduler_raw_state`, `scheduler_reason`,
+`scheduler_node`, and `scheduler_exit_code`. PID and scheduler
 bindings are mutually exclusive. Only the canonical owner may perform each
 trusted first fill.
 
@@ -57,12 +56,11 @@ the canonical `(step_id, run_id)` key. Older managed rows may omit it and retain
 their existing lifecycle behavior; a present value is immutable and must match
 all later evidence.
 
-When present, `terminal_status_owner` is exactly `script`, `monitor`, or
-`scheduler_sidecar`. It
+When present, `terminal_status_owner` is exactly `script` or `monitor`. It
 selects the existing process-exit rule explicitly: script-owned runs must commit
 their own terminal status, while monitor-owned runs leave confirmed-exit
-inference to the monitor. Scheduler-sidecar runs require the verified atomic
-sidecar under the [scheduler terminal-evidence rules](#terminal-evidence).
+inference to the monitor. Slurm runs are monitor-owned and follow the
+[Slurm state table](#monitor-state-table).
 Lifecycle-owned inference with explicit runtime identity uses the same frozen
 runtime Python for its workload and every lifecycle commit. Its start commit
 records the planned and actual commits; a difference does not bypass any other
@@ -142,10 +140,11 @@ such as zero-padded experiment versions remain unchanged.
 
 ## Status reducer
 
-The current vocabulary includes scheduled `planned`/`pending`, scheduler handoff `submitting`/`queued`, active `launched`/`running`/`stopping`/`unknown_scheduler`/`missing_pid`, and terminal `completed`/`failed`/`finished`/`launch_failed`/`stopped`/`superseded` states.
+The current vocabulary includes scheduled `planned`/`pending`, scheduler handoff `queued`, active `launched`/`running`/`stopping`/`lost`/`missing_pid`, and terminal `completed`/`failed`/`finished`/`launch_failed`/`stopped`/`superseded` states.
 
 - An update without status preserves the existing status.
 - Terminal status is sticky, except incoming `failed` evidence may correct `completed` or `finished`.
+- Active `lost` is not sticky: later Slurm exit evidence replaces it.
 - Recorded stop request, reason, and stop time remain unchanged through stale
   observations of a `stopping` or `stopped` run.
 - Active status cannot regress through stale `planned` or `pending` evidence.
@@ -159,10 +158,11 @@ All lifecycle callers reuse the same row reducer. They do not implement source-s
 
 A run canceled while still `planned` or `pending` may be `stopped` without
 execution identity. This shape requires no populated execution fields, scheduler
-job or cluster binding, launch time, or stop request. Slurm's frozen plan
-`log_path` and preflight execution-snapshot hash do not establish launch. Slurm
-`completed`, `finished`, and `failed` states, and stopped Slurm runs with launch
-evidence, still require a scheduler job id. Cancellation records a reason and
+job binding, launch time, or stop request. Slurm's frozen plan `log_path` does
+not establish launch. Slurm `queued`, `running`, `stopping`, `completed`,
+`finished`, and `failed` states require a scheduler job id. `lost` and `stopped`
+may lack one: a job that left `squeue` before its id was recorded is `lost`,
+and a reasoned stop resolves it. Cancellation records a reason and
 stop time; it is not evidence of successful execution or scheduler cancellation.
 
 ## Evidence ownership
@@ -240,170 +240,111 @@ the normal terminal-owner rule.
 
 ## Slurm scheduler evidence
 
-Both hparam and ordinary infer use the same Slurm lifecycle owner.
-Ordinary inference freezes its model command in the plan and worker, but its
-initial canonical row contains no execution identity, submission command, job,
-or cluster. The planned log path and preflight snapshot are not launch evidence.
-The worker does not write canonical status or rely on an inner EXIT trap:
-`run-frozen-job` owns its allocation and terminal sidecars.
+Both hparam and ordinary infer use the same Slurm lifecycle owner. Slurm owns
+queueing and job state: agent tools submit, observe, and cancel jobs but never
+hold a queue for them. A Slurm run's initial canonical row contains no
+execution identity or job. The planned log path is not launch evidence.
 
-### Submission and routing
+### Frozen job script
 
-One Slurm-backed canonical run owns one frozen leaf `job.sbatch`. Before any
-submission, the launcher freezes the plan-level execution snapshot's raw
-SHA-256 across all canonical runs. After launch preflight, each run queries
-`scontrol show config` for exactly one non-empty valid `ClusterName`, then
-atomically commits that cluster, execution identity, and `submitting` before
-calling `sbatch --parsable` with the snapshot digest. A failed identity query
-does not submit or bind the cluster; hparam leaves that run's state unchanged.
-The ordinary inference facade records an unsubmitted guard failure as described
-below. Dry-run does not query or bind the cluster. A cluster without a job id
-is valid only in `submitting` or
-`launch_failed`. The returned positive job id is an immutable binding; a bare
-job-id receipt retains the prebound cluster. Non-empty cluster bindings cannot
-be changed or cleared. Follow-up `squeue`, `scontrol`, and `scancel`
-commands route to the bound cluster. If submission times out, returns malformed
-output, or is interrupted after possible submission, the launcher searches the exact
-frozen comment token on the prebound cluster and frozen controller route;
-zero or multiple matches remain unresolved and never
-authorize another submission.
-Bound-cluster routing uses `--clusters=<scheduler_cluster>` unless the canonical
-run freezes `scheduler_direct_controller: true`. Monitoring and stop preserve
-the frozen choice. Slurm client commands run on the host where agent tools run.
-All Slurm client subprocesses remove
-inherited `SLURM_CLUSTERS`; `sbatch` additionally removes every `SBATCH_*`
-variable. The recorded and executed submission commands share one renderer.
-`SLURM_CONF`, `PATH`, other environment, and the parent process remain unchanged.
+Each run owns one frozen leaf `job.sbatch`, rendered at plan time with its
+SHA-256 recorded. Its job name is `{experiment_id}/{step_id}/{run_id}`. It
+requests one node with one task and one GPU per frozen Lightning device, the
+frozen CPUs per task, memory, walltime, and `nice`, plus `nodelist` when set. It
+sets `--no-requeue` and writes `run_dir/slurm.log`.
+
+Inside the allocation the job:
+
+1. Writes `git rev-parse HEAD` to `run_dir/runtime_commit`.
+2. Checks the frozen config and launch-script SHA-256 values.
+3. Runs one labeled `srun --kill-on-bad-exit=1` step of the frozen launch script.
+
+The step's exit code is written atomically to `run_dir/exit_code`, both at the
+normal end and from the `TERM` or `INT` trap. A trapped signal writes 143 or
+130, and a failed checkout, commit, or hash check writes 3. The job never
+compares HEAD with `planned_runtime_commit`; a difference is recorded rolling
+provenance. The commit file is point-in-time provenance only.
+
+### Submission and adoption
+
+`hparam-launch --execute`, `hparam-run-queue --execute`, and
+`infer-launch --execute` each make one submission pass under the run lock and
+return without polling. The pass runs in this order:
+
+1. Run the pre-submit gates: the frozen script hash, empty runtime and
+   checkpoint directories, and the live execution-snapshot probe.
+2. Commit the execution identity of each launchable run.
+3. Query `squeue --me --states=all` once. A failed query fails the command.
+
+Then each `planned` or `pending` run is handled by the first matching case:
+
+- **Two or more jobs share the run's name:** abort the pass before any `sbatch`
+  and leave the decision to a human.
+- **Exactly one job has the name:** adopt it by committing its job id, raw state,
+  and mapped status.
+- **No job, but `slurm.log` or `exit_code` already exists:** commit `lost` with
+  the reason `job ran earlier; id unknown`.
+- **Otherwise:** run `sbatch --parsable job.sbatch` with every `SBATCH_*`
+  variable removed, and commit the returned positive job id as `queued`. A
+  non-zero `sbatch` exit commits `launch_failed` with its error. A timeout
+  raises, and the next pass adopts the job by name.
+
+All Slurm client subprocesses run on the host where agent tools run and remove
+any inherited `SLURM_CLUSTERS`. The recorded and executed submission commands
+share one renderer. The job id is an immutable one-time binding.
 
 For a valid registered ordinary inference plan, an execute-time guard failure
-may commit `launch_failed` with its diagnostic only when a fresh canonical read
-under the launch lock is still `planned`/`pending` and has no launch evidence.
-Invalid or unregistered plan artifacts cannot authorize this update. Exceptions
-after `submitting` or a trusted execution binding retain the shared scheduler
-state and reconciliation rules; they never become an unsubmitted failure or authorize retry.
+may commit `launch_failed` with its diagnostic, but only when all of these hold:
 
-If a receipt names a different cluster, the launcher first commits the returned
-job id with the original cluster, `unknown_scheduler`, and raw state
-`SUBMISSION_CLUSTER_MISMATCH`, then aborts the submission batch. This quarantine
-and its reason survive stale observations. Monitoring does not read Slurm
-sidecars or query the scheduler for it; stop rejects before recording intent
-or cancelling. Queue and direct launch both block further submissions in that
-plan. There is no automatic conflict-clearing or legacy-cluster recovery path.
+- It happened before the pass committed execution identity.
+- A fresh canonical read under the launch lock still shows `planned` or `pending`.
+- That row has no launch evidence.
 
-### Sidecar reads and monitor-round reuse
+Invalid or unregistered plan artifacts cannot authorize this update. A failure
+after execution identity is committed never becomes an unsubmitted failure and
+never authorizes a retry.
 
-Slurm sidecar reads validate the managed path and read the same opened regular
-file in one operation. Raw `..` components, symlinks in any traversed
-directory or leaf, hardlinked files, and non-regular leaves are rejected. Only
-a missing open means absent evidence; read and UTF-8 failures remain errors. These
-checks do not promote sidecar job or cluster values to canonical identity.
+### Monitor state table
 
-One monitor round may share sidecar text within one managed owner, independently
-of scheduler job, cluster, or controller topology.
-Terminal files are read first; allocation reads include only runs with missing
-or empty terminal text, or a valid empty terminal mapping. Malformed or nonempty
-terminal data never causes allocation prefetch. Each run still parses and
-validates its own identity before scheduler queries. A future run's invalid file
-does not change the current run's error order: a failed batch is discarded and
-that phase uses exact per-file reads for the rest of the round. Conflicted runs
-and runs without a launched local target are excluded from prefetch. Missing or
-empty snapshots last only this round; a sidecar published afterward is observed
-in the next successful round. Absence never establishes a terminal state.
+The table applies to non-terminal Slurm rows that have a job id. One
+`squeue --me --states=all` snapshot serves every such row in a monitor round,
+and no query runs when no row needs one. The monitor copies
+`run_dir/runtime_commit` when present; a value that is not a full lowercase
+40-character Git commit ID is an error. It also records the job's raw state,
+reason, and node while `squeue` still lists the job.
 
-Within one `hparam-monitor` or `experiment-monitor` round, runs with complete
-canonical job, cluster, token, launched target, and explicit controller topology may
-share a successful exact-ID `squeue` query on the same frozen route. Groups
-require at least two distinct job IDs. The first participating run queries only
-after its sidecar validation; every run still validates its own evidence before
-using the shared result. Only positive matches are reused. Missing IDs take the
-normal single-job query path; failed or ambiguous batches publish no partial
-results and disable sharing for that group for the rest of the round. Legacy
-identities and submission-cluster conflicts are excluded.
-Each round starts fresh, and launch, stop, and submission reconciliation never
-consume these monitor snapshots. `scheduler_observed_at` remains the per-run
-observation processing time, not a promise of a separate scheduler sampling time.
-Health observation reuses a successful controller fallback's details, but keeps
-the fresh controller retry after accounting when the first controller query
-returned no record. This changes query timing, never frozen identity or the
-evidence required to commit lifecycle state.
+| `run_dir/exit_code` | `squeue --me --states=all` | Stop requested | Status |
+| --- | --- | --- | --- |
+| `0` | any | any | `completed` |
+| non-zero | any | yes / no | `stopped` / `failed`, keeping `scheduler_exit_code` |
+| absent | queued state (`PENDING` and similar) | no / yes | `queued` / `stopping` |
+| absent | running state (`RUNNING`, `CONFIGURING`, `COMPLETING`, `SUSPENDED`, and similar) | no / yes | `running` / `stopping` |
+| absent | terminal state, or not listed | yes | `stopped` |
+| absent | terminal state, or not listed | no | `lost`, with the raw state while still listed |
 
-### Terminal evidence
+An `exit_code` outside 0 to 255 is an error. `lost` is active and not sticky: it
+blocks finalization, and a later `exit_code` upgrades it. Labeled logs never
+own lifecycle.
 
-Live controller state comes from `squeue` and `scontrol`. If both no longer know
-a bound job, monitoring queries duplicate allocation records through `sacct`
-on the bound cluster when accounting is available. Accounting identity requires
-exactly one JobID row whose comment matches the frozen submit token; blank,
-mismatched, absent, or ambiguous comments fail without changing canonical
-lifecycle. A cluster that does not retain job comments cannot provide terminal
-accounting identity, so monitoring remains unchanged and fails closed. A
-small standard-library bootstrap forwards SIGTERM/SIGINT to the checkout-local
-Slurm worker and writes terminal evidence if that worker cannot import or start.
-The compute wrapper verifies the frozen launch/config hashes. Under a short
-runtime lock it requires a clean importable-code state, verifies that
-the named module still resolves inside the current repository, validates the
-live CLI, and observes the allocation-side actual commit. It then verifies the
-exact execution-snapshot bytes and requires current Python/version and module name to
-match; it does not require the current module-origin path to equal the frozen
-snapshot field. The wrapper writes allocation evidence and spawns `srun` before
-releasing the lock. The observed SHA does not promise that checkout bytes stay
-unchanged afterward. It requires
-`SLURM_NTASKS` to match the frozen GPU count and the observed Python executable
-and version to match the plan snapshot. It starts one foreground, labeled
-`srun --kill-on-bad-exit=1 --quit-on-interrupt` step with one task per GPU and no
-explicit task-level GPU binding, preserving the full allocation GPU visibility
-expected by the frozen Lightning devices in every rank. Each task emits one
-bounded startup-identity record before the runtime command; only global rank
-zero writes the diagnostic exit marker. The compute-node hostname is observed
-allocation evidence and may differ from the submission host. Only the wrapper
-writes allocation and terminal JSON sidecars bound to the same token and job
-id; the terminal sidecar records the aggregate step exit code. Labeled logs
-never own lifecycle. Sidecar job ids are local query candidates
-only; first binding requires a valid submission receipt or positive exact-token
-scheduler evidence on the frozen route. Sidecar clusters never select the query
-route or fill canonical identity. Query errors or missing records cannot save
-sidecar-only identity: without a canonical job id the run stays `submitting`.
-Legacy rows with a job id but no cluster can still finish with normal scheduler
-and matching sidecar evidence, without filling cluster or enabling the missing-
-evidence exception. A canonical completed or failed status
-normally requires both the matching terminal sidecar and a terminal scheduler
-observation; a scheduler failure overrides a zero wrapper exit code. The narrow
-accounting-disabled exception requires the exact bound job to be absent from
-`squeue`, explicitly invalid in `scontrol`, `sacct` to report that accounting
-storage is disabled, and the atomic sidecar to match the frozen job, token, and
-non-empty canonical cluster while controller topology remains explicitly
-frozen and matches the route used for every query. The exception records raw scheduler state `MISSING`, recovers
-exit zero as `completed` and non-zero as `failed`, and never infers `stopped`.
-Other unavailable controller or accounting evidence, a vanished job, or an
-incomplete terminal evidence pair becomes active `unknown_scheduler` rather
-than inferred success or failure. An accounting terminal record is scheduler
-evidence only; ordinary completion or failure still requires the matching
-sidecar.
+### Stopping and lost runs
 
-For ordinary inference, a surviving outer worker records the workload or
-guard's nonzero exit without needing an inner EXIT trap. Bootstrap, log-open,
-outer SIGKILL, or terminal-publication failures can leave no usable sidecar:
-authenticated raw `COMPLETED`, `FAILED`, or `TIMEOUT` then remains
-`unknown_scheduler` with diagnostic state, not guessed success or failure.
+`hparam-stop` and `infer-stop` require a reason. What a stop does depends on
+the row:
 
-### Stopping and uncertain states
+- **The row has a job id:** atomically record non-terminal `stopping` with the
+  reason, request time, and job binding, then call `scancel`. The monitor
+  commits `stopped` according to the table. A failed or interrupted
+  cancellation keeps that intent, and it may be retried only with the same
+  reason.
+- **The row is launchable:** look its name up in `squeue`. One match binds that
+  job and follows the job-id path. No match commits a metadata-only stop.
+  Several matches fail.
+- **The row is `lost`, or otherwise has no job id:** commit `stopped` without
+  calling `scancel`.
 
-Before `scancel`, `hparam-stop` and `infer-stop` atomically record nonterminal
-`stopping` with its reason, request time, and frozen job binding. A failed or
-interrupted cancellation preserves that canonical intent and may be retried
-only with the same reason. Monitoring commits `stopped` only after the same
-scheduler job is observed as `CANCELLED`; this explicit stop
-intent is the narrow exception that does not require a terminal sidecar because
-a pending job may never start its wrapper. A cancellation signal received while
-the wrapper is validating frozen identity terminates the job without starting
-the leaf process. Slurm transition flags remain active;
-in particular, raw `STOPPED` retains its allocation and maps to canonical
-`running` or `stopping`, never terminal `stopped`. When Slurm reports raw
-`REVOKED` federation sibling state, sibling-cluster rebinding is unsupported;
-the run fails closed as active `unknown_scheduler` while preserving the frozen
-job, cluster, scheduler reason, and any stop intent, and never authorizes
-rebinding or relaunch. A stale observation that was
-created before the stop request may update diagnostic evidence but cannot erase
-or bypass the canonical stop intent.
+Nothing is ever resubmitted automatically. A `lost` run is resolved only by a
+reasoned stop. A stale observation created before the stop request may update
+diagnostic evidence, but it cannot erase or bypass the canonical stop intent.
 
 ## Consumer requirements
 
