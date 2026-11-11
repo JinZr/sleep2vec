@@ -239,6 +239,12 @@ runtime-owned and are not hashed during planning.
 
 ### Runtime paths and data inputs
 
+Every runnable non-hparam run script (`launch.sh`, which is also the plan's
+`run.sh` when no managed scheduler is declared) re-hashes the run's frozen
+`config.yaml` against its plan-time `config_sha256`, together with the run's
+frozen input snapshots, before committing `running`. A mismatch fails the script
+before the workload starts and leaves the run `planned`.
+
 Except for `embedding_extraction`, runnable non-hparam scripts use an explicit
 absolute `execution.workdir` for cwd and PYTHONPATH, otherwise `REPO_ROOT`.
 Relative runtime-semantic dataset
@@ -332,8 +338,9 @@ The launcher runs on the shared direct managed scheduler under the run lock.
 A dry run republishes the canonical run manifest without recording
 launch evidence, and a completed experiment refuses launch. A pre-launch guard
 failure such as the runtime identity probe records `launch_failed` with its
-reason; a row that already has launch evidence or a PID receipt is never
-launched again.
+reason, and so does a start-command recheck failure, with the launcher's stderr
+tail in `scheduler_reason`; a row that already has launch evidence or a PID
+receipt is never launched again.
 
 The worker remains responsible for `running`, `completed`, and `failed` commits.
 Use `experiment-monitor` to observe the existing run; it neither launches work

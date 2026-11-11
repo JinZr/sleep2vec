@@ -362,14 +362,14 @@ def test_direct_launch_holds_runtime_sync_through_verification_head_capture_and_
 
     real_source = python_programs.source
     launcher_source = real_source("managed_scheduler.process_launch")
-    popen_line = "            process = subprocess.Popen(\n"
+    popen_line = "        process = subprocess.Popen(\n"
     assert launcher_source.count(popen_line) == 1
     launcher_source = launcher_source.replace(
         popen_line,
         (
-            f'            Path({str(before_popen)!r}).write_text("ready")\n'
-            f"            while not Path({str(popen_release)!r}).exists():\n"
-            '                __import__("time").sleep(0.01)\n' + popen_line
+            f'        Path({str(before_popen)!r}).write_text("ready")\n'
+            f"        while not Path({str(popen_release)!r}).exists():\n"
+            '            __import__("time").sleep(0.01)\n' + popen_line
         ),
     )
     verification_source = (

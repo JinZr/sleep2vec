@@ -707,12 +707,19 @@ def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_proc
     assert str(script) in command
     assert str(config) in command
     launcher = python_programs.source("managed_scheduler.process_launch")
-    assert launcher.index("subprocess.run(\n                    verification") < launcher.index(
-        "process = subprocess.Popen"
-    )
+    assert launcher.index("subprocess.run(verification") < launcher.index("process = subprocess.Popen")
 
 
-def test_verified_launch_rejects_frozen_argv_inside_runtime_lock_before_popen(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize(
+    ("failing_program", "message"),
+    [
+        ("managed_scheduler.runtime_identity", "Frozen run artifact changed before process start: config.yaml"),
+        ("managed_scheduler.cli_preflight", "Frozen argv rejected in launch lock"),
+    ],
+)
+def test_verified_launch_failure_inside_runtime_lock_is_launch_failed_with_reason(
+    tmp_path: Path, monkeypatch, failing_program: str, message: str
+):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     tracked = tmp_path / "tracked.txt"
     tracked.write_text("runtime\n")
@@ -747,10 +754,10 @@ def test_verified_launch_rejects_frozen_argv_inside_runtime_lock_before_popen(tm
     real_source = python_programs.source
 
     def embedded_source(name: str) -> str:
-        if name == "managed_scheduler.runtime_identity":
+        if name == failing_program:
+            return f"import sys; print({message!r}, file=sys.stderr); raise SystemExit(2)\n"
+        if name in {"managed_scheduler.runtime_identity", "managed_scheduler.cli_preflight"}:
             return "pass\n"
-        if name == "managed_scheduler.cli_preflight":
-            return "import sys; print('Frozen argv rejected in launch lock', file=sys.stderr); raise SystemExit(2)\n"
         return real_source(name)
 
     monkeypatch.setattr(python_programs, "source", embedded_source)
@@ -768,10 +775,12 @@ def test_verified_launch_rejects_frozen_argv_inside_runtime_lock_before_popen(tm
         run_id="run-000",
     )
 
-    result = subprocess.run(["bash", "-lc", command], text=True, capture_output=True)
+    status, reason = managed_scheduler.start_process({"target": "local"}, command)
 
-    assert result.returncode == managed_scheduler.RETRYABLE_PRE_SPAWN_EXIT_CODE
-    assert "Frozen argv rejected in launch lock" in result.stderr
+    # A verification failure is definite, never a pending retry; the verifier's own stderr is the reason.
+    assert status == "launch_failed"
+    assert reason.startswith("launch exit 2: ")
+    assert reason.endswith(message)
     assert not pid_path.exists()
     assert not marker.exists()
 
@@ -910,32 +919,41 @@ def test_launch_returncode_255_is_launch_failed(monkeypatch):
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 255, "", "launcher failed"),
     )
 
-    assert managed_scheduler.start_process({"target": "local"}, "managed launch") == "launch_failed"
+    assert managed_scheduler.start_process({"target": "local"}, "managed launch") == (
+        "launch_failed",
+        "launch exit 255: launcher failed",
+    )
 
 
-def test_pre_spawn_verification_failure_is_retryable(monkeypatch):
+def test_former_retryable_exit_is_launch_failed_with_one_line_bounded_stderr_tail(monkeypatch):
+    stderr = "Traceback (most recent call last):\n" + "x" * 2000 + "\n\nRuntimeError: runtime compatibility changed\n"
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], managed_scheduler.RETRYABLE_PRE_SPAWN_EXIT_CODE, "", "runtime compatibility changed"
-        ),
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 75, "", stderr),
     )
 
-    assert managed_scheduler.start_process({"target": "local"}, "managed launch") == "pending"
+    status, reason = managed_scheduler.start_process({"target": "local"}, "managed launch")
+
+    # Exit 75 no longer maps to a silent pending retry.
+    assert status == "launch_failed"
+    assert reason.startswith("launch exit 75: ")
+    assert reason.endswith(" / RuntimeError: runtime compatibility changed")
+    assert "\n" not in reason
+    assert len(reason) == len("launch exit 75: ") + 1000
 
 
-def test_retryable_pre_spawn_failure_does_not_consume_managed_run(tmp_path: Path):
+def test_pre_spawn_failure_records_launch_failed_reason_and_is_not_retried(tmp_path: Path):
     _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
-    launcher = FakeLauncher("pending", "launched", verify_target=False)
+    reason = "launch exit 2: Frozen run artifact changed before process start: config.yaml"
+    launcher = FakeLauncher(("launch_failed", reason), verify_target=False)
 
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "pending"
-
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
-    assert len(launcher.starts) == 2
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
+    assert len(launcher.starts) == 1
+    row = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert (row["status"], row["scheduler_reason"]) == ("launch_failed", reason)
 
 
 def test_unconfirmed_launch_is_not_relaunched(tmp_path: Path):

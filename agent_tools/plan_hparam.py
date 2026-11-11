@@ -713,16 +713,13 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
     inputs = inputs_value if isinstance(inputs_value, dict) else {}
     runtime_value = recipe.get("runtime")
     runtime = runtime_value if isinstance(runtime_value, dict) else {}
-    config_path = (
-        out / FROZEN_FINAL_EVAL_CONFIG_NAME if has_explicit_final_eval_config(recipe) else out / "config.source.yaml"
-    )
     return rendering.render_command(
         [
             execution["python"],
             "-m",
             rendering.variant_module(recipe, "infer"),
             "--config",
-            config_path,
+            _final_eval_config_snapshot(recipe, out)["path"],
             "--ckpt-path",
             _resolved_ckpt_path(recipe),
             "--label-name",
@@ -735,16 +732,35 @@ def compile_hparam_final_command(recipe: dict[str, Any], out: Path) -> str | Non
     )
 
 
-def render_hparam_final_script(recipe: dict[str, Any], command: str) -> str:
+def _final_eval_config_snapshot(recipe: dict[str, JsonValue], out: Path) -> plan_contract.FrozenInputSnapshot:
+    """The plan-owned config the final external test reads, bound to the digest its source froze at plan time."""
+    if has_explicit_final_eval_config(recipe):
+        path, field = out / FROZEN_FINAL_EVAL_CONFIG_NAME, "inputs.final_eval_config_path"
+    else:
+        path, field = out / "config.source.yaml", "inputs.config"
+    sha256 = plan_contract.frozen_input_snapshot(recipe, field)["sha256"]
+    return {"field": "final_eval_config", "path": str(path), "sha256": sha256}
+
+
+def render_hparam_final_script(recipe: dict[str, Any], out: Path, command: str) -> str:
     plan_context = plan_contract.frozen_plan_context(recipe)
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
     evaluation_value = recipe.get("evaluation_policy")
     evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
+    # Like each run's launch.sh, the script re-hashes its frozen config before evaluation starts.
+    verify_command = rendering.render_command(
+        [
+            execution["python"],
+            "-c",
+            python_programs.source("plan_rendering.verify_input_snapshots"),
+            json.dumps([_final_eval_config_snapshot(recipe, out)], sort_keys=True, separators=(",", ":")),
+        ]
+    )
     return (
         "\n".join(
             rendering.hparam_script_lines(
-                [command],
+                [verify_command, command],
                 selection_split=str(evaluation.get("selection_split") or ""),
                 final_external_test=True,
                 run_cwd=Path(str(execution.get("workdir") or plan_context["repo_root"])),
@@ -897,7 +913,9 @@ def compile_hparam_plan_contract(
         "run_files": contracts,
         "launch_script_text": compile_hparam_run_all_script(recipe, out),
         "final_command": final_command,
-        "final_script_text": render_hparam_final_script(recipe, final_command) if final_command is not None else None,
+        "final_script_text": (
+            render_hparam_final_script(recipe, out, final_command) if final_command is not None else None
+        ),
         "final_eval_config_required": final_config_required,
         "final_eval_config_sha256": final_snapshot["sha256"] if final_snapshot is not None else None,
     }
@@ -1055,7 +1073,7 @@ def write_hparam_plan(
     if final_allowed:
         final_command = compile_hparam_final_command(recipe, out)
         assert final_command is not None
-        final_script_text = render_hparam_final_script(recipe, final_command)
+        final_script_text = render_hparam_final_script(recipe, out, final_command)
         write_text(final_script_path, final_script_text, executable=True)
         plan_lines.append("Final external-test script generated because final test was explicitly unlocked.")
     else:

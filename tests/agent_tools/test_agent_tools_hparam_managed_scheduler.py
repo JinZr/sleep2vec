@@ -140,7 +140,7 @@ def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_pat
     monkeypatch.setattr(
         managed_scheduler,
         "start_process",
-        lambda _execution, command: started.append(command) or "launched",
+        lambda _execution, command: started.append(command) or ("launched", ""),
     )
     monkeypatch.setattr(
         hparam_runtime.evidence,
@@ -281,7 +281,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
         )
         assert not (tmp_path / "reports" / "status.md").exists()
         started.append(command)
-        return "launch_failed"
+        return "launch_failed", "launch exit 2: fixture"
 
     monkeypatch.setattr(managed_scheduler, "start_process", start_process)
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda *_args: pytest.fail("queue should make progress"))
@@ -754,7 +754,7 @@ def test_managed_launch_preserves_optional_verification_arguments(tmp_path, chec
     hooks = managed_scheduler.SchedulerHooks(
         validated_snapshot=lambda *_args, **_kwargs: (snapshot, False),
         build_command=lambda *_args, **kwargs: calls.append(kwargs) or "fixture-command",
-        start_process=lambda *_args: "launch_failed",
+        start_process=lambda *_args: ("launch_failed", "launch exit 2: fixture"),
     )
 
     result = managed_scheduler.launch_managed_runs(

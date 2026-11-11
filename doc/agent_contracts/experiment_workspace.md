@@ -193,7 +193,8 @@ Mixed commits are not a scientific variable.
 
 Direct launch waits for the embedded launcher to return a definitive
 pre-spawn failure or committed PID receipt, including while that launcher waits
-for the runtime lock.
+for the runtime lock. A pre-spawn failure commits `launch_failed` with the
+launcher's stderr tail in `scheduler_reason`; it is never retried.
 
 Commit drift does not authorize mutation of registered recipes, plans, configs,
 scripts, or `execution_snapshot.json`. `execution.runtime_commit` remains the

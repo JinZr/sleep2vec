@@ -176,15 +176,14 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
                 raise RuntimeError(f"Preset runtime preflight failed: {detail}")
             return None, False
 
-        def claim_and_start(_frozen_execution: object, command: str) -> str:
+        def claim_and_start(_frozen_execution: object, command: str) -> tuple[str, str]:
             # Claim before fork: an interrupted manager must not turn an uncertain launch into a retry.
             merge_run_manifest(
                 workspace,
                 [{"step_id": key[0], "run_id": key[1], "status": "launched", "launched_at": utc_now()}],
                 lock_held=True,
             )
-            # A pre-spawn verification failure after the claim is a definite launch failure, not a pending retry.
-            return managed_scheduler.start_process(execution, command, retry_pre_spawn_failure=False)
+            return managed_scheduler.start_process(execution, command)
 
         try:
             return managed_scheduler.launch_managed_runs(
