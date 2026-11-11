@@ -137,6 +137,9 @@ def test_hparam_metadata_stop_publication_failure_keeps_terminal_commit(
 ):
     if backend == "slurm":
         plan_dir, plan = _write_slurm_plan(tmp_path)
+        # A launchable Slurm row is looked up by job name first; no job means a metadata-only stop.
+        monkeypatch.setattr(slurm, "user_jobs", lambda *_a, **_k: [])
+        monkeypatch.setattr(slurm, "cancel", lambda *_a, **_k: pytest.fail("no scheduler cancel"))
     else:
         recipe = _hparam_recipe(tmp_path)
         plan_dir = tmp_path / "plan"
