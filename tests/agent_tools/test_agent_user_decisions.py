@@ -377,37 +377,6 @@ def test_user_decision_template_is_complete_when_published(tmp_path: Path, monke
     assert not list(output_dir.glob(".decisions.yaml.*.tmp"))
 
 
-@pytest.mark.parametrize("competitor_kind", ["symlink", "hardlink"])
-def test_doctor_rejects_aliased_user_decisions_created_during_publication(
-    tmp_path: Path,
-    monkeypatch,
-    competitor_kind: str,
-):
-    recipe_path = write_finetune_recipe(tmp_path, include_label=False)
-    recipe, _cfg, report = evaluate_recipe(recipe_path)
-    output_dir = tmp_path / "doctor"
-    template = output_dir / "decisions.yaml"
-    outside = tmp_path / "outside.yaml"
-    outside.write_text("user competitor\n")
-    real_link = os.link
-
-    def competing_link(source, destination, *args, **kwargs):
-        if Path(destination) == template:
-            if competitor_kind == "symlink":
-                template.symlink_to(outside)
-            else:
-                template.hardlink_to(outside)
-        return real_link(source, destination, *args, **kwargs)
-
-    monkeypatch.setattr(os, "link", competing_link)
-
-    with pytest.raises(ValueError, match="Managed output paths"):
-        write_user_decision_template(output_dir, recipe, report, preserve_existing=True)
-
-    assert outside.read_text() == "user competitor\n"
-    assert not list(output_dir.glob(".decisions.yaml.*.tmp"))
-
-
 def test_doctor_rejects_output_directory_owned_by_pass_plan(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     output_dir = tmp_path / "plan"

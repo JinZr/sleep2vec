@@ -391,7 +391,6 @@ def test_active_and_terminal_launch_and_monitor_do_not_validate_configs(tmp_path
     )
     monkeypatch.setattr(managed_scheduler, "launch_managed_runs", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(hparam_runtime, "merge_run_manifest", lambda _root, rows: rows)
-    monkeypatch.setattr(hparam_runtime, "write_status_report", lambda *_args: None)
     for dry_run in (False, True):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=dry_run)
     assert hparam_runtime.monitor_hparam_runs(plan_dir) == plan_dir / "run_status.tsv"

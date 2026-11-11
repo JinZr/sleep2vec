@@ -329,7 +329,7 @@ and start token. Loss of the launching connection or an incomplete receipt does
 not authorize another launch. These controls preserve the preset runtime
 contract above; they do not create the hparam module/host execution snapshot.
 The launcher runs on the shared direct managed scheduler under the run lock.
-A dry run refreshes the manifest projection and status report without recording
+A dry run republishes the canonical run manifest without recording
 launch evidence, and a completed experiment refuses launch. A pre-launch guard
 failure such as the runtime identity probe records `launch_failed` with its
 reason; a row that already has launch evidence or a PID receipt is never

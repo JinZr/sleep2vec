@@ -374,7 +374,8 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     experiment_monitor = _command(
         sub,
         "experiment-monitor",
-        "Refresh an experiment's status report from its manifests and report queue-runner liveness. "
+        "Observe an experiment's runs, commit their status and write reports/monitor.md; report queue-runner "
+        "liveness. "
         "Never launches runs or starts a runner.",
     )
     experiment_monitor.add_argument("--run-dir", required=True, help="Experiment workspace root to monitor.")
@@ -388,7 +389,7 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     experiment_status_parser = _command(
         sub,
         "experiment-status",
-        "Print a projected status snapshot for an experiment workspace.",
+        "Print a status snapshot computed from run_manifest.tsv on demand; writes nothing.",
     )
     experiment_status_parser.add_argument("--run-dir", required=True, help="Experiment workspace root to report on.")
     _add_json(experiment_status_parser)

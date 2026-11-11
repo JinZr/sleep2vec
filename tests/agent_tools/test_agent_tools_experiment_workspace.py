@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import ast
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 import csv
-import errno
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -12,7 +10,6 @@ import subprocess
 import sys
 import threading
 import time
-from types import SimpleNamespace
 
 from agent_tool_test_helpers import (
     SUBPROCESS_WAIT_SECONDS,
@@ -103,12 +100,11 @@ def test_managed_plan_writes_semantic_run_workspace_without_schema_version(tmp_p
     assert Path(run["script"]).name == "launch.sh"
     assert plan["resolved_recipe_sha256"] == file_sha256(plan_dir / "recipe.resolved.yaml")
     assert (tmp_path / "experiment.yaml").exists()
-    assert (tmp_path / "run_matrix.csv").exists()
     assert (tmp_path / "run_manifest.tsv").exists()
+    assert not (tmp_path / "run_matrix.csv").exists()
+    assert not (tmp_path / "reports" / "run_matrix.md").exists()
     assert "`RESEARCH_LOG.md`" in (tmp_path / "README.md").read_text()
-    with (tmp_path / "run_matrix.csv").open(newline="") as file_obj:
-        matrix = list(csv.DictReader(file_obj))
-    assert matrix[0]["run_name"] == "lr-2e-6"
+    assert read_run_manifest(tmp_path)[0]["run_name"] == "lr-2e-6"
     managed_text = "\n".join(
         path.read_text()
         for path in [
@@ -405,9 +401,6 @@ def test_run_ids_are_scoped_by_step_in_experiment_manifest(tmp_path: Path):
         ("prepare-data", "run-000"),
         ("train-model", "run-000"),
     ]
-    report = (tmp_path / "reports" / "run_matrix.md").read_text()
-    assert "prepare-data / run-000" in report
-    assert "train-model / run-000" in report
 
 
 def test_merge_run_manifest_rejects_new_run_owned_by_a_different_experiment(tmp_path: Path):
@@ -435,7 +428,6 @@ def test_merge_run_manifest_rejects_new_run_owned_by_a_different_experiment(tmp_
         )
 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
-    assert not (tmp_path / "run_matrix.csv").exists()
 
 
 @pytest.mark.parametrize(
@@ -732,213 +724,6 @@ def test_merge_run_manifest_returns_the_canonical_rows_it_committed(tmp_path: Pa
     assert committed[0]["status"] == "failed"
 
 
-@pytest.mark.parametrize("target_name", ["run_matrix.csv", "reports/run_matrix.md"])
-@pytest.mark.parametrize("target_kind", ["directory", "hardlink", "symlink"])
-def test_merge_run_manifest_rejects_invalid_derived_targets_before_canonical_commit(
-    tmp_path: Path, target_name: str, target_kind: str
-):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(tmp_path)
-    identity = {"experiment_id": "unit", "step_id": "train", "run_id": "run-000"}
-    merge_run_manifest(tmp_path, [{**identity, "status": "planned"}])
-    manifest_path = tmp_path / "run_manifest.tsv"
-    target = tmp_path / target_name
-    target.unlink()
-    if target_kind == "directory":
-        target.mkdir()
-    elif target_kind == "hardlink":
-        target.hardlink_to(manifest_path)
-    else:
-        target.symlink_to(manifest_path)
-    before = {
-        path: path.read_bytes()
-        for path in (manifest_path, tmp_path / "run_matrix.csv", tmp_path / "reports" / "run_matrix.md")
-        if path != target
-    }
-
-    with pytest.raises(ValueError, match="Managed output"):
-        merge_run_manifest(tmp_path, [{**identity, "status": "running"}])
-
-    assert {path: path.read_bytes() for path in before} == before
-
-
-def test_append_event_rejects_canonical_manifest_alias(tmp_path: Path):
-    initialize_run_manifest(tmp_path)
-    manifest_path = tmp_path / "run_manifest.tsv"
-    events_path = tmp_path / "events.jsonl"
-    events_path.hardlink_to(manifest_path)
-    before = manifest_path.read_bytes()
-
-    with pytest.raises(ValueError, match="Managed output"):
-        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
-
-    assert manifest_path.read_bytes() == before
-
-
-@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
-def test_append_event_rejects_leaf_alias_created_after_parent_open(tmp_path: Path, monkeypatch, alias_kind: str):
-    events_path = tmp_path / "events.jsonl"
-    outside = tmp_path / "outside.jsonl"
-    outside.write_text("sentinel\n")
-    before = outside.read_bytes()
-    original_open_parent = experiment_io._open_managed_parent
-    swapped = False
-
-    def swap_leaf(root_descriptor, relative, *, create):
-        nonlocal swapped
-        parent_descriptor, target_name = original_open_parent(root_descriptor, relative, create=create)
-        if target_name == "events.jsonl" and not swapped:
-            swapped = True
-            if alias_kind == "symlink":
-                events_path.symlink_to(outside)
-            else:
-                events_path.hardlink_to(outside)
-        return parent_descriptor, target_name
-
-    monkeypatch.setattr(experiment_io, "_open_managed_parent", swap_leaf)
-
-    with pytest.raises((OSError, ValueError)):
-        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
-
-    assert outside.read_bytes() == before
-
-
-def test_append_event_does_not_follow_workspace_drift_after_root_open(tmp_path: Path, monkeypatch):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    moved_workspace = tmp_path / "workspace-moved"
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    outside_events = outside / "events.jsonl"
-    outside_events.write_text("sentinel\n")
-    before = outside_events.read_bytes()
-    original_open_parent = experiment_io._open_managed_parent
-    swapped = False
-
-    def swap_workspace(root_descriptor, relative, *, create):
-        nonlocal swapped
-        parent_descriptor, target_name = original_open_parent(root_descriptor, relative, create=create)
-        if target_name == "events.jsonl" and not swapped:
-            swapped = True
-            workspace.rename(moved_workspace)
-            workspace.symlink_to(outside, target_is_directory=True)
-        return parent_descriptor, target_name
-
-    monkeypatch.setattr(experiment_io, "_open_managed_parent", swap_workspace)
-
-    with pytest.raises(ValueError, match="Managed output path changed"):
-        append_event(workspace, "run_status_changed", {"run_id": "run-000"})
-
-    assert outside_events.read_bytes() == before
-    assert not (moved_workspace / "events.jsonl").exists()
-
-
-@pytest.mark.parametrize("target_exists", [False, True])
-def test_append_event_reports_unknown_when_workspace_moves_during_rename(
-    tmp_path: Path,
-    monkeypatch,
-    target_exists: bool,
-):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    moved_workspace = tmp_path / "workspace-moved"
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    events_path = workspace / "events.jsonl"
-    outside_events = outside / "events.jsonl"
-    outside_events.write_text("outside\n")
-    if target_exists:
-        events_path.write_text('{"event_type": "before"}\n')
-
-    def move_workspace():
-        workspace.rename(moved_workspace)
-        workspace.symlink_to(outside, target_is_directory=True)
-
-    rename_owner = experiment_io.os if target_exists else experiment_io
-    rename_name = "replace" if target_exists else "_rename_noreplace_at"
-    original_rename = getattr(rename_owner, rename_name)
-
-    def rename_after_workspace_moves(*args, **kwargs):
-        move_workspace()
-        return original_rename(*args, **kwargs)
-
-    monkeypatch.setattr(rename_owner, rename_name, rename_after_workspace_moves)
-
-    with pytest.raises(RuntimeError, match="publication outcome is unknown"):
-        append_event(workspace, "after", {})
-
-    assert outside_events.read_text() == "outside\n"
-    events = [json.loads(line) for line in (moved_workspace / "events.jsonl").read_text().splitlines()]
-    assert [event["event_type"] for event in events] == (["before", "after"] if target_exists else ["after"])
-
-
-def test_append_event_does_not_modify_hardlink_added_after_snapshot(tmp_path: Path, monkeypatch):
-    events_path = tmp_path / "events.jsonl"
-    events_path.write_text('{"event_type": "before"}\n')
-    outside = tmp_path / "outside.jsonl"
-    before = events_path.read_bytes()
-    original_open_temporary = experiment_io._open_temporary_at
-
-    def add_hardlink(parent_descriptor, target_name):
-        outside.hardlink_to(events_path)
-        return original_open_temporary(parent_descriptor, target_name)
-
-    monkeypatch.setattr(experiment_io, "_open_temporary_at", add_hardlink)
-
-    with pytest.raises(ValueError, match="missing or aliased"):
-        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
-
-    assert events_path.read_bytes() == before
-    assert outside.read_bytes() == before
-
-
-def test_append_event_rejects_aliased_temporary_before_writing(tmp_path: Path, monkeypatch):
-    events_path = tmp_path / "events.jsonl"
-    events_path.write_text('{"event_type": "before"}\n')
-    before = events_path.read_bytes()
-    outside = tmp_path / "outside.jsonl"
-    original_open_temporary = experiment_io._open_temporary_at
-
-    def alias_temporary(parent_descriptor, target_name):
-        descriptor, temporary = original_open_temporary(parent_descriptor, target_name)
-        outside.hardlink_to(tmp_path / temporary)
-        return descriptor, temporary
-
-    monkeypatch.setattr(experiment_io, "_open_temporary_at", alias_temporary)
-
-    with pytest.raises(ValueError, match="temporary is aliased"):
-        append_event(tmp_path, "run_status_changed", {"run_id": "run-000"})
-
-    assert events_path.read_bytes() == before
-    assert outside.read_bytes() == b""
-
-
-def test_append_event_rejects_replacement_workspace_carrying_target_inode(tmp_path: Path, monkeypatch):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "experiment.yaml").write_text("experiment:\n  id: original\n")
-    events_path = workspace / "events.jsonl"
-    events_path.write_text('{"event_type": "before"}\n')
-    before = events_path.read_bytes()
-    moved_workspace = tmp_path / "workspace-moved"
-    original_open_temporary = experiment_io._open_temporary_at
-
-    def replace_workspace(parent_descriptor, target_name):
-        workspace.rename(moved_workspace)
-        workspace.mkdir()
-        (workspace / "experiment.yaml").write_text("experiment:\n  id: replacement\n")
-        (moved_workspace / "events.jsonl").replace(workspace / "events.jsonl")
-        return original_open_temporary(parent_descriptor, target_name)
-
-    monkeypatch.setattr(experiment_io, "_open_temporary_at", replace_workspace)
-
-    with pytest.raises(ValueError, match="Managed output path changed"):
-        append_event(workspace, "run_status_changed", {"run_id": "run-000"})
-
-    assert (workspace / "events.jsonl").read_bytes() == before
-    assert "replacement" in (workspace / "experiment.yaml").read_text()
-
-
 def test_append_event_leaves_original_log_intact_when_temporary_write_fails(tmp_path: Path, monkeypatch):
     events_path = tmp_path / "events.jsonl"
     events_path.write_text('{"event_type": "before"}\n')
@@ -959,8 +744,8 @@ def test_append_event_leaves_original_log_intact_when_temporary_write_fails(tmp_
     assert [event["event_type"] for event in events] == ["before", "run_status_changed"]
 
 
-def test_concurrent_append_events_share_the_managed_cas_lock(tmp_path: Path, monkeypatch):
-    original_lock = experiment_io._blocking_file_lock_at
+def test_concurrent_append_events_share_the_sidecar_lock(tmp_path: Path, monkeypatch):
+    original_lock = experiment_io.blocking_file_lock
     first_locked = threading.Event()
     second_attempted = threading.Event()
     release_first = threading.Event()
@@ -968,20 +753,20 @@ def test_concurrent_append_events_share_the_managed_cas_lock(tmp_path: Path, mon
     attempts = 0
 
     @contextmanager
-    def observe_lock(parent_descriptor, name):
+    def observe_lock(path):
         nonlocal attempts
         with state_lock:
             attempts += 1
             if attempts == 2:
                 second_attempted.set()
-        with original_lock(parent_descriptor, name):
+        with original_lock(path):
             first_holder = not first_locked.is_set()
             if first_holder:
                 first_locked.set()
                 assert release_first.wait(timeout=10)
             yield
 
-    monkeypatch.setattr(experiment_io, "_blocking_file_lock_at", observe_lock)
+    monkeypatch.setattr(experiment_io, "blocking_file_lock", observe_lock)
     errors = []
 
     def write_event(event_type):
@@ -1005,65 +790,6 @@ def test_concurrent_append_events_share_the_managed_cas_lock(tmp_path: Path, mon
     assert errors == []
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events] == ["first", "second"]
-
-
-def test_event_read_waits_for_append_lock_holder(tmp_path: Path, monkeypatch):
-    append_event(tmp_path, "before", {})
-    events_path = tmp_path / "events.jsonl"
-    waiting = threading.Event()
-    committed = threading.Event()
-    in_managed_read = threading.Event()
-    outcome = {}
-    real_lstat = os.lstat
-    real_read = experiment_io.read_managed_files_at
-    real_lock = experiment_io.blocking_file_lock
-
-    def lstat(path, *args, **kwargs):
-        info = real_lstat(path, *args, **kwargs)
-        # Park only the managed read between its stat and open; path validation stats the log first.
-        if threading.current_thread() is reader and in_managed_read.is_set() and os.fspath(path) == str(events_path):
-            waiting.set()
-            assert committed.wait(timeout=5)
-        return info
-
-    def read_managed_files_at(*args, **kwargs):
-        in_managed_read.set()
-        try:
-            return real_read(*args, **kwargs)
-        finally:
-            in_managed_read.clear()
-
-    @contextmanager
-    def blocking_file_lock(path):
-        if threading.current_thread() is reader:
-            waiting.set()
-        with real_lock(path):
-            yield
-
-    def target():
-        try:
-            outcome["events"] = experiment_workspace.read_experiment_events(tmp_path)
-        except BaseException as exc:
-            outcome["error"] = exc
-
-    reader = threading.Thread(target=target)
-    monkeypatch.setattr(os, "lstat", lstat)
-    monkeypatch.setattr(experiment_io, "read_managed_files_at", read_managed_files_at)
-    monkeypatch.setattr(experiment_io, "blocking_file_lock", blocking_file_lock)
-    with real_lock(tmp_path / ".events.jsonl.cas.lock"):
-        reader.start()
-        assert waiting.wait(timeout=5)
-        # Replace the log as append_event does while it holds the append lock.
-        replacement = tmp_path / ".events.jsonl.replacement"
-        replacement.write_text(events_path.read_text() + json.dumps({"event_type": "concurrent"}) + "\n")
-        os.replace(replacement, events_path)
-        committed.set()
-    reader.join(timeout=10)
-
-    assert not reader.is_alive()
-    if "error" in outcome:
-        raise outcome["error"]
-    assert [event["event_type"] for event in outcome["events"]] == ["before", "concurrent"]
 
 
 def test_append_event_has_no_failing_tail_after_commit(tmp_path: Path, monkeypatch):
@@ -1091,11 +817,6 @@ def test_append_event_has_no_failing_tail_after_commit(tmp_path: Path, monkeypat
     monkeypatch.setattr(experiment_io.os, "close", original_close)
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events] == ["before", "committed"]
-
-
-def _matrix_run_ids(root: Path) -> list[str]:
-    with (root / "run_matrix.csv").open(newline="") as file_obj:
-        return [row["run_id"] for row in csv.DictReader(file_obj)]
 
 
 @pytest.mark.parametrize(
@@ -1132,42 +853,6 @@ def test_read_run_manifest_distinguishes_missing_from_valid_header_only(tmp_path
 
     assert (tmp_path / "run_manifest.tsv").read_text() == "step_id\trun_id\n"
     assert read_run_manifest(tmp_path) == []
-
-
-def test_read_run_manifest_rejects_alias_swapped_after_exists_check(tmp_path: Path, monkeypatch):
-    root = tmp_path / "workspace"
-    root.mkdir()
-    manifest = root / "run_manifest.tsv"
-    manifest.write_text("step_id\trun_id\n")
-    outside = tmp_path / "outside.tsv"
-    outside.write_text("experiment_id\tstep_id\trun_id\tstatus\nforeign\tb\trun-999\tcompleted\n")
-    real_exists = experiment_io.path_exists_at
-
-    def exists_then_swap(path):
-        exists = real_exists(path)
-        if Path(path) == manifest:
-            manifest.unlink()
-            manifest.symlink_to(outside)
-        return exists
-
-    monkeypatch.setattr(experiment_io, "path_exists_at", exists_then_swap)
-
-    with pytest.raises(ValueError, match="missing or aliased"):
-        read_run_manifest(root)
-
-
-@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
-def test_read_run_manifest_rejects_aliased_canonical_table(tmp_path: Path, alias_kind: str):
-    outside = tmp_path / "outside.tsv"
-    outside.write_text("experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain-model\trun-000\tfailed\n")
-    manifest = tmp_path / "run_manifest.tsv"
-    if alias_kind == "symlink":
-        manifest.symlink_to(outside)
-    else:
-        manifest.hardlink_to(outside)
-
-    with pytest.raises(ValueError, match="missing or aliased"):
-        read_run_manifest(tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -1227,7 +912,6 @@ def test_empty_canonical_commit_preserves_the_valid_identity_header(tmp_path: Pa
     assert merge_run_manifest(tmp_path, []) == []
 
     assert (tmp_path / "run_manifest.tsv").read_text() == "step_id\trun_id\n"
-    assert (tmp_path / "run_matrix.csv").read_text() == "step_id,run_id\n"
     assert read_run_manifest(tmp_path) == []
 
 
@@ -1247,210 +931,6 @@ def test_concurrent_local_manifest_writers_preserve_distinct_runs(tmp_path: Path
 
     assert [process.wait(timeout=SUBPROCESS_WAIT_SECONDS) for process in processes] == [0, 0]
     assert {row["run_id"] for row in read_run_manifest(tmp_path)} == {"run-000", "run-001"}
-
-
-@pytest.mark.parametrize("lock_held", [False, True])
-@pytest.mark.parametrize("invalid_output", [False, True])
-def test_merge_run_manifest_validates_outputs_under_local_lock(
-    tmp_path: Path, monkeypatch, lock_held: bool, invalid_output: bool
-):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(tmp_path)
-    manifest_path = tmp_path / "run_manifest.tsv"
-    lock_path = tmp_path / "run_manifest.tsv.lock"
-    before = manifest_path.read_bytes()
-    if invalid_output:
-        (tmp_path / "run_matrix.csv").mkdir()
-    real_lock = experiment_io.blocking_file_lock
-    real_validate = experiment_io.validate_managed_output_paths
-    held = False
-    validations = []
-
-    @contextmanager
-    def tracked_lock(path):
-        nonlocal held
-        assert Path(path) == lock_path
-        assert not held, "merge must not reacquire its caller's manifest lock"
-        with real_lock(path):
-            held = True
-            try:
-                yield
-            finally:
-                held = False
-
-    def validate(root, paths):
-        validations.append((list(paths), held))
-        if list(paths) != [lock_path]:
-            assert held, "cross-file output validation must hold the manifest lock"
-        return real_validate(root, paths)
-
-    monkeypatch.setattr(experiment_io, "blocking_file_lock", tracked_lock)
-    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", validate)
-    rows = [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}]
-    with tracked_lock(lock_path) if lock_held else nullcontext():
-        if invalid_output:
-            with pytest.raises(ValueError, match="Managed output"):
-                merge_run_manifest(tmp_path, rows, lock_held=lock_held)
-        else:
-            assert merge_run_manifest(tmp_path, rows, lock_held=lock_held) == rows
-        assert held is lock_held
-
-    assert validations == [
-        ([lock_path], lock_held),
-        (
-            [
-                manifest_path,
-                lock_path,
-                tmp_path / "experiment.yaml",
-                tmp_path / "run_matrix.csv",
-                tmp_path / "reports" / "run_matrix.md",
-                tmp_path / "events.jsonl",
-            ],
-            True,
-        ),
-    ]
-    assert not held
-    with lock_path.open("a+") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    if invalid_output:
-        assert manifest_path.read_bytes() == before
-        assert not (tmp_path / "reports" / "run_matrix.md").exists()
-
-
-@pytest.mark.parametrize("alias_kind", ["workspace", "lock"])
-def test_merge_run_manifest_rejects_alias_before_opening_local_lock(tmp_path: Path, monkeypatch, alias_kind: str):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(workspace)
-    before = (workspace / "run_manifest.tsv").read_bytes()
-    outside = tmp_path / "outside.lock"
-    outside.write_text("sentinel\n")
-    if alias_kind == "workspace":
-        supplied = tmp_path / "alias"
-        supplied.symlink_to(workspace, target_is_directory=True)
-    else:
-        supplied = workspace
-        (workspace / "run_manifest.tsv.lock").symlink_to(outside)
-    monkeypatch.setattr(experiment_io, "blocking_file_lock", lambda *_args: pytest.fail("Aliased lock reached open"))
-
-    with pytest.raises(ValueError, match="Managed output"):
-        merge_run_manifest(supplied, [])
-
-    assert outside.read_text() == "sentinel\n"
-    assert (workspace / "run_manifest.tsv").read_bytes() == before
-    assert not (workspace / "reports" / "run_matrix.md").exists()
-
-
-def test_merge_run_manifest_retries_transient_file_lock_eio(tmp_path: Path, monkeypatch):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(tmp_path)
-    attempts = 0
-    delays = []
-    real_flock = fcntl.flock
-
-    def flaky_flock(file_descriptor, operation):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise OSError(errno.EIO, os.strerror(errno.EIO))
-        real_flock(file_descriptor, operation)
-
-    monkeypatch.setattr(experiment_io, "fcntl", SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, flock=flaky_flock))
-    monkeypatch.setattr(experiment_io, "time", SimpleNamespace(sleep=delays.append))
-
-    committed = merge_run_manifest(
-        tmp_path,
-        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
-    )
-
-    assert committed[0]["status"] == "planned"
-    assert attempts == 3
-    assert delays == [0.1]
-
-
-def test_concurrent_local_manifest_writer_holds_lock_through_projection(tmp_path: Path, monkeypatch):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(tmp_path)
-    first_projection_started = threading.Event()
-    finish_first_projection = threading.Event()
-    first_projection_done = threading.Event()
-    second_lock_attempted = threading.Event()
-    local_lock = threading.Lock()
-    lock_owner = None
-    lock_violations = []
-    real_blocking_file_lock = experiment_io.blocking_file_lock
-    real_validate = experiment_io.validate_managed_output_paths
-    real_write_run_matrix = experiment_workspace.write_run_matrix
-
-    @contextmanager
-    def tracked_blocking_file_lock(path):
-        nonlocal lock_owner
-        if Path(path) != tmp_path / "run_manifest.tsv.lock":
-            with real_blocking_file_lock(path):
-                yield
-            return
-        if threading.current_thread().name == "second-merge":
-            if local_lock.acquire(blocking=False):
-                if not first_projection_done.is_set():
-                    lock_violations.append("second writer acquired the lock before the first projection completed")
-                second_lock_attempted.set()
-            else:
-                second_lock_attempted.set()
-                local_lock.acquire()
-        else:
-            local_lock.acquire()
-        try:
-            lock_owner = threading.current_thread()
-            yield
-        finally:
-            lock_owner = None
-            local_lock.release()
-
-    def validate_outputs(root, paths):
-        if tmp_path / "run_manifest.tsv" in paths and lock_owner is not threading.current_thread():
-            lock_violations.append("writer validated the cross-file snapshot without owning the manifest lock")
-        return real_validate(root, paths)
-
-    def delayed_write_run_matrix(root, rows):
-        if {row["run_id"] for row in rows} == {"run-000"}:
-            first_projection_started.set()
-            assert finish_first_projection.wait(timeout=5)
-            result = real_write_run_matrix(root, rows)
-            first_projection_done.set()
-            return result
-        return real_write_run_matrix(root, rows)
-
-    monkeypatch.setattr(experiment_io, "blocking_file_lock", tracked_blocking_file_lock)
-    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", validate_outputs)
-    monkeypatch.setattr(experiment_workspace, "write_run_matrix", delayed_write_run_matrix)
-    errors = []
-
-    def merge(run_id):
-        try:
-            merge_run_manifest(
-                tmp_path,
-                [{"experiment_id": "unit", "step_id": "train", "run_id": run_id, "status": "planned"}],
-            )
-        except Exception as exc:
-            errors.append(exc)
-
-    first = threading.Thread(target=merge, args=("run-000",), name="first-merge")
-    second = threading.Thread(target=merge, args=("run-001",), name="second-merge")
-    first.start()
-    assert first_projection_started.wait(timeout=5)
-    second.start()
-    assert second_lock_attempted.wait(timeout=5)
-    finish_first_projection.set()
-    first.join(timeout=5)
-    second.join(timeout=5)
-
-    assert not first.is_alive() and not second.is_alive()
-    assert errors == []
-    assert lock_violations == []
-    with (tmp_path / "run_matrix.csv").open(newline="") as file_obj:
-        matrix = list(csv.DictReader(file_obj))
-    assert {row["run_id"] for row in matrix} == {"run-000", "run-001"}
 
 
 def test_concurrent_terminal_updates_use_the_existing_reducer(tmp_path: Path):
@@ -1493,51 +973,6 @@ def test_interrupted_atomic_replace_preserves_the_complete_old_manifest(tmp_path
 
     assert (tmp_path / "run_manifest.tsv").read_bytes() == before
     assert read_run_manifest(tmp_path)[0]["status"] == "planned"
-
-
-def test_projection_failure_does_not_roll_back_canonical_commit(tmp_path: Path, monkeypatch):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(tmp_path)
-    real_write_run_matrix = experiment_workspace.write_run_matrix
-    monkeypatch.setattr(
-        experiment_workspace,
-        "write_run_matrix",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("projection failed")),
-    )
-
-    with pytest.raises(OSError, match="projection failed"):
-        merge_run_manifest(
-            tmp_path,
-            [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "running"}],
-        )
-
-    assert read_run_manifest(tmp_path)[0]["status"] == "running"
-    monkeypatch.setattr(experiment_workspace, "write_run_matrix", real_write_run_matrix)
-    merge_run_manifest(tmp_path, [])
-    assert "running" in (tmp_path / "run_matrix.csv").read_text()
-
-
-def test_manifest_commit_fails_without_retry_after_digest_conflict(tmp_path: Path, monkeypatch):
-    attempts = []
-
-    def fake_read(path):
-        if Path(path).name == "experiment.yaml":
-            return "experiment:\n  id: unit\n"
-        return "step_id\trun_id\n"
-
-    monkeypatch.setattr(experiment_io, "path_exists_at", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(experiment_io, "validate_managed_output_paths", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(experiment_io, "read_text_at", fake_read)
-    monkeypatch.setattr(
-        experiment_io,
-        "conditional_atomic_replace_text_at",
-        lambda *_args, **_kwargs: attempts.append(True) and False,
-    )
-
-    with pytest.raises(RuntimeError, match="changed during its commit"):
-        merge_run_manifest(tmp_path, [])
-
-    assert len(attempts) == 1
 
 
 def test_only_experiment_workspace_reads_or_writes_the_canonical_run_manifest():
@@ -1593,7 +1028,7 @@ def test_only_experiment_workspace_reads_or_writes_the_canonical_run_manifest():
     assert offenders == []
 
 
-def test_step_manifest_writes_use_one_compare_and_swap_owner():
+def test_step_manifest_writes_use_one_locked_replace_owner():
     agent_tools_dir = Path(__file__).parents[2] / "agent_tools"
 
     def function_calls(filename: str, function_name: str) -> set[str]:
@@ -1605,7 +1040,7 @@ def test_step_manifest_writes_use_one_compare_and_swap_owner():
             if isinstance(node, ast.Call)
         }
 
-    assert {"merge_step_manifest", "conditional_atomic_replace_text_at"} <= function_calls(
+    assert {"merge_step_manifest", "locked_replace"} <= function_calls(
         "experiment_workspace.py", "commit_step_manifest"
     )
     assert "commit_step_manifest" in function_calls("experiment_workspace.py", "ensure_experiment_workspace")
@@ -1785,31 +1220,6 @@ def test_commit_run_start_first_fills_different_planned_and_actual_runtime_commi
     assert row["planned_runtime_commit"] == "a" * 40
     assert row["runtime_commit"] == "b" * 40
     assert read_run_manifest(tmp_path)[0] == row
-
-
-def test_commit_run_start_rejects_dangling_lock_symlink_before_open(tmp_path: Path, monkeypatch):
-    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
-    initialize_run_manifest(tmp_path)
-    merge_run_manifest(
-        tmp_path,
-        [{"experiment_id": "unit", "step_id": "train", "run_id": "run-000", "status": "planned"}],
-    )
-    lock_path = tmp_path / "run_manifest.tsv.lock"
-    lock_path.unlink()
-    outside = tmp_path.parent / "outside.lock"
-    lock_path.symlink_to(outside)
-    monkeypatch.setattr(experiment_io, "blocking_file_lock", lambda *_args: pytest.fail("Aliased lock reached open"))
-
-    with pytest.raises(ValueError, match="Managed output"):
-        experiment_workspace.commit_run_start(
-            tmp_path,
-            "train",
-            "run-000",
-            planned_runtime_commit="a" * 40,
-            runtime_commit="b" * 40,
-        )
-
-    assert not outside.exists()
 
 
 def test_commit_run_start_accepts_monitor_winning_with_identical_provenance(tmp_path: Path):
@@ -3075,23 +2485,23 @@ def test_plan_registration_lock_cannot_deadlock_with_plan_output(tmp_path: Path)
     assert result.returncode != 0
 
 
-def test_managed_run_lock_retries_transient_file_lock_eio(tmp_path, monkeypatch):
-    attempts = 0
-    delays = []
-    real_flock = fcntl.flock
+def test_monitor_observation_fields_are_not_persisted_in_the_run_manifest(tmp_path: Path):
+    (tmp_path / "experiment.yaml").write_text("experiment:\n  id: unit\n")
+    initialize_run_manifest(tmp_path)
+    identity = {"experiment_id": "unit", "step_id": "train", "run_id": "run-000"}
+    observation = {
+        **identity,
+        "status": "running",
+        "health_status": "healthy_running",
+        "log_tail": "epoch 1\nepoch 2",
+        "log_age_seconds": 3,
+        "monitored_at": "2026-01-01T00:00:00Z",
+        "gpu_summary": "0, GPU-0, 1024",
+    }
 
-    def flaky_flock(file_descriptor, operation):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise OSError(errno.EIO, os.strerror(errno.EIO))
-        real_flock(file_descriptor, operation)
+    committed = merge_run_manifest(tmp_path, [observation])
 
-    monkeypatch.setattr(experiment_io, "fcntl", SimpleNamespace(LOCK_EX=fcntl.LOCK_EX, flock=flaky_flock))
-    monkeypatch.setattr(experiment_io, "time", SimpleNamespace(sleep=delays.append))
-
-    with experiment_workspace.managed_run_lock(tmp_path):
-        assert (tmp_path / "run_manifest.tsv.lock").exists()
-
-    assert attempts == 2
-    assert delays == [0.1]
+    header = (tmp_path / "run_manifest.tsv").read_text().splitlines()[0].split("\t")
+    assert not set(header) & experiment_workspace.MONITOR_OBSERVATION_FIELDS
+    assert committed == read_run_manifest(tmp_path)
+    assert committed[0]["health_status"] == "healthy_running"

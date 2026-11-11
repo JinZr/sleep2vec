@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import hashlib
 from pathlib import Path
 import threading
 
@@ -105,7 +104,7 @@ def test_experiment_finalize_does_not_downgrade_managed_hparam_evidence_to_legac
     write_rows(root / "run_manifest.tsv", rows)
     step_path = root / "steps" / "unit-hparam-tune" / "step.yaml"
     step_path.unlink()
-    (step_path.parent / ".step.yaml.cas.lock").unlink()
+    (step_path.parent / ".step.yaml.lock").unlink()
     step_path.parent.rmdir()
     report = tmp_path / "final.md"
     report.write_text("# Final\n")
@@ -505,204 +504,6 @@ def test_experiment_status_detects_selection_commit_after_terminal_binding(tmp_p
     assert final.read_bytes() == final_bytes
 
 
-def test_experiment_finalize_rejects_selection_report_changed_after_snapshot(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
-    selection_report = _record_hparam_selection(root, write_report=True)
-    manifest = root / "experiment.yaml"
-    manifest_before = manifest.read_bytes()
-    original_reader = experiments._hparam_selection_report
-
-    def read_then_tamper(*args, **kwargs):
-        payload = original_reader(*args, **kwargs)
-        selection_report.write_text("# Tampered after verification\n")
-        return payload
-
-    monkeypatch.setattr(experiments, "_hparam_selection_report", read_then_tamper)
-
-    with pytest.raises(ValueError, match="selection report changed during finalization"):
-        experiments.finalize_experiment(root, selection_report)
-
-    assert manifest.read_bytes() == manifest_before
-    assert not (root / "events.jsonl").exists()
-    assert not (root / "reports" / "final.md").exists()
-    assert selection_report.read_text() == "# Tampered after verification\n"
-
-
-def test_experiment_finalize_rechecks_selection_report_before_terminal_commit(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
-    selection_report = _record_hparam_selection(root, write_report=True)
-    manifest = root / "experiment.yaml"
-    manifest_before = manifest.read_bytes()
-    original_replace = experiment_io.conditional_atomic_replace_text_at
-
-    def publish_then_tamper(path, text, expected_sha256, **kwargs):
-        committed = original_replace(path, text, expected_sha256, **kwargs)
-        if Path(path) == root / "reports" / "final.md" and committed:
-            selection_report.write_text("# Tampered before terminal commit\n")
-        return committed
-
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", publish_then_tamper)
-
-    with pytest.raises(ValueError, match="selection report changed during finalization"):
-        experiments.finalize_experiment(root, selection_report)
-
-    assert manifest.read_bytes() == manifest_before
-    assert (root / "reports" / "final.md").exists()
-    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
-
-
-def test_experiment_finalize_rechecks_ranking_before_terminal_commit(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
-    selection_report = _record_hparam_selection(root, write_report=True)
-    ranking = root / "reports" / "ranking.csv"
-    manifest = root / "experiment.yaml"
-    manifest_before = manifest.read_bytes()
-    original_replace = experiment_io.conditional_atomic_replace_text_at
-
-    def publish_then_tamper(path, text, expected_sha256, **kwargs):
-        committed = original_replace(path, text, expected_sha256, **kwargs)
-        if Path(path) == root / "reports" / "final.md" and committed:
-            ranking.write_text(ranking.read_text().replace("0.25", "999", 1))
-        return committed
-
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", publish_then_tamper)
-
-    with pytest.raises(ValueError, match="ranking changed during finalization"):
-        experiments.finalize_experiment(root, selection_report)
-
-    assert manifest.read_bytes() == manifest_before
-    assert (root / "reports" / "final.md").exists()
-    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
-
-
-def test_experiment_finalize_rechecks_checkpoint_before_terminal_commit(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
-    selection_report = _record_hparam_selection(root, write_report=True)
-    checkpoint = Path(_read_manifest_rows(root)[0]["checkpoint_path"])
-    manifest = root / "experiment.yaml"
-    manifest_before = manifest.read_bytes()
-    original_replace = experiment_io.conditional_atomic_replace_text_at
-
-    def publish_then_tamper(path, text, expected_sha256, **kwargs):
-        committed = original_replace(path, text, expected_sha256, **kwargs)
-        if Path(path) == root / "reports" / "final.md" and committed:
-            checkpoint.write_bytes(b"tampered before terminal commit\n")
-        return committed
-
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", publish_then_tamper)
-
-    with pytest.raises(ValueError, match="Frozen checkpoint SHA-256 differs"):
-        experiments.finalize_experiment(root, selection_report)
-
-    assert manifest.read_bytes() == manifest_before
-    assert (root / "reports" / "final.md").exists()
-    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
-
-
-def test_experiment_finalize_rechecks_run_manifest_before_terminal_commit(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
-    selection_report = _record_hparam_selection(root, write_report=True)
-    manifest = root / "experiment.yaml"
-    manifest_before = manifest.read_bytes()
-    original_replace = experiment_io.conditional_atomic_replace_text_at
-
-    def publish_then_tamper(path, text, expected_sha256, **kwargs):
-        committed = original_replace(path, text, expected_sha256, **kwargs)
-        if Path(path) == root / "reports" / "final.md" and committed:
-            rows = _read_manifest_rows(root)
-            rows[0]["score"] = "0.5"
-            write_rows(root / "run_manifest.tsv", rows)
-        return committed
-
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", publish_then_tamper)
-
-    with pytest.raises(RuntimeError, match="run manifest changed during finalization"):
-        experiments.finalize_experiment(root, selection_report)
-
-    assert manifest.read_bytes() == manifest_before
-    assert (root / "reports" / "final.md").exists()
-    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
-
-
-def test_experiment_finalize_guards_terminal_commit_with_run_manifest_lock(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
-    selection_report = _record_hparam_selection(root, write_report=True)
-    manifest = root / "experiment.yaml"
-    manifest_before = manifest.read_bytes()
-    original_replace = experiment_io.conditional_atomic_replace_text_at
-
-    def tamper_at_terminal_commit(path, text, expected_sha256, **kwargs):
-        if Path(path) == manifest:
-            rows = _read_manifest_rows(root)
-            rows[0]["score"] = "0.5"
-            write_rows(root / "run_manifest.tsv", rows)
-        return original_replace(path, text, expected_sha256, **kwargs)
-
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", tamper_at_terminal_commit)
-
-    with pytest.raises(RuntimeError, match="run manifest changed during finalization"):
-        experiments.finalize_experiment(root, selection_report)
-
-    assert manifest.read_bytes() == manifest_before
-    assert (root / "reports" / "final.md").exists()
-    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
-
-
-def test_stale_finalizer_cannot_bind_an_overwritten_final_report(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train", status="completed")
-    report_a = tmp_path / "report-a.md"
-    report_b = tmp_path / "report-b.md"
-    report_a.write_text("# Final A\n")
-    report_b.write_text("# Final B\n")
-    final_report = root / "reports" / "final.md"
-    manifest = root / "experiment.yaml"
-    real_replace = experiment_io.conditional_atomic_replace_text_at
-    interleaved = False
-
-    def overwrite_before_terminal_commit(path, text, expected_sha256, **kwargs):
-        nonlocal interleaved
-        if Path(path) == manifest and not interleaved:
-            interleaved = True
-            assert real_replace(
-                final_report,
-                report_b.read_text(),
-                hashlib.sha256(final_report.read_bytes()).hexdigest(),
-                managed_root=kwargs["managed_root"],
-                dependency_path=kwargs["dependency_path"],
-                expected_dependency_sha256=kwargs["expected_dependency_sha256"],
-                guard_path=manifest,
-                expected_guard_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
-            )
-        return real_replace(path, text, expected_sha256, **kwargs)
-
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", overwrite_before_terminal_commit)
-
-    with pytest.raises(RuntimeError, match="changed during finalization"):
-        experiments.finalize_experiment(root, report_a)
-
-    assert yaml.safe_load(manifest.read_text())["experiment"].get("status") is None
-    assert final_report.read_text() == report_b.read_text()
-
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", real_replace)
-    experiments.finalize_experiment(root, report_b)
-    completed = yaml.safe_load(manifest.read_text())["experiment"]
-    assert completed["final_report_sha256"] == hashlib.sha256(final_report.read_bytes()).hexdigest()
-
-
 def test_completed_experiment_rejects_late_run_manifest_merge(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -762,34 +563,6 @@ def test_inflight_run_manifest_merge_rechecks_owner_after_waiting_for_lock(tmp_p
     assert "completed and cannot update canonical runs" in str(errors[0])
     assert _workspace_files(root) == after_finalize
     assert experiments.experiment_status(root)["summary"]["state"] == "completed"
-
-
-def test_experiment_finalize_rechecks_rows_bound_to_run_manifest_snapshot(tmp_path, monkeypatch):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
-    selection_report = _record_hparam_selection(root, write_report=True)
-    manifest = root / "experiment.yaml"
-    manifest_before = manifest.read_bytes()
-    original_rows = experiments._managed_rows
-    calls = 0
-
-    def read_then_add_active_run(candidate):
-        nonlocal calls
-        calls += 1
-        rows = original_rows(candidate)
-        if calls == 1:
-            active = {**rows[0], "run_id": "run-999", "status": "running"}
-            write_rows(root / "run_manifest.tsv", [*rows, active])
-        return rows
-
-    monkeypatch.setattr(experiments, "_managed_rows", read_then_add_active_run)
-
-    with pytest.raises(ValueError, match="unresolved runs.*run-999"):
-        experiments.finalize_experiment(root, selection_report)
-
-    assert manifest.read_bytes() == manifest_before
-    assert not (root / "reports" / "final.md").exists()
 
 
 def test_experiment_finalize_allows_combined_or_failure_reports(tmp_path):

@@ -52,7 +52,6 @@ from .experiment_workspace import (
     scheduler_type,
     validate_frozen_run_update,
     validated_run_key,
-    write_status_report,
 )
 from .manifests import utc_now
 from .models import REPO_ROOT, YAML_SAFE_LOADER, JsonValue, is_full_git_object_id
@@ -264,7 +263,6 @@ class FrozenLaunchArtifact(TypedDict):
 class SchedulerHooks:
     merge_manifest: Callable[..., list[dict[str, str]]] = merge_run_manifest
     append_event: Callable[..., None] = append_event
-    write_status_report: Callable[..., Path] = write_status_report
     validate_run_update: Callable[..., None] = validate_frozen_run_update
     validated_snapshot: Callable[..., exec_snapshot.ExecutionSnapshotResult] | None = None
     build_command: Callable[..., str] | None = None
@@ -615,7 +613,6 @@ def _launch_managed_runs(
                 "run_launched",
                 {"step_id": key[0], "run_id": key[1], "gpus": committed_row.get("gpus", "")},
             )
-    options.hooks.write_status_report(workspace)
     if missing_pid_blocker is not None:
         raise missing_pid_blocker
     return result
@@ -762,7 +759,6 @@ def _refresh_external_capacity_runs(
                 "run_status_changed",
                 {"step_id": key[0], "run_id": key[1], "from": before, "to": after},
             )
-        hooks.write_status_report(workspace)
 
     return workspace_by_key, external_status_changes
 
@@ -910,17 +906,7 @@ def _managed_launch_preflight(
     runs: Sequence[Mapping[str, JsonValue]],
 ) -> tuple[Path, set[RunKey], dict[RunKey, dict[str, str]]]:
     snapshot_path = owner_dir / exec_snapshot.EXECUTION_SNAPSHOT_NAME
-    exp_io.validate_managed_output_paths(
-        workspace,
-        [
-            workspace / "run_manifest.tsv",
-            workspace / "run_matrix.csv",
-            workspace / "reports" / "run_matrix.md",
-            workspace / "events.jsonl",
-            workspace / "reports" / "status.md",
-            snapshot_path,
-        ],
-    )
+    exp_io.validate_managed_output_paths(workspace, [snapshot_path])
     experiment_manifest = yaml.load((workspace / "experiment.yaml").read_text(), Loader=YAML_SAFE_LOADER) or {}
     experiment = experiment_manifest.get("experiment") if isinstance(experiment_manifest, dict) else None
     if isinstance(experiment, dict) and experiment.get("status") == "completed":
@@ -1057,7 +1043,6 @@ def _launch_slurm_runs(
             "run_launched",
             {"step_id": key[0], "run_id": key[1], "scheduler_job_id": workspace_by_key[key]["scheduler_job_id"]},
         )
-    options.hooks.write_status_report(workspace)
     if pending_error is not None:
         raise pending_error
     return result

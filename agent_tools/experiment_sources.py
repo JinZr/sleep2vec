@@ -1,10 +1,9 @@
 """Validation of recorded checkpoint evidence against the canonical run manifest.
 
-Layer 0 leaf. Checks that checkpoint rows belong to a managed run, stay inside
-its frozen checkpoint directory, and still exist on disk;
-per-run checkpoint inventory and epoch resolution live in ``run_artifacts``.
-``experiment_tracking`` re-exports these checks for finalization and hparam
-selection.
+Checks that checkpoint rows belong to a managed run, stay inside its frozen
+checkpoint directory, and still exist on disk; per-run checkpoint inventory and
+epoch resolution live in ``run_artifacts``. ``experiment_tracking`` re-exports
+these checks for finalization and hparam selection.
 """
 
 from __future__ import annotations

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import csv
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -243,7 +242,7 @@ def test_experiment_monitor_reads_one_validated_input_snapshot_then_fresh_commit
     real_managed_read = experiment_io.read_managed_files_at
     real_read = experiment_io.read_text_at
     real_lock = experiment_io.blocking_file_lock
-    real_commit = experiment_io.conditional_atomic_replace_text_at
+    real_commit = experiment_io.atomic_replace
     real_managed_rows = experiments._managed_rows
     snapshot_reads = []
     commit_reads = []
@@ -285,15 +284,15 @@ def test_experiment_monitor_reads_one_validated_input_snapshot_then_fresh_commit
         row.update(status="completed", health_status="completed")
         return row
 
-    def commit(path, text, expected_sha256, **kwargs):
-        assert expected_sha256 == hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    def commit(path, text):
+        assert lock_held
         commits.append(Path(path))
-        return real_commit(path, text, expected_sha256, **kwargs)
+        return real_commit(path, text)
 
     monkeypatch.setattr(experiment_io, "read_managed_files_at", read_managed)
     monkeypatch.setattr(experiment_io, "read_text_at", read_text)
     monkeypatch.setattr(experiment_io, "blocking_file_lock", held_lock)
-    monkeypatch.setattr(experiment_io, "conditional_atomic_replace_text_at", commit)
+    monkeypatch.setattr(experiment_io, "atomic_replace", commit)
     monkeypatch.setattr(experiments, "_managed_rows", managed_rows)
     monkeypatch.setattr(run_evidence, "status_row", fake_status)
     result = experiments.monitor_experiment(tmp_path)
@@ -470,7 +469,7 @@ def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkey
     ]
     for field, value in concurrent_fields.items():
         assert result["runs"][0][field] == value
-    assert _read_table(tmp_path / "run_manifest.tsv") == _read_table(tmp_path / "run_matrix.csv")
+    assert not (tmp_path / "run_matrix.csv").exists()
     report = (tmp_path / "reports" / "monitor.md").read_text()
     assert "train-model / run-001" in report
 

@@ -1584,7 +1584,7 @@ def preflight_plan(
         if root is not None:
             report = _guard_existing_outputs(
                 report,
-                [root / "run_matrix.csv", root / "reports" / "run_matrix.md", root / "events.jsonl"],
+                [root / "events.jsonl"],
                 _overwrite_policy(recipe),
                 root=root,
                 allow_existing=True,

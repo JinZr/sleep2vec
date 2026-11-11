@@ -49,8 +49,9 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
     for name in (
         "write_text_at",
         "write_rows_at",
-        "conditional_atomic_replace_text_at",
-        "append_event_at",
+        "atomic_replace",
+        "locked_replace",
+        "locked_append",
         "mkdir_experiment_dirs",
     ):
         monkeypatch.setattr(experiment_io, name, unexpected)
@@ -98,8 +99,9 @@ def test_experiment_status_contract_error_is_zero_write(tmp_path, monkeypatch, c
     for name in (
         "write_text_at",
         "write_rows_at",
-        "conditional_atomic_replace_text_at",
-        "append_event_at",
+        "atomic_replace",
+        "locked_replace",
+        "locked_append",
         "mkdir_experiment_dirs",
     ):
         monkeypatch.setattr(experiment_io, name, unexpected)

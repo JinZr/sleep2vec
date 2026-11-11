@@ -1,54 +1,84 @@
-"""Managed file I/O: locked, validated local reads and writes.
+"""Managed file I/O: locked atomic writes and plain reads for workspace files.
 
-Layer 0 leaf. Provides managed path validation, blocking file locks, and the
-descriptor-relative conditional-replace and append helpers for managed
-workspace files.
+Writers publish through a temporary file in the target's directory, fsync and
+``os.replace``, so a reader never sees a half-written file. ``locked_replace``
+and ``locked_append`` serialize writers of one file through a sidecar ``flock``;
+callers that already hold an owning lock (such as the run lock for
+``run_manifest.tsv``) call ``atomic_replace`` directly.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 import csv
-import ctypes
-import errno
 import fcntl
 import hashlib
 import io
-import json
 import os
 from pathlib import Path
-import secrets
-import stat
-import time
-from typing import Any, Iterator, Literal, TypedDict, overload
+import tempfile
+from typing import Any, Iterator, TypedDict
 
-from .manifests import read_rows, utc_now, validate_managed_header, write_rows, write_text
-from .models import json_ready
+from .manifests import read_rows, validate_managed_header, write_rows, write_text
 
 
 @contextmanager
 def blocking_file_lock(path: str | Path) -> Iterator[None]:
-    lock_path = Path(path)
-    for attempt in range(4):
-        lock_file = lock_path.open("a+")
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        except OSError as exc:
-            lock_file.close()
-            if exc.errno != errno.EIO or attempt == 3:
-                raise
-            # Do not reuse a JuiceFS-backed descriptor after flock reports EIO.
-            time.sleep(0.1 * (2**attempt))
-        else:
-            break
-    with lock_file:
+    with Path(path).open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         yield
 
 
+def lock_path_for(path: str | Path) -> Path:
+    """The sidecar lock that locked_replace and locked_append take for path."""
+    target = Path(path)
+    return target.with_name(f".{target.name}.lock")
+
+
+def atomic_replace(path: str | Path, text: str) -> None:
+    """Replace path with text through a fsynced temporary file; the caller owns any writer lock."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "wb") as file_obj:
+            os.fchmod(file_obj.fileno(), 0o644)
+            file_obj.write(text.encode())
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def locked_replace(path: str | Path, text: str, *, expected_sha256: str | None = None) -> None:
+    """Atomically replace path under its sidecar lock.
+
+    With expected_sha256, the current bytes must exist and hash to it, or this
+    raises RuntimeError without writing: a compare-by-hash guard against lost
+    updates by a writer that read the file earlier."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with blocking_file_lock(lock_path_for(target)):
+        if expected_sha256 is not None:
+            current = target.read_bytes() if target.exists() else None
+            if current is None or hashlib.sha256(current).hexdigest() != expected_sha256:
+                raise RuntimeError(f"Managed file changed before its replacement: {target}")
+        atomic_replace(target, text)
+
+
+def locked_append(path: str | Path, text: str) -> None:
+    """Append text to path under its sidecar lock, publishing the whole file atomically."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with blocking_file_lock(lock_path_for(target)):
+        atomic_replace(target, read_text_at(target) + text)
+
+
 def mkdir_experiment_dirs(root: Path) -> None:
-    for path in [root / "reports"]:
-        path.mkdir(parents=True, exist_ok=True)
+    (root / "reports").mkdir(parents=True, exist_ok=True)
 
 
 def path_exists_at(path: str | Path) -> bool:
@@ -56,30 +86,54 @@ def path_exists_at(path: str | Path) -> bool:
     return target.exists() or target.is_symlink()
 
 
+def read_text_at(path: str | Path) -> str:
+    target = Path(path)
+    return target.read_bytes().decode() if target.exists() else ""
+
+
+def _require_inside(root: Path, target: Path) -> None:
+    if not root.is_absolute() or not target.is_absolute():
+        raise ValueError("Managed control paths must be absolute.")
+    if ".." in root.parts or ".." in target.parts:
+        raise ValueError("Managed control paths must not contain '..' components.")
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Managed control path is outside its workspace: {target}") from exc
+
+
+def validate_managed_output_paths(root: str | Path, paths: Sequence[str | Path]) -> None:
+    """Check output file paths once before writing; they need not exist yet.
+
+    The root must not be a symlink, and every path must lie inside it, appear
+    once, and not name an existing directory (so two runs cannot share an
+    output and a run directory cannot already exist)."""
+    if not paths:
+        return
+    root_path = Path(os.path.abspath(root))
+    if root_path.is_symlink():
+        raise ValueError(f"Managed workspace root must not be a symlink: {root_path}")
+    seen: set[Path] = set()
+    for raw_target in paths:
+        target = Path(os.path.abspath(raw_target))
+        try:
+            target.relative_to(root_path)
+        except ValueError as exc:
+            raise ValueError(f"Managed output path is outside its workspace: {target}") from exc
+        if target in seen or target.is_dir():
+            raise ValueError(f"Managed output paths must be independent regular files: {target}")
+        seen.add(target)
+
+
 def list_managed_subdirectories_at(root: str | Path, directory: str | Path) -> list[str]:
     root = Path(root)
     directory = Path(directory)
-    _validate_raw_managed_path(root, directory)
-    try:
-        root_info = os.lstat(root)
-    except FileNotFoundError as exc:
-        raise ValueError(f"Managed workspace root is missing: {root}") from exc
-    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
-        raise ValueError(f"Managed workspace root is missing or aliased: {root}")
-    relative = directory.relative_to(root)
-    current = root
-    for part in relative.parts:
-        current /= part
-        try:
-            info = os.lstat(current)
-        except FileNotFoundError:
-            return []
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise ValueError(f"Managed directory is missing or aliased: {current}")
+    _require_inside(root, directory)
+    if not directory.exists():
+        return []
     names = []
     for entry in os.scandir(directory):
-        info = entry.stat(follow_symlinks=False)
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        if not entry.is_dir():
             raise ValueError(f"Managed directory contains a non-directory entry: {entry.path}")
         names.append(entry.name)
     return sorted(names)
@@ -90,85 +144,31 @@ class ManagedFileSnapshot(TypedDict):
     sha256: str
 
 
-class PermissiveManagedFileSnapshot(TypedDict):
-    text: str | None
-    sha256: str
-
-
-@overload
 def read_managed_files_at(
     root: str | Path,
     paths: list[str | Path],
     *,
     exact_directory_entries: bool = False,
-    allow_invalid_utf8: Literal[False] = False,
-) -> dict[str, ManagedFileSnapshot]: ...
+) -> dict[str, ManagedFileSnapshot]:
+    """Read UTF-8 files inside root with their SHA-256; a missing file raises ValueError.
 
-
-@overload
-def read_managed_files_at(
-    root: str | Path,
-    paths: list[str | Path],
-    *,
-    exact_directory_entries: bool = False,
-    allow_invalid_utf8: bool,
-) -> dict[str, ManagedFileSnapshot] | dict[str, PermissiveManagedFileSnapshot]: ...
-
-
-def read_managed_files_at(
-    root: str | Path,
-    paths: list[str | Path],
-    *,
-    exact_directory_entries: bool = False,
-    allow_invalid_utf8: bool = False,
-) -> dict[str, ManagedFileSnapshot] | dict[str, PermissiveManagedFileSnapshot]:
+    exact_directory_entries additionally requires the files to share one
+    directory that contains nothing else."""
     root = Path(root)
     targets = [Path(path) for path in paths]
     for target in targets:
-        _validate_raw_managed_path(root, target)
+        _require_inside(root, target)
     if len(targets) != len(set(targets)):
         raise ValueError("Managed file paths must be unique.")
-    try:
-        root_info = os.lstat(root)
-    except FileNotFoundError as exc:
-        raise ValueError(f"Managed workspace root is missing: {root}") from exc
-    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
-        raise ValueError(f"Managed workspace root is missing or aliased: {root}")
-    seen_inodes = set()
-    payload: dict[str, PermissiveManagedFileSnapshot] = {}
+    payload: dict[str, ManagedFileSnapshot] = {}
     for target in targets:
-        relative = target.relative_to(root)
-        current = root
-        for part in relative.parts[:-1]:
-            current /= part
-            try:
-                info = os.lstat(current)
-            except FileNotFoundError as exc:
-                raise ValueError(f"Managed directory is missing: {current}") from exc
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                raise ValueError(f"Managed directory is missing or aliased: {current}")
-        try:
-            before = os.lstat(target)
-        except FileNotFoundError as exc:
-            raise ValueError(f"Managed file is missing: {target}") from exc
-        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise ValueError(f"Managed file is missing or aliased: {target}")
-        inode = (before.st_dev, before.st_ino)
-        if inode in seen_inodes:
-            raise ValueError(f"Managed files must be independent regular files: {target}")
-        seen_inodes.add(inode)
-        with target.open("rb") as file_obj:
-            opened = os.fstat(file_obj.fileno())
-            data = file_obj.read()
-            after = os.fstat(file_obj.fileno())
-        if (opened.st_dev, opened.st_ino) != inode or (after.st_dev, after.st_ino) != inode:
-            raise ValueError(f"Managed file changed while it was read: {target}")
+        if not target.is_file():
+            raise ValueError(f"Managed file is missing: {target}")
+        data = target.read_bytes()
         try:
             text = data.decode("utf-8")
         except UnicodeError as exc:
-            if not allow_invalid_utf8:
-                raise ValueError(f"Managed file is not valid UTF-8: {target}") from exc
-            text = None
+            raise ValueError(f"Managed file is not valid UTF-8: {target}") from exc
         payload[str(target)] = {"text": text, "sha256": hashlib.sha256(data).hexdigest()}
     if exact_directory_entries:
         parents = {target.parent for target in targets}
@@ -186,73 +186,19 @@ def read_managed_output_texts_at(
     root: str | Path,
     paths: Sequence[str | Path],
 ) -> dict[str, str | None]:
+    """Read UTF-8 output files inside root, keyed as requested; a missing file reads as None."""
     root = Path(root)
     path_keys = [str(path) for path in paths]
     targets = [Path(path) for path in path_keys]
     for target in targets:
-        _validate_raw_managed_path(root, target)
+        _require_inside(root, target)
         if target == root:
             raise ValueError("Managed output target must name a file below its workspace root.")
     if len(targets) != len(set(targets)):
         raise ValueError("Managed output paths must be unique.")
-    if not targets:
-        return {}
-    payload: dict[str, str | None] = {}
-    seen_inodes: set[tuple[int, int]] = set()
-    with ExitStack() as stack:
-        try:
-            root_descriptor = _open_managed_root(root)
-        except FileNotFoundError:
-            return dict.fromkeys(path_keys)
-        except OSError as exc:
-            if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
-                raise
-            raise ValueError(f"Managed output path is invalid or aliased: {root}") from exc
-        stack.callback(_close_descriptor, root_descriptor)
-        for path_key, target in zip(path_keys, targets):
-            with ExitStack() as target_stack:
-                try:
-                    parent_descriptor, name = _open_managed_parent(
-                        root_descriptor, target.relative_to(root), create=False
-                    )
-                except FileNotFoundError:
-                    payload[path_key] = None
-                    continue
-                except OSError as exc:
-                    if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
-                        raise
-                    raise ValueError(f"Managed output path is invalid or aliased: {target}") from exc
-                target_stack.callback(_close_descriptor, parent_descriptor)
-                try:
-                    descriptor, _mode = _open_regular_file_at(parent_descriptor, name)
-                except FileNotFoundError:
-                    payload[path_key] = None
-                    continue
-                except OSError as exc:
-                    if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
-                        raise
-                    raise ValueError(f"Managed output path is invalid or aliased: {target}") from exc
-                target_stack.callback(_close_descriptor, descriptor)
-                info = os.fstat(descriptor)
-                inode = (info.st_dev, info.st_ino)
-                if inode in seen_inodes:
-                    raise ValueError(f"Managed output paths must be independent regular files: {target}")
-                seen_inodes.add(inode)
-                # Only a missing open is absence; decoding and reading this validated descriptor must succeed.
-                with os.fdopen(descriptor, "rb", closefd=False) as file_obj:
-                    payload[path_key] = file_obj.read().decode("utf-8")
-    return payload
-
-
-def _validate_raw_managed_path(root: Path, target: Path) -> None:
-    if not root.is_absolute() or not target.is_absolute():
-        raise ValueError("Managed control paths must be absolute.")
-    if ".." in root.parts or ".." in target.parts:
-        raise ValueError("Managed control paths must not contain '..' components.")
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"Managed control path is outside its workspace: {target}") from exc
+    return {
+        key: target.read_bytes().decode("utf-8") if target.exists() else None for key, target in zip(path_keys, targets)
+    }
 
 
 def read_rows_at(
@@ -269,152 +215,23 @@ def read_rows_at(
         return []
     text = target.read_text()
     if not text:
-        if path_exists_at(path):
-            raise ValueError(f"Strict table is empty: {path}")
-        return []
-    delimiter = "\t" if Path(str(path)).suffix == ".tsv" else ","
-    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter, strict=strict)
+        raise ValueError(f"Strict table is empty: {path}")
+    delimiter = "\t" if target.suffix == ".tsv" else ","
+    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter, strict=True)
     fieldnames = reader.fieldnames
-    if strict:
-        if not fieldnames:
-            raise ValueError(f"Strict table has no header: {path}")
-        if len(fieldnames) != len(set(fieldnames)):
-            raise ValueError(f"Strict table has duplicate header fields: {path}")
+    if not fieldnames:
+        raise ValueError(f"Strict table has no header: {path}")
+    if len(fieldnames) != len(set(fieldnames)):
+        raise ValueError(f"Strict table has duplicate header fields: {path}")
     if require_managed_identity:
-        if fieldnames is None:
-            raise ValueError(f"Managed table has no header: {path}")
         validate_managed_header(fieldnames, path)
     try:
         rows = list(reader)
     except csv.Error as exc:
         raise ValueError(f"Strict table is malformed: {path}") from exc
-    if strict and any(None in row or any(value is None for value in row.values()) for row in rows):
+    if any(None in row or any(value is None for value in row.values()) for row in rows):
         raise ValueError(f"Strict table has a non-rectangular row: {path}")
     return rows
-
-
-def validate_managed_output_paths(root: str | Path, paths: Sequence[str | Path]) -> None:
-    if not paths:
-        return
-    root_path = Path(os.path.abspath(root))
-    _validate_managed_output_root(root_path)
-    seen_paths: dict[Path, None] = {}
-    seen_inodes: set[tuple[int, int]] = set()
-    for raw_target in paths:
-        target = Path(os.path.abspath(raw_target))
-        try:
-            relative = target.relative_to(root_path)
-        except ValueError as exc:
-            raise ValueError(f"Managed output path is outside its workspace: {target}") from exc
-        if target in seen_paths:
-            raise ValueError(f"Managed output paths must be independent regular files: {target}")
-        seen_paths[target] = None
-
-        ancestors = []
-        current = root_path
-        for part in relative.parts[:-1]:
-            current /= part
-            ancestors.append(current)
-        missing_ancestor = False
-        for ancestor in ancestors:
-            try:
-                info = os.lstat(ancestor)
-            except FileNotFoundError:
-                missing_ancestor = True
-                break
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                raise ValueError(f"Managed output paths must be independent regular files: {ancestor}")
-        if missing_ancestor:
-            continue
-
-        try:
-            info = os.lstat(target)
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ValueError(f"Managed output paths must be independent regular files: {target}")
-        inode = (info.st_dev, info.st_ino)
-        if inode in seen_inodes:
-            # Any earlier path may have changed identity. Pin all seen paths before judging a stale collision.
-            seen_inodes = _recheck_managed_output_inodes(
-                root_path=root_path, target=target, seen_paths=seen_paths, seen_inodes=seen_inodes
-            )
-        else:
-            seen_inodes.add(inode)
-
-
-def _validate_managed_output_root(root_path: Path) -> None:
-    current = Path(root_path.anchor)
-    for part in root_path.relative_to(current).parts[:-1]:
-        current /= part
-        try:
-            info = os.lstat(current)
-        except FileNotFoundError:
-            break
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise ValueError(f"Managed output paths must be independent regular files: {current}")
-    try:
-        root_info = os.lstat(root_path)
-    except FileNotFoundError:
-        pass
-    else:
-        if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
-            raise ValueError(f"Managed output paths must be independent regular files: {root_path}")
-
-
-def _recheck_managed_output_inodes(
-    *,
-    root_path: Path,
-    target: Path,
-    seen_paths: dict[Path, None],
-    seen_inodes: set[tuple[int, int]],
-) -> set[tuple[int, int]]:
-    with ExitStack() as stack:
-        # O_PATH preserves write-only access; platforms without it fail closed on read-access denial.
-        metadata_flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
-        try:
-            root_descriptor = _open_managed_root(root_path, directory_flags=metadata_flags | os.O_DIRECTORY)
-        except FileNotFoundError:
-            seen_inodes.clear()
-            return seen_inodes
-        except OSError as exc:
-            if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
-                raise
-            raise ValueError(f"Managed output paths must be independent regular files: {root_path}") from exc
-        stack.callback(_close_descriptor, root_descriptor)
-        descriptors = []
-        for candidate in seen_paths:
-            try:
-                parent_descriptor, name = _open_managed_parent(
-                    root_descriptor,
-                    candidate.relative_to(root_path),
-                    create=False,
-                    directory_flags=metadata_flags | os.O_DIRECTORY,
-                )
-                stack.callback(_close_descriptor, parent_descriptor)
-                descriptor = os.open(name, metadata_flags, dir_fd=parent_descriptor)
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                if exc.errno not in {errno.ELOOP, errno.ENOTDIR}:
-                    raise
-                raise ValueError(f"Managed output paths must be independent regular files: {candidate}") from exc
-            stack.callback(_close_descriptor, descriptor)
-            descriptors.append(descriptor)
-        current_infos = [os.fstat(descriptor) for descriptor in descriptors]
-        if any(current.st_nlink == 0 for current in current_infos):
-            raise RuntimeError(f"Managed output paths changed during independence validation: {target}")
-        if any(not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 for current in current_infos):
-            raise ValueError(f"Managed output paths must be independent regular files: {target}")
-        seen_inodes = {(current.st_dev, current.st_ino) for current in current_infos}
-        if len(seen_inodes) != len(current_infos):
-            raise ValueError(f"Managed output paths must be independent regular files: {target}")
-    return seen_inodes
-
-
-def read_text_at(path: str | Path) -> str:
-    target = Path(path)
-    return target.read_bytes().decode() if target.exists() else ""
 
 
 def write_rows_at(path: str | Path, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -423,569 +240,3 @@ def write_rows_at(path: str | Path, rows: Sequence[Mapping[str, Any]]) -> None:
 
 def write_text_at(path: str | Path, text: str) -> None:
     write_text(path, text)
-
-
-_DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
-
-
-def _close_descriptor(descriptor: int) -> None:
-    try:
-        os.close(descriptor)
-    except OSError:
-        pass
-
-
-def _open_managed_root(managed_root: Path, *, directory_flags: int = _DIRECTORY_OPEN_FLAGS) -> int:
-    current = os.open(managed_root.anchor, directory_flags)
-    try:
-        for part in managed_root.relative_to(managed_root.anchor).parts:
-            opened = os.open(part, directory_flags, dir_fd=current)
-            _close_descriptor(current)
-            current = opened
-    except BaseException:
-        _close_descriptor(current)
-        raise
-    return current
-
-
-def _open_managed_parent(
-    root_descriptor: int, relative: Path, *, create: bool, directory_flags: int = _DIRECTORY_OPEN_FLAGS
-) -> tuple[int, str]:
-    if not relative.parts:
-        raise ValueError("Managed CAS target must name a file below its workspace root.")
-    current = os.dup(root_descriptor)
-    try:
-        for part in relative.parts[:-1]:
-            try:
-                opened = os.open(part, directory_flags, dir_fd=current)
-            except FileNotFoundError:
-                if not create:
-                    raise
-                try:
-                    os.mkdir(part, 0o755, dir_fd=current)
-                except FileExistsError:
-                    pass
-                opened = os.open(part, directory_flags, dir_fd=current)
-            _close_descriptor(current)
-            current = opened
-    except BaseException:
-        _close_descriptor(current)
-        raise
-    return current, relative.name
-
-
-def _open_regular_file_at(parent_descriptor: int, name: str) -> tuple[int, int]:
-    descriptor = os.open(name, _FILE_OPEN_FLAGS, dir_fd=parent_descriptor)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise ValueError(f"Managed CAS file is missing or aliased: {name}")
-        return descriptor, stat.S_IMODE(info.st_mode)
-    except BaseException:
-        os.close(descriptor)
-        raise
-
-
-def _read_regular_file_at(parent_descriptor: int, name: str) -> tuple[bytes, int]:
-    descriptor, mode = _open_regular_file_at(parent_descriptor, name)
-    try:
-        with os.fdopen(descriptor, "rb") as file_obj:
-            descriptor = -1
-            return file_obj.read(), mode
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-
-
-def _managed_publication_matches(
-    root: Path,
-    relative: Path,
-    root_info: os.stat_result,
-    parent_info: os.stat_result,
-    published_info: os.stat_result,
-    payload: bytes,
-) -> bool:
-    try:
-        with ExitStack() as stack:
-            root_descriptor = _open_managed_root(root)
-            stack.callback(_close_descriptor, root_descriptor)
-            parent_descriptor, target_name = _open_managed_parent(root_descriptor, relative, create=False)
-            stack.callback(_close_descriptor, parent_descriptor)
-            current_root_info = os.fstat(root_descriptor)
-            current_parent_info = os.fstat(parent_descriptor)
-            if (current_root_info.st_dev, current_root_info.st_ino) != (
-                root_info.st_dev,
-                root_info.st_ino,
-            ) or (current_parent_info.st_dev, current_parent_info.st_ino) != (
-                parent_info.st_dev,
-                parent_info.st_ino,
-            ):
-                return False
-            descriptor = os.open(target_name, _FILE_OPEN_FLAGS, dir_fd=parent_descriptor)
-            stack.callback(_close_descriptor, descriptor)
-            current_info = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(current_info.st_mode)
-                or current_info.st_nlink != 1
-                or (current_info.st_dev, current_info.st_ino) != (published_info.st_dev, published_info.st_ino)
-            ):
-                return False
-            chunks = []
-            while chunk := os.read(descriptor, 1024 * 1024):
-                chunks.append(chunk)
-            return b"".join(chunks) == payload
-    except OSError:
-        return False
-
-
-def append_managed_text_at(path: str | Path, text: str, *, managed_root: str | Path) -> None:
-    root = Path(str(managed_root))
-    target = Path(str(path))
-    _validate_raw_managed_path(root, target)
-    incoming = text.encode()
-    with ExitStack() as stack:
-        try:
-            root_descriptor = _open_managed_root(root)
-        except OSError as exc:
-            raise ValueError(f"Managed output paths must be independent regular files: {root}") from exc
-        stack.callback(_close_descriptor, root_descriptor)
-        root_info = os.fstat(root_descriptor)
-        parent_descriptor, target_name = _open_managed_parent(
-            root_descriptor,
-            target.relative_to(root),
-            create=False,
-        )
-        stack.callback(_close_descriptor, parent_descriptor)
-        parent_info = os.fstat(parent_descriptor)
-        stack.enter_context(_blocking_file_lock_at(parent_descriptor, f".{target_name}.cas.lock"))
-        try:
-            current, target_mode = _read_regular_file_at(parent_descriptor, target_name)
-            target_exists = True
-        except FileNotFoundError:
-            current = b""
-            target_mode = 0o644
-            target_exists = False
-        except ValueError as exc:
-            raise ValueError(f"Managed output path is missing or aliased: {target}") from exc
-        file_descriptor, temporary = _open_temporary_at(parent_descriptor, target_name)
-        try:
-            replacement = current + incoming
-            temporary_info = os.fstat(file_descriptor)
-            if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
-                raise ValueError(f"Managed append temporary is aliased: {target}")
-            with os.fdopen(file_descriptor, "wb") as file_obj:
-                file_descriptor = -1
-                file_obj.write(replacement)
-                os.fchmod(file_obj.fileno(), target_mode)
-                file_obj.flush()
-                os.fsync(file_obj.fileno())
-                temporary_info = os.fstat(file_obj.fileno())
-                if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
-                    raise ValueError(f"Managed append temporary is aliased: {target}")
-            _publish_managed_append(
-                root=root,
-                target=target,
-                root_info=root_info,
-                parent_info=parent_info,
-                target_exists=target_exists,
-                current=current,
-                temporary=temporary,
-                temporary_info=temporary_info,
-                replacement=replacement,
-            )
-        except BaseException:
-            if file_descriptor >= 0:
-                _close_descriptor(file_descriptor)
-            try:
-                os.unlink(temporary, dir_fd=parent_descriptor)
-            except FileNotFoundError:
-                pass
-            raise
-
-
-def _publish_managed_append(
-    *,
-    root: Path,
-    target: Path,
-    root_info: os.stat_result,
-    parent_info: os.stat_result,
-    target_exists: bool,
-    current: bytes,
-    temporary: str,
-    temporary_info: os.stat_result,
-    replacement: bytes,
-) -> None:
-    try:
-        public_root = _open_managed_root(root)
-    except OSError as exc:
-        raise ValueError(f"Managed output path changed while it was written: {target}") from exc
-    try:
-        try:
-            public_parent, public_name = _open_managed_parent(
-                public_root,
-                target.relative_to(root),
-                create=False,
-            )
-        except OSError as exc:
-            raise ValueError(f"Managed output path changed while it was written: {target}") from exc
-        try:
-            public_root_info = os.fstat(public_root)
-            public_parent_info = os.fstat(public_parent)
-            if (public_root_info.st_dev, public_root_info.st_ino) != (
-                root_info.st_dev,
-                root_info.st_ino,
-            ) or (public_parent_info.st_dev, public_parent_info.st_ino) != (
-                parent_info.st_dev,
-                parent_info.st_ino,
-            ):
-                raise ValueError(f"Managed output path changed while it was written: {target}")
-            try:
-                public_current, _public_mode = _read_regular_file_at(public_parent, public_name)
-            except FileNotFoundError:
-                if target_exists:
-                    raise ValueError(f"Managed output path changed while it was written: {target}")
-            except ValueError as exc:
-                raise ValueError(f"Managed output path is missing or aliased: {target}") from exc
-            else:
-                if not target_exists or public_current != current:
-                    raise ValueError(f"Managed output path changed while it was written: {target}")
-            # Supported event writers share this lock; this binds the namespace for the following rename.
-            if target_exists:
-                os.replace(
-                    temporary,
-                    public_name,
-                    src_dir_fd=public_parent,
-                    dst_dir_fd=public_parent,
-                )
-            elif not _rename_noreplace_at(public_parent, temporary, public_name):
-                raise RuntimeError(f"Managed output path changed while it was written: {target}")
-            if not _managed_publication_matches(
-                root,
-                target.relative_to(root),
-                root_info,
-                parent_info,
-                temporary_info,
-                replacement,
-            ):
-                raise RuntimeError(f"Managed publication outcome is unknown because its public path changed: {target}")
-        finally:
-            _close_descriptor(public_parent)
-    finally:
-        _close_descriptor(public_root)
-
-
-@contextmanager
-def _blocking_file_lock_at(parent_descriptor: int, name: str) -> Iterator[None]:
-    for attempt in range(4):
-        descriptor = -1
-        try:
-            try:
-                descriptor = os.open(
-                    name,
-                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    0o644,
-                    dir_fd=parent_descriptor,
-                )
-            except FileExistsError:
-                descriptor = os.open(
-                    name,
-                    os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=parent_descriptor,
-                )
-            info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                raise ValueError(f"Managed CAS lock is missing or aliased: {name}")
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-        except FileNotFoundError:
-            if descriptor >= 0:
-                os.close(descriptor)
-            if attempt == 3:
-                raise
-            time.sleep(0.1 * (2**attempt))
-        except OSError as exc:
-            if descriptor >= 0:
-                os.close(descriptor)
-            if exc.errno != errno.EIO or attempt == 3:
-                raise
-            time.sleep(0.1 * (2**attempt))
-        except BaseException:
-            if descriptor >= 0:
-                os.close(descriptor)
-            raise
-        else:
-            break
-    try:
-        yield
-    finally:
-        _close_descriptor(descriptor)
-
-
-def _open_temporary_at(parent_descriptor: int, target_name: str) -> tuple[int, str]:
-    for _attempt in range(100):
-        name = f".{target_name}.{secrets.token_hex(8)}"
-        try:
-            descriptor = os.open(
-                name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o600,
-                dir_fd=parent_descriptor,
-            )
-        except FileExistsError:
-            continue
-        return descriptor, name
-    raise FileExistsError(f"Could not allocate a temporary file for managed CAS target: {target_name}")
-
-
-def _rename_noreplace_at(parent_descriptor: int, source_name: str, target_name: str) -> bool:
-    libc = ctypes.CDLL(None, use_errno=True)
-    source = os.fsencode(source_name)
-    destination = os.fsencode(target_name)
-    if hasattr(libc, "renameat2"):
-        rename = libc.renameat2
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        result = rename(parent_descriptor, source, parent_descriptor, destination, 1)
-    elif hasattr(libc, "renameatx_np"):
-        rename = libc.renameatx_np
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        result = rename(parent_descriptor, source, parent_descriptor, destination, 4)
-    else:
-        raise RuntimeError("Atomic descriptor-relative no-replace rename is unavailable on this platform.")
-    if result == 0:
-        return True
-    error = ctypes.get_errno()
-    if error == errno.EEXIST:
-        return False
-    raise OSError(error, os.strerror(error), target_name)
-
-
-def conditional_atomic_replace_text_at(
-    path: str | Path,
-    text: str,
-    expected_sha256: str | None,
-    *,
-    managed_root: str | Path,
-    dependency_path: str | Path | None = None,
-    expected_dependency_sha256: str | None = None,
-    guard_path: str | Path | None = None,
-    expected_guard_sha256: str | None = None,
-) -> bool:
-    root = Path(str(managed_root))
-    target = Path(str(path))
-    _validate_raw_managed_path(root, target)
-    if (dependency_path is None) != (expected_dependency_sha256 is None):
-        raise ValueError("Dependency path and expected SHA-256 must be provided together.")
-    if (guard_path is None) != (expected_guard_sha256 is None):
-        raise ValueError("Guard path and expected SHA-256 must be provided together.")
-    dependency = Path(str(dependency_path)) if dependency_path is not None else None
-    guard = Path(str(guard_path)) if guard_path is not None else None
-    if dependency is not None:
-        _validate_raw_managed_path(root, dependency)
-    if guard is not None:
-        _validate_raw_managed_path(root, guard)
-    payload = text.encode()
-    with ExitStack() as lock_stack:
-        root_descriptor = _open_managed_root(root)
-        lock_stack.callback(os.close, root_descriptor)
-        root_info = os.fstat(root_descriptor)
-        locked_files: set[tuple[int, int, str]] = set()
-        target_parent, target_name = _open_managed_parent(
-            root_descriptor,
-            target.relative_to(root),
-            create=True,
-        )
-        lock_stack.callback(os.close, target_parent)
-        if dependency is not None:
-            if not _check_managed_dependency(
-                root=root,
-                root_descriptor=root_descriptor,
-                dependency=dependency,
-                expected_dependency_sha256=expected_dependency_sha256,
-                lock_stack=lock_stack,
-                locked_files=locked_files,
-            ):
-                return False
-        target_lock_name = f".{target_name}.cas.lock"
-        target_parent_info = os.fstat(target_parent)
-        target_lock_key = (target_parent_info.st_dev, target_parent_info.st_ino, target_lock_name)
-        if target_lock_key not in locked_files:
-            lock_stack.enter_context(_blocking_file_lock_at(target_parent, target_lock_name))
-            locked_files.add(target_lock_key)
-        if guard is not None:
-            try:
-                guard_parent, guard_name = _open_managed_parent(
-                    root_descriptor,
-                    guard.relative_to(root),
-                    create=False,
-                )
-            except FileNotFoundError:
-                return False
-            lock_stack.callback(os.close, guard_parent)
-            try:
-                guard_bytes, _guard_mode = _read_regular_file_at(guard_parent, guard_name)
-            except FileNotFoundError:
-                return False
-            if hashlib.sha256(guard_bytes).hexdigest() != expected_guard_sha256:
-                return False
-        if expected_sha256 is None:
-            try:
-                os.stat(target_name, dir_fd=target_parent, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            else:
-                return False
-            target_mode = 0o644
-        else:
-            try:
-                current, target_mode = _read_regular_file_at(target_parent, target_name)
-            except FileNotFoundError:
-                return False
-            if hashlib.sha256(current).hexdigest() != expected_sha256:
-                return False
-        return _publish_managed_replacement(
-            root=root,
-            target=target,
-            root_info=root_info,
-            target_parent=target_parent,
-            target_name=target_name,
-            target_parent_info=target_parent_info,
-            target_mode=target_mode,
-            expected_sha256=expected_sha256,
-            current=current if expected_sha256 is not None else None,
-            payload=payload,
-            lock_stack=lock_stack,
-        )
-
-
-def _check_managed_dependency(
-    *,
-    root: Path,
-    root_descriptor: int,
-    dependency: Path,
-    expected_dependency_sha256: str | None,
-    lock_stack: ExitStack,
-    locked_files: set[tuple[int, int, str]],
-) -> bool:
-    try:
-        dependency_parent, dependency_name = _open_managed_parent(
-            root_descriptor,
-            dependency.relative_to(root),
-            create=False,
-        )
-    except FileNotFoundError:
-        return False
-    lock_stack.callback(os.close, dependency_parent)
-    dependency_lock_name = dependency_name + ".lock"
-    dependency_parent_info = os.fstat(dependency_parent)
-    dependency_lock_key = (
-        dependency_parent_info.st_dev,
-        dependency_parent_info.st_ino,
-        dependency_lock_name,
-    )
-    if dependency_lock_key not in locked_files:
-        lock_stack.enter_context(_blocking_file_lock_at(dependency_parent, dependency_lock_name))
-        locked_files.add(dependency_lock_key)
-    try:
-        dependency_bytes, _dependency_mode = _read_regular_file_at(dependency_parent, dependency_name)
-    except FileNotFoundError:
-        return False
-    if hashlib.sha256(dependency_bytes).hexdigest() != expected_dependency_sha256:
-        return False
-    return True
-
-
-def _publish_managed_replacement(
-    *,
-    root: Path,
-    target: Path,
-    root_info: os.stat_result,
-    target_parent: int,
-    target_name: str,
-    target_parent_info: os.stat_result,
-    target_mode: int,
-    expected_sha256: str | None,
-    current: bytes | None,
-    payload: bytes,
-    lock_stack: ExitStack,
-) -> bool:
-    file_descriptor, temporary = _open_temporary_at(target_parent, target_name)
-    try:
-        with os.fdopen(file_descriptor, "wb") as file_obj:
-            file_obj.write(payload)
-            os.fchmod(file_obj.fileno(), target_mode)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
-            temporary_info = os.fstat(file_obj.fileno())
-            if not stat.S_ISREG(temporary_info.st_mode) or temporary_info.st_nlink != 1:
-                raise ValueError(f"Managed CAS temporary is aliased: {target}")
-        try:
-            public_root = _open_managed_root(root)
-        except OSError as exc:
-            raise ValueError(f"Managed CAS path changed during publication: {target}") from exc
-        lock_stack.callback(os.close, public_root)
-        try:
-            public_parent, public_name = _open_managed_parent(
-                public_root,
-                target.relative_to(root),
-                create=False,
-            )
-        except OSError as exc:
-            raise ValueError(f"Managed CAS path changed during publication: {target}") from exc
-        lock_stack.callback(os.close, public_parent)
-        public_root_info = os.fstat(public_root)
-        public_parent_info = os.fstat(public_parent)
-        if (public_root_info.st_dev, public_root_info.st_ino) != (
-            root_info.st_dev,
-            root_info.st_ino,
-        ) or (public_parent_info.st_dev, public_parent_info.st_ino) != (
-            target_parent_info.st_dev,
-            target_parent_info.st_ino,
-        ):
-            raise ValueError(f"Managed CAS path changed during publication: {target}")
-        try:
-            public_current, _public_mode = _read_regular_file_at(public_parent, public_name)
-        except FileNotFoundError:
-            if expected_sha256 is not None:
-                os.unlink(temporary, dir_fd=public_parent)
-                return False
-        except ValueError as exc:
-            raise ValueError(f"Managed output path is missing or aliased: {target}") from exc
-        else:
-            if expected_sha256 is None or public_current != current:
-                os.unlink(temporary, dir_fd=public_parent)
-                return False
-        # Supported writers share this lock; this binds the namespace for the following rename.
-        if expected_sha256 is None:
-            if not _rename_noreplace_at(public_parent, temporary, public_name):
-                os.unlink(temporary, dir_fd=public_parent)
-                return False
-        else:
-            os.replace(
-                temporary,
-                public_name,
-                src_dir_fd=public_parent,
-                dst_dir_fd=public_parent,
-            )
-        if not _managed_publication_matches(
-            root,
-            target.relative_to(root),
-            root_info,
-            target_parent_info,
-            temporary_info,
-            payload,
-        ):
-            raise RuntimeError(f"Managed publication outcome is unknown because its public path changed: {target}")
-    except BaseException:
-        try:
-            os.unlink(temporary, dir_fd=target_parent)
-        except FileNotFoundError:
-            pass
-        raise
-    return True
-
-
-def append_event_at(root: Path, event_type: str, payload: dict[str, Any]) -> None:
-    row = json.dumps({"time": utc_now(), "event_type": event_type, **json_ready(payload)}, sort_keys=True) + "\n"
-    append_managed_text_at(root / "events.jsonl", row, managed_root=root)

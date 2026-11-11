@@ -745,7 +745,7 @@ def test_infer_external_cancel_is_lost_until_exit_code_or_reasoned_stop(
     assert fake.count("bash") == 1
 
 
-@pytest.mark.parametrize("boundary", ["intent", "event", "report"])
+@pytest.mark.parametrize("boundary", ["intent", "event"])
 def test_infer_stop_failure_preserves_cancel_order_and_committed_intent(
     tmp_path: Path, monkeypatch, boundary: str, _runtime_commit, _runtime_probe
 ):
@@ -758,7 +758,7 @@ def test_infer_stop_failure_preserves_cancel_order_and_committed_intent(
     def fail(*_args, **_kwargs):
         raise OSError(f"{boundary} write failed")
 
-    owner_field = {"intent": "merge_run_manifest", "event": "append_event", "report": "write_status_report"}[boundary]
+    owner_field = {"intent": "merge_run_manifest", "event": "append_event"}[boundary]
     monkeypatch.setattr(experiments, owner_field, fail)
 
     with pytest.raises(OSError, match=f"{boundary} write failed"):

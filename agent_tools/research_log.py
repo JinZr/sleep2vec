@@ -1,9 +1,9 @@
-"""Append-only semantic research notes: validation, rendering, and CAS publication.
+"""Append-only semantic research notes: validation, rendering, and locked append.
 
-Layer 0 leaf, published behind the ``experiment_workspace`` facade. Entries
-append under a compare-and-swap so two writers cannot interleave, and each
-carries a kind and evidence. Decision entries additionally require authority;
-other entry kinds may omit it.
+Published behind the ``experiment_workspace`` facade. Entries append under the
+log's sidecar lock with an atomic replacement, entry ids are unique, and each
+entry carries a kind and evidence. Decision entries additionally require
+authority; other entry kinds may omit it.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 import re
-from types import ModuleType
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 from typing_extensions import Never, NotRequired
@@ -272,29 +271,9 @@ def _normalized_research_log_entry(
     return normalized
 
 
-def _research_log_blocks(text: str, path: Path) -> dict[str, str]:
-    markers = list(RESEARCH_LOG_MARKER_RE.finditer(text))
-    if not markers:
-        if text != RESEARCH_LOG_PREAMBLE:
-            raise ValueError(f"Managed research log has an invalid preamble or unmarked content: {path}")
-        return {}
-    if text[: markers[0].start()] != RESEARCH_LOG_PREAMBLE:
-        raise ValueError(f"Managed research log has an invalid preamble: {path}")
-
-    entries = {}
-    for index, marker in enumerate(markers):
-        entry_id, expected_digest = marker.groups()
-        if entry_id in entries:
-            raise ValueError(f"Managed research log has a duplicate entry id: {entry_id}")
-        block_end = markers[index + 1].start() if index + 1 < len(markers) else len(text)
-        block = text[marker.end() : block_end]
-        actual_digest = hashlib.sha256(block.encode()).hexdigest()
-        if actual_digest != expected_digest:
-            raise ValueError(f"Managed research log entry digest differs from its content: {entry_id}")
-        if not block.startswith("## ") or f"- Entry ID: `{entry_id}`\n" not in block:
-            raise ValueError(f"Managed research log entry has invalid Markdown structure: {entry_id}")
-        entries[entry_id] = actual_digest
-    return entries
+def _research_log_digests(text: str) -> dict[str, str]:
+    """Map each marked entry id in a research log to the digest its marker records."""
+    return {match.group(1): match.group(2) for match in RESEARCH_LOG_MARKER_RE.finditer(text)}
 
 
 def _research_log_block(entry: NormalizedResearchLogEntry, experiment_id: str) -> str:
@@ -342,15 +321,10 @@ def append_research_log(
     managed_rows: list[dict[str, Any]],
     read_step_manifest: StepManifestReader,
     managed_run_key: Callable[[Mapping[str, Any]], tuple[str, str] | None],
-    io: ModuleType = exp_io,
 ) -> tuple[Path, str, bool]:
     root = Path(root)
     path = root / RESEARCH_LOG_NAME
-    managed_paths = [path, path.with_name(f".{path.name}.cas.lock")]
-    scope = entry.get("scope") if isinstance(entry, dict) else None
-    if isinstance(scope, dict) and isinstance(scope.get("step_id"), str):
-        managed_paths.append(root / "steps" / scope["step_id"] / "step.yaml")
-    io.validate_managed_output_paths(root, managed_paths)
+    exp_io.validate_managed_output_paths(root, [path])
     normalized = _normalized_research_log_entry(
         entry,
         experiment_id=experiment_id,
@@ -360,31 +334,25 @@ def append_research_log(
         managed_run_key=managed_run_key,
     )
     block = _research_log_block(normalized, experiment_id)
+    if RESEARCH_LOG_MARKER_RE.search(block):
+        # A marker line inside the block would read back as a second entry id.
+        raise ValueError("Research log entry text must not contain a research log entry marker line.")
     digest = hashlib.sha256(block.encode()).hexdigest()
     marker = f'<!-- agent-tools-research-entry id="{normalized["id"]}" sha256="{digest}" -->\n'
 
-    for _attempt in range(3):
-        exists = io.path_exists_at(path)
-        current = io.read_text_at(path) if exists else RESEARCH_LOG_PREAMBLE
-        entries = _research_log_blocks(current, path)
-        existing_digest = entries.get(normalized["id"])
+    with exp_io.blocking_file_lock(exp_io.lock_path_for(path)):
+        current = exp_io.read_text_at(path) if exp_io.path_exists_at(path) else RESEARCH_LOG_PREAMBLE
+        digests = _research_log_digests(current)
+        existing_digest = digests.get(normalized["id"])
         if existing_digest is not None:
+            # Re-recording the identical entry is a no-op; an entry id is otherwise unique.
             if existing_digest == digest:
                 return path, normalized["id"], False
             raise ValueError(f"Research log entry id already exists with different content: {normalized['id']}")
         missing_superseded = [
-            superseded_id for superseded_id in normalized.get("supersedes", []) if superseded_id not in entries
+            superseded_id for superseded_id in normalized.get("supersedes", []) if superseded_id not in digests
         ]
         if missing_superseded:
             raise ValueError(f"Research log entry supersedes unknown entry ids: {', '.join(missing_superseded)}")
-        replacement = current + marker + block
-        _research_log_blocks(replacement, path)
-        expected_sha256 = hashlib.sha256(current.encode()).hexdigest() if exists else None
-        if io.conditional_atomic_replace_text_at(
-            path,
-            replacement,
-            expected_sha256,
-            managed_root=root,
-        ):
-            return path, normalized["id"], True
-    raise RuntimeError(f"Managed research log changed during three append attempts: {path}")
+        exp_io.atomic_replace(path, current + marker + block)
+    return path, normalized["id"], True

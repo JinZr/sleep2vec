@@ -31,6 +31,7 @@ from . import (
 from .experiment_workspace import (
     EXECUTION_IDENTITY_FIELDS,
     LAUNCHABLE_STATUSES,
+    MONITOR_OBSERVATION_FIELDS,
     PROCESS_IDENTITY_FIELDS,
     TERMINAL_STATUSES,
     RunKey,
@@ -43,7 +44,6 @@ from .experiment_workspace import (
     scheduler_type,
     validate_frozen_run_update,
     validated_run_key,
-    write_status_report,
 )
 from .manifests import utc_now, write_rows
 from .models import JsonValue
@@ -99,8 +99,8 @@ def launch_hparam_runs(
     three fields are used: ``validated_snapshot`` replaces the frozen
     execution-target check, ``build_command`` the launch-command builder and
     ``start_process`` the process start; a ``None`` field uses the canonical
-    owner, looked up when the pass starts. Manifest merges, event appends,
-    status reports and frozen-run validation are not replaceable."""
+    owner, looked up when the pass starts. Manifest merges, event appends
+    and frozen-run validation are not replaceable."""
     run_dir = Path(plan_dir).expanduser()
     if not run_dir.is_absolute():
         run_dir = run_dir.resolve()
@@ -290,17 +290,7 @@ def _launch_hparam_runs(
     manifest = run_dir / "launch_manifest.tsv"
     status_path = run_dir / "run_status.tsv"
     exp_io.validate_managed_output_paths(
-        workspace,
-        [
-            workspace / "run_manifest.tsv",
-            workspace / "run_matrix.csv",
-            workspace / "reports" / "run_matrix.md",
-            workspace / "events.jsonl",
-            workspace / "reports" / "status.md",
-            manifest,
-            status_path,
-            run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME,
-        ],
+        workspace, [manifest, status_path, run_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME]
     )
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
@@ -329,7 +319,6 @@ def _launch_hparam_runs(
     launch_hooks = scheduler.SchedulerHooks(
         merge_manifest=merge_run_manifest,
         append_event=append_event,
-        write_status_report=write_status_report,
         validate_run_update=validate_frozen_run_update,
         validated_snapshot=functools.partial(
             execution_snapshot.validated_execution_snapshot,
@@ -376,10 +365,11 @@ def monitor_hparam_runs(
 ) -> Path:
     """Observe a registered hparam plan, commit status updates and return run_status.tsv.
 
-    Reads local execution evidence and merges observations into the
-    canonical run manifest, refreshing projections/reports and recording status
-    transitions. Never starts pending runs. health requests additional health
-    evidence from the observers.
+    Reads local execution evidence, merges observations into the canonical
+    run manifest and records status transitions. run_status.tsv carries the
+    committed rows plus this poll's observation fields (such as log_tail), which
+    run_manifest.tsv does not persist. Never starts pending runs. health requests
+    additional health evidence from the observers.
 
     The Python default once=True performs one round; once=False polls until all
     plan runs are terminal, including failures/stops. poll_seconds must be finite
@@ -397,16 +387,7 @@ def monitor_hparam_runs(
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    managed_output_paths = [
-        workspace / "run_manifest.tsv",
-        workspace / "run_matrix.csv",
-        workspace / "reports" / "run_matrix.md",
-        workspace / "events.jsonl",
-        workspace / "reports" / "status.md",
-        root / "launch_manifest.tsv",
-        root / "run_status.tsv",
-    ]
-    exp_io.validate_managed_output_paths(workspace, managed_output_paths)
+    exp_io.validate_managed_output_paths(workspace, [root / "launch_manifest.tsv", status_path])
     with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(root)
     expected_keys = {validated_run_key(run) for run in plan["runs"]}
@@ -433,11 +414,24 @@ def monitor_hparam_runs(
                 rows.append(scheduler.observe_slurm_run(root.absolute(), prior, slurm_jobs, health=health))
             else:
                 rows.append(scheduler.observe_run(root, prior, prior, health=health))
-        exp_io.validate_managed_output_paths(workspace, managed_output_paths)
+        observed_by_key = {validated_run_key(row): row for row in rows}
         committed = merge_run_manifest(workspace, rows)
         committed_by_key = {validated_run_key(row): row for row in committed}
         rows = [committed_by_key[validated_run_key(run)] for run in plan["runs"]]
-        write_rows(status_path, rows)
+        write_rows(
+            status_path,
+            [
+                {
+                    **row,
+                    **{
+                        field: value
+                        for field, value in observed_by_key[validated_run_key(row)].items()
+                        if field in MONITOR_OBSERVATION_FIELDS
+                    },
+                }
+                for row in rows
+            ],
+        )
         for row in rows:
             before = previous_rows[validated_run_key(row)].get("status")
             after = row.get("status")
@@ -467,8 +461,6 @@ def monitor_hparam_runs(
                             "reason": row.get("stop_reason", ""),
                         },
                     )
-        with experiment_workspace.managed_run_lock(workspace):
-            write_status_report(workspace)
         if once or all(row.get("status") in TERMINAL_STATUSES for row in rows):
             return status_path
         print(f"wrote {status_path}")
@@ -489,18 +481,7 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
     workspace = experiment_root(recipe)
     if workspace is None:
         raise ValueError("Hparam plan is not bound to an experiment workspace.")
-    exp_io.validate_managed_output_paths(
-        workspace,
-        [
-            workspace / "run_manifest.tsv",
-            workspace / "run_matrix.csv",
-            workspace / "reports" / "run_matrix.md",
-            workspace / "events.jsonl",
-            workspace / "reports" / "status.md",
-            root / "launch_manifest.tsv",
-            root / "run_status.tsv",
-        ],
-    )
+    exp_io.validate_managed_output_paths(workspace, [manifest_path, status_path])
     with experiment_workspace.managed_run_lock(workspace):
         plan = artifacts.read_hparam_plan(root)
         expected_keys = {validated_run_key(run) for run in plan["runs"]}
@@ -608,5 +589,4 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                 "run_stopped",
                 {"step_id": key[0], "run_id": run_id, "reason": reason},
             )
-        write_status_report(workspace)
     return status_path
