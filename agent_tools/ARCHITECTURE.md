@@ -68,6 +68,15 @@ target and freezes that snapshot into the plan, and `commit_hparam_plan`
 registers the published plan's run-manifest rows. `plans` calls both directly;
 adapters carry no registration hooks.
 
+`plans.preflight_plan` is the one validation pass that `doctor` and `plan`
+share: structure, decision resolution, experiment ownership and identity,
+consultation gates over a single source-config read, task preflight and command
+rendering, each run once. `plan` adds the workspace and output-directory checks
+and publication; `doctor` passes `output_dir=None`, then adds only the hparam
+runtime card and its own questions/decisions files. `decisions` holds the gate
+and the structure helpers, but the structure and ownership checks run in
+`plans` before the gate, not inside it.
+
 `plan_contract` and adapter `compile_plan_contract()` hooks own deterministic
 run identities, paths, derived config bytes, complete executable scripts, and
 final-evaluation requirements shared by plan publication and registered-plan

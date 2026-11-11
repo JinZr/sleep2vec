@@ -229,7 +229,7 @@ single authorized [decision input](../agent_contracts/user_decisions.md#cross-st
 may be revalidated across publication attempts, while resolved plan artifacts
 carry those choices into launch and recovery.
 
-1. Resolve high-impact decisions with `doctor` through
+1. Resolve high-impact decisions with `doctor` (plan's validation pass without publication) through
    [consultation and diagnostics](../agent_contracts/task_recipe.md#consultation-and-diagnostics);
    stop on `NEEDS_USER_INPUT` and use the
    [decision input](../agent_contracts/user_decisions.md#generated-decision-templates).

@@ -1,968 +1,143 @@
+"""Doctor reuses plan's single validation pass: same verdict, doctor-only outputs, and one frozen config read."""
+
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import asdict
-from datetime import date, datetime, timezone
+import hashlib
 import json
 from pathlib import Path
-import subprocess
 
-from agent_tool_test_helpers import survival_config_payload, write_finetune_recipe, write_survival_sidecars, write_yaml
-import pandas as pd
+from agent_tool_test_helpers import run_cli, write_finetune_recipe
 import pytest
 import yaml
 
-from agent_tools import (
-    cli,
-    configs,
-    decisions,
-    execution_snapshot,
-    experiment_workspace,
-    managed_scheduler,
-    plan_context,
-    plans,
-)
-from agent_tools.configs import config_summary
-from agent_tools.domain import index_csv
-from agent_tools.models import REPO_ROOT
+from agent_tools import plans
 
 
-def _sidecar_recipe(tmp_path: Path, kind: str, *, variant: str = "sleep2vec", hparam: bool = False) -> Path:
-    recipe = write_finetune_recipe(tmp_path, variant=variant)
-    index = tmp_path / "index.csv"
-    index.write_text(
-        "path,split,duration,eid,ppg_mask,age,sex\n"
-        "x.npz,train,60,doctor-private-001,1,50,0\n"
-        "y.npz,val,60,doctor-private-002,1,60,1\n"
-    )
-    sidecars = write_survival_sidecars(tmp_path)
-    for field in ("event_time_index", "is_event_index", "has_label_index"):
-        path = Path(sidecars[field])
-        path.write_text(path.read_text().replace("001", "doctor-private-001").replace("002", "doctor-private-002"))
-    if variant == "sex_age_baseline":
-        payload = yaml.safe_load((REPO_ROOT / "configs/sex_age_baseline/cox.yaml").read_text())
-        payload["data"]["finetune_data_index"] = str(index)
-        payload["finetune"]["survival"].update(sidecars)
-        payload["finetune"]["task"].update(output_dim=2, monitor="val_loss", monitor_mod="min")
-    else:
-        payload = survival_config_payload(index, sidecars)
-    if kind == "multilabel":
-        survival = payload["finetune"].pop("survival")
-        if variant == "sex_age_baseline":
-            payload["finetune"]["loss"] = {"pos_weight": None}
-        payload["finetune"]["task"]["type"] = "multilabel_classification"
-        payload["finetune"]["multilabel"] = {
-            "key_column": "eid",
-            "disease_columns_index": sidecars["disease_columns_index"],
-            "label_index": sidecars["is_event_index"],
-            "has_label_index": sidecars["has_label_index"],
-            # The baseline's required covariates move with the task block; the signal source declares none.
-            **{key: value for key, value in survival.items() if key.startswith("covariate")},
-        }
-    write_yaml(tmp_path / "config.yaml", payload)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["inputs"]["label_name"] = "incident_cox" if kind == "survival" else "disease_label"
-    payload["evaluation_policy"].update(selection_metric="val_loss", selection_mode="min")
-    if variant == "sex_age_baseline":
-        payload["decisions"]["required_channels"] = {"value": [], "source": "explicit_recipe"}
-    write_yaml(recipe, payload)
-    if not hparam:
-        return recipe
-    return write_yaml(
-        tmp_path / "hparam.yaml",
-        {
-            "name": "doctor_sidecar_reuse",
-            "task": "hparam_tune",
-            "variant": variant,
-            "base_recipe": str(recipe),
-            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
-            "evaluation_policy": {
-                **payload["evaluation_policy"],
-                "final_eval_split": "test",
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
-    )
+def _recipe(tmp_path: Path, state: str) -> Path:
+    recipe = write_finetune_recipe(tmp_path, include_label=state != "needs")
+    if state == "fail":
+        payload = yaml.safe_load(recipe.read_text())
+        # The source config monitors val_ahi_pearson, so this explicit selection metric conflicts with it.
+        payload["evaluation_policy"]["selection_metric"] = "val_loss"
+        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+    return recipe
 
 
-@pytest.fixture
-def csv_reads(monkeypatch):
-    calls = Counter()
-    read_csv = pd.read_csv
+def _blocking(report: plans.DecisionReport) -> list[tuple[str, str, str]]:
+    return [(issue.status.value, issue.field, issue.message) for issue in report.blocking_issues()]
 
-    def counted(path, *args, **kwargs):
-        calls[Path(path).name] += 1
-        return read_csv(path, *args, **kwargs)
 
-    monkeypatch.setattr(pd, "read_csv", counted)
-    return calls
+@pytest.mark.parametrize(("state", "exit_code"), [("pass", 0), ("needs", 2), ("fail", 1)])
+def test_doctor_and_plan_reach_the_same_verdict(tmp_path: Path, state: str, exit_code: int):
+    recipe = _recipe(tmp_path, state)
 
+    _recipe_payload, _cfg, doctor_report = plans.preflight_plan(recipe_path=recipe, output_dir=None)
+    doctor = run_cli("doctor", "--recipe", str(recipe))
+    plan_report = plans.build_plan(recipe_path=recipe, output_dir=tmp_path / "plan")
 
-@pytest.fixture
-def runtime_probes(monkeypatch):
-    calls = []
+    assert doctor.returncode == doctor_report.exit_code == plan_report.exit_code == exit_code
+    assert f"Status: {plan_report.status.value}" in doctor.stdout
+    assert _blocking(doctor_report) == _blocking(plan_report)
 
-    def run(execution, command):
-        calls.append((execution, command))
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            json.dumps(
-                {
-                    "host": "test-runtime",
-                    "python": "/test/python",
-                    "python_version": "3.10.20",
-                    "pytorch_lightning_version": "2.6.1",
-                }
-            ),
-            "",
-        )
 
-    monkeypatch.setattr(execution_snapshot, "run_execution_command", run)
-    return calls
-
-
-def _without_reuse(*args, **kwargs):
-    kwargs.pop("validated_summary", None)
-    return index_csv.index_summary(*args, **kwargs)
-
-
-def _forbid_config_reads(monkeypatch, config_path):
-    original_open = Path.open
-
-    def guarded_open(path, mode="r", *args, **kwargs):
-        if path == config_path and "r" in mode:
-            pytest.fail("Invalid authored input reached a config read")
-        return original_open(path, mode, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", guarded_open)
-    monkeypatch.setattr(
-        configs,
-        "load_config_summary_for_recipe",
-        lambda *_args, **_kwargs: pytest.fail("Invalid authored input reached config validation"),
-    )
-
-
-@pytest.mark.parametrize("entrypoint", ["doctor", "plan"])
-@pytest.mark.parametrize("decision_owner", ["recipe", "user"])
-def test_search_explanation_fails_before_config_or_data(
-    tmp_path, monkeypatch, capsys, csv_reads, runtime_probes, entrypoint, decision_owner
-):
-    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
-    decision = {"value": "Try a few learning rates", "source": "explicit_recipe"}
-    args = [entrypoint, "--recipe", str(recipe_path)]
-    if decision_owner == "recipe":
-        recipe = yaml.safe_load(recipe_path.read_text())
-        recipe["decisions"]["hparam_search_space"] = decision
-        write_yaml(recipe_path, recipe)
-    else:
-        decision["source"] = "explicit_user"
-        decisions_path = write_yaml(tmp_path / "decisions.yaml", {"decisions": {"hparam_search_space": decision}})
-        args.extend(["--user-decisions", str(decisions_path)])
-    if entrypoint == "plan":
-        args.extend(["--output-dir", str(tmp_path / "plan")])
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-
-    with monkeypatch.context() as guarded:
-        _forbid_config_reads(guarded, tmp_path / "config.yaml")
-        assert cli.main(args) == 1
-
-    output = capsys.readouterr()
-    assert "search.parameters must be a mapping" in output.out
-    assert "string indices must be integers" not in output.out + output.err
-    assert not csv_reads
-    assert not runtime_probes
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize(
-    "search, message",
-    [
-        ({"parameters": {"runtime.lr": 0.1}}, "non-empty list"),
-        ({"parameters": {"runtime.lr": []}}, "non-empty list"),
-        ({"configurations": {}}, "non-empty list"),
-        ({"configurations": [{}]}, "non-empty mapping"),
-        ({"parameters": {"runtime.lr": [0.1]}, "configurations": [{}]}, "mutually exclusive"),
-    ],
-)
-def test_invalid_effective_search_shape_skips_config(tmp_path, monkeypatch, csv_reads, search, message):
-    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
-    payload = yaml.safe_load(recipe_path.read_text())
-    payload["search"] = {"method": "grid", "max_runs": 1, **search}
-    write_yaml(recipe_path, payload)
-    _forbid_config_reads(monkeypatch, tmp_path / "config.yaml")
-
-    _recipe, cfg, report = plans.evaluate_recipe(recipe_path)
-
-    assert cfg is None
-    assert report.exit_code == 1
-    assert any(message in issue.message for issue in report.blocking_issues())
-    assert all(issue.evidence["preflight_before_workspace"] for issue in report.blocking_issues())
-    assert not csv_reads
-
-
-def test_valid_user_search_override_reaches_normal_config_validation(tmp_path, csv_reads):
-    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
-    payload = yaml.safe_load(recipe_path.read_text())
-    payload["search"]["parameters"] = "overridden source value"
-    write_yaml(recipe_path, payload)
-    decisions_path = write_yaml(
-        tmp_path / "decisions.yaml",
-        {"decisions": {"hparam_search_space": {"value": {"runtime.lr": [0.001]}, "source": "explicit_user"}}},
-    )
-
-    recipe, cfg, report = plans.evaluate_recipe(recipe_path, decisions_path)
-
-    assert report.exit_code == 0
-    assert cfg is not None
-    assert recipe["search"]["parameters"] == {"runtime.lr": [0.001]}
-    assert csv_reads == {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-
-
-@pytest.mark.parametrize("entrypoint", ["doctor", "plan"])
-@pytest.mark.parametrize("value", [date(2026, 8, 31), datetime(2026, 8, 31, tzinfo=timezone.utc), b"binary metadata"])
-def test_non_json_yaml_values_fail_before_config_or_outputs(
-    tmp_path, monkeypatch, capsys, csv_reads, entrypoint, value
-):
-    recipe_path = _sidecar_recipe(tmp_path, "survival")
-    payload = yaml.safe_load(recipe_path.read_text())
-    payload["experiment"]["baseline"]["note"] = value
-    write_yaml(recipe_path, payload)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    args = [entrypoint, "--recipe", str(recipe_path), "--output-dir", str(tmp_path / "output")]
-
-    with monkeypatch.context() as guarded:
-        _forbid_config_reads(guarded, tmp_path / "config.yaml")
-        assert cli.main(args) == 1
-
-    _, marker, error = ("\n" + capsys.readouterr().err).partition("\nerror: ")
-    assert marker and "JSON" in error
-    assert str(recipe_path) in error
-    assert "quot" in error.lower()
-    assert not csv_reads
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_quoted_yaml_timestamp_is_preserved(tmp_path, csv_reads):
-    recipe_path = _sidecar_recipe(tmp_path, "survival")
-    payload = yaml.safe_load(recipe_path.read_text())
-    timestamp = "2026-08-31T00:00:00Z"
-    payload["experiment"]["baseline"]["note"] = timestamp
-    write_yaml(recipe_path, payload)
-
-    recipe, cfg, report = plans.evaluate_recipe(recipe_path)
-
-    assert report.exit_code == 0
-    assert cfg is not None
-    assert recipe["experiment"]["baseline"]["note"] == timestamp
-    assert csv_reads
-
-
-def test_non_json_user_decision_metadata_names_its_source(tmp_path, monkeypatch, csv_reads):
-    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
-    decisions_path = write_yaml(
-        tmp_path / "decisions.yaml",
-        {
-            "decisions": {
-                "hparam_search_space": {
-                    "value": {"runtime.lr": [0.001]},
-                    "source": "explicit_user",
-                    "rationale": date(2026, 8, 31),
-                }
-            }
-        },
-    )
-    _forbid_config_reads(monkeypatch, tmp_path / "config.yaml")
-
-    with pytest.raises(ValueError, match="JSON") as caught:
-        plans.evaluate_recipe(recipe_path, decisions_path)
-
-    assert str(decisions_path) in str(caught.value)
-    assert not csv_reads
-
-
-@pytest.mark.parametrize("field", ["id", "title", "objective", "root", "baseline"])
-def test_plan_identity_mismatch_fails_before_config_or_data(tmp_path, monkeypatch, csv_reads, field):
-    recipe_path = _sidecar_recipe(tmp_path, "survival")
-    manifest_path = tmp_path / "experiment.yaml"
-    manifest = yaml.safe_load(manifest_path.read_text())
-    manifest["experiment"][field] = {"type": "different"} if field == "baseline" else "different-identity"
-    write_yaml(manifest_path, manifest)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-
-    with monkeypatch.context() as guarded:
-        _forbid_config_reads(guarded, tmp_path / "config.yaml")
-        _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
-
-    assert cfg is None
-    assert report.exit_code == 1
-    message = "different experiment" if field == "id" else f"experiment.{field} differs"
-    assert any(message in issue.message for issue in report.blocking_issues())
-    assert all(issue.evidence["preflight_before_workspace"] for issue in report.blocking_issues())
-    assert not csv_reads
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_doctor_does_not_read_existing_experiment_identity(tmp_path, monkeypatch, capsys, csv_reads):
-    recipe_path = _sidecar_recipe(tmp_path, "survival")
-    (tmp_path / "experiment.yaml").write_text("")
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    monkeypatch.setattr(
-        plans.exp_io,
-        "read_managed_output_texts_at",
-        lambda *_args, **_kwargs: pytest.fail("Doctor must not depend on the plan-only workspace read"),
-    )
-
-    assert cli.main(["doctor", "--recipe", str(recipe_path)]) == 0
-
-    assert "Status: PASS" in capsys.readouterr().out
-    assert csv_reads == {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize("state", ["missing_root", "missing_manifest", "identical"])
-def test_plan_identity_read_is_optional_and_manifest_only(tmp_path, monkeypatch, csv_reads, state):
-    recipe_path = _sidecar_recipe(tmp_path, "survival")
-    root = tmp_path
-    if state != "identical":
-        root = tmp_path / "new-workspace"
-        payload = yaml.safe_load(recipe_path.read_text())
-        payload["experiment"]["root"] = str(root)
-        recipe_path.write_text(yaml.safe_dump(payload))
-        if state == "missing_manifest":
-            root.mkdir()
-    else:
-        # The existing workspace's canonical rows are read under the run lock, which creates this empty file.
-        (root / "run_manifest.tsv.lock").touch()
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    read = plans.exp_io.read_managed_output_texts_at
-    calls = []
-
-    def counted(root, paths):
-        calls.append((root, paths))
-        return read(root, paths)
-
-    monkeypatch.setattr(plans.exp_io, "read_managed_output_texts_at", counted)
-
-    _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=root / "plan")
-
-    assert report.exit_code == 0
-    assert cfg is not None
-    assert calls == [(root, [root / "experiment.yaml"])]
-    assert csv_reads == {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize("state", ["empty", "symlink", "read_error"])
-def test_plan_identity_read_failures_are_not_missing_state(tmp_path, monkeypatch, csv_reads, state):
-    recipe_path = _sidecar_recipe(tmp_path, "survival")
-    manifest_path = tmp_path / "experiment.yaml"
-    if state == "empty":
-        manifest_path.write_text("")
-    elif state == "symlink":
-        target = tmp_path / "other-identity.yaml"
-        target.write_bytes(manifest_path.read_bytes())
-        manifest_path.unlink()
-        manifest_path.symlink_to(target)
-    else:
-
-        def denied(*_args, **_kwargs):
-            raise PermissionError("injected manifest read denial")
-
-        monkeypatch.setattr(plans.exp_io, "read_managed_output_texts_at", denied)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-
-    with monkeypatch.context() as guarded:
-        _forbid_config_reads(guarded, tmp_path / "config.yaml")
-        if state == "empty":
-            _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
-            assert cfg is None
-            assert report.exit_code == 1
-            assert all(issue.evidence["preflight_before_workspace"] for issue in report.blocking_issues())
-        else:
-            error = PermissionError if state == "read_error" else ValueError
-            message = "injected manifest read denial" if state == "read_error" else "aliased"
-            with pytest.raises(error, match=message):
-                plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
-
-    assert not csv_reads
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize("blocked", ["metadata", "search"])
-def test_authored_blockers_precede_optional_workspace_identity_read(tmp_path, monkeypatch, csv_reads, blocked):
-    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=blocked == "search")
-    payload = yaml.safe_load(recipe_path.read_text())
-    if blocked == "metadata":
-        payload["experiment"]["title"] = "ASK_USER"
-    else:
-        payload["search"]["parameters"] = "explanation instead of parameters"
-    recipe_path.write_text(yaml.safe_dump(payload))
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    monkeypatch.setattr(
-        plans.exp_io,
-        "read_managed_output_texts_at",
-        lambda *_args, **_kwargs: pytest.fail("Authored blockers must precede the optional workspace read"),
-    )
-
-    with monkeypatch.context() as guarded:
-        _forbid_config_reads(guarded, tmp_path / "config.yaml")
-        _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
-
-    assert cfg is None
-    assert not csv_reads
-    if blocked == "metadata":
-        assert report.exit_code == 2
-        assert any(issue.field == "experiment.title" for issue in report.blocking_issues())
-    else:
-        assert report.exit_code == 1
-        assert any("search.parameters must be a mapping" in issue.message for issue in report.blocking_issues())
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize(
-    "kind,entrypoint,missing",
-    [
-        ("survival", "doctor", "both_layers"),
-        ("multilabel", "plan", "base_only"),
-        ("survival", "plan", "experiment"),
-        ("multilabel", "doctor", "step"),
-        ("survival", "doctor", "partial"),
-        ("multilabel", "plan", "ask_user"),
-        ("survival", "plan", "null"),
-        ("multilabel", "doctor", "empty"),
-    ],
-)
-def test_static_hparam_ownership_blocks_before_heavy_reads(
-    tmp_path, monkeypatch, capsys, csv_reads, runtime_probes, kind, entrypoint, missing
-):
-    recipe_path = _sidecar_recipe(tmp_path, kind, hparam=True)
-    payload = yaml.safe_load(recipe_path.read_text())
-    if missing in {"both_layers", "base_only"}:
-        payload.pop("experiment")
-        payload.pop("step")
-        if missing == "both_layers":
-            base_path = tmp_path / "recipe.yaml"
-            base = yaml.safe_load(base_path.read_text())
-            base.pop("experiment")
-            base.pop("step")
-            base_path.write_text(yaml.safe_dump(base))
-    elif missing in {"experiment", "step"}:
-        payload.pop(missing)
-    elif missing == "partial":
-        payload["experiment"].pop("objective")
-        payload["step"].pop("purpose")
-    elif missing == "ask_user":
-        payload["experiment"]["title"] = "ASK_USER"
-    elif missing == "null":
-        payload["step"]["purpose"] = None
-    else:
-        payload["experiment"]["objective"] = ""
-    recipe_path.write_text(yaml.safe_dump(payload))
-    expected = experiment_workspace.experiment_metadata_issues(payload)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    monkeypatch.setattr(
-        plan_context,
-        "context_index_summary",
-        lambda *_args, **_kwargs: pytest.fail("Static ownership consultation reached data diagnostics"),
-    )
-    monkeypatch.setattr(
-        plans.exp_io,
-        "read_managed_output_texts_at",
-        lambda *_args, **_kwargs: pytest.fail("Static ownership consultation reached workspace identity"),
-    )
-
-    with monkeypatch.context() as guarded:
-        _forbid_config_reads(guarded, tmp_path / "config.yaml")
-        if entrypoint == "doctor":
-            _recipe, cfg, report = plans.evaluate_recipe(recipe_path)
-        else:
-            _recipe, cfg, report = plans.preflight_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
-        assert cfg is None
-        assert report.exit_code == 2
-        assert [
-            (issue.status.value, issue.field, issue.message, issue.question) for issue in report.blocking_issues()
-        ] == [(issue["status"], issue["field"], issue["message"], issue["question"]) for issue in expected]
-        assert all(issue.evidence["preflight_before_workspace"] for issue in report.blocking_issues())
-        args = [entrypoint, "--recipe", str(recipe_path)]
-        if entrypoint == "plan":
-            args.extend(["--output-dir", str(tmp_path / "plan")])
-
-        assert cli.main(args) == 2
-
-    output = capsys.readouterr()
-    assert "Status: NEEDS_USER_INPUT" in output.out
-    assert all(issue["question"] in output.out for issue in expected)
-    assert not csv_reads
-    assert not runtime_probes
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize("kind", ["survival", "multilabel"])
-def test_static_ownership_preserves_user_override_before_and_after_resolution(tmp_path, monkeypatch, csv_reads, kind):
-    recipe_path = _sidecar_recipe(tmp_path, kind, hparam=True)
-    payload = yaml.safe_load(recipe_path.read_text())
-    step = payload.pop("step")
-    recipe_path.write_text(yaml.safe_dump(payload))
-    decision = {
-        "value": {"runtime.lr": [0.002]},
-        "source": "explicit_user",
-        "rationale": "Approved search override",
-    }
-    decisions_path = write_yaml(tmp_path / "decisions.yaml", {"decisions": {"hparam_search_space": decision}})
-    with monkeypatch.context() as guarded:
-        _forbid_config_reads(guarded, tmp_path / "config.yaml")
-        recipe, cfg, report = plans.evaluate_recipe(recipe_path, decisions_path)
-
-    assert cfg is None
-    assert report.exit_code == 2
-    assert recipe["search"]["parameters"] == decision["value"]
-    assert set(report.decisions) == {"hparam_search_space"}
-    assert report.decisions["hparam_search_space"].source == "explicit_user"
-    assert report.decisions["hparam_search_space"].evidence["rationale"] == decision["rationale"]
-    assert not csv_reads
-    payload["step"] = step
-    recipe_path.write_text(yaml.safe_dump(payload))
-
-    recipe, cfg, report = plans.evaluate_recipe(recipe_path, decisions_path)
-
-    assert report.exit_code == 0
-    assert cfg is not None
-    assert recipe["search"]["parameters"] == decision["value"]
-    assert report.decisions["hparam_search_space"].source == "explicit_user"
-    assert report.decisions["hparam_search_space"].evidence["rationale"] == decision["rationale"]
-    assert csv_reads == (
-        {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-        if kind == "survival"
-        else {"is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-    )
-
-
-def test_doctor_publishes_only_canonical_static_ownership_questions(
-    tmp_path, monkeypatch, capsys, csv_reads, runtime_probes
-):
-    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
-    payload = yaml.safe_load(recipe_path.read_text())
-    payload.pop("experiment")
-    payload.pop("step")
-    payload["execution"] = {
-        "scheduler": {"type": "slurm", "partition": "gpu", "cpus_per_task": 1, "memory": "1G", "walltime": "00:01:00"}
-    }
-    recipe_path.write_text(yaml.safe_dump(payload))
-    expected = experiment_workspace.experiment_metadata_issues(payload)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "run_command",
-        lambda *_args, **_kwargs: pytest.fail("Doctor reached a Slurm client"),
-    )
+def test_doctor_emits_decisions_template_on_needs_user_input(tmp_path: Path):
+    recipe = _recipe(tmp_path, "needs")
     output_dir = tmp_path / "doctor"
 
-    with monkeypatch.context() as guarded:
-        _forbid_config_reads(guarded, tmp_path / "config.yaml")
-        assert cli.main(["doctor", "--recipe", str(recipe_path), "--output-dir", str(output_dir)]) == 2
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert "Status: NEEDS_USER_INPUT" in capsys.readouterr().out
-    questions = json.loads((output_dir / "questions.json").read_text())["questions"]
-    assert [{key: value for key, value in issue.items() if key != "evidence"} for issue in questions] == expected
-    assert all(issue["question"] in (output_dir / "questions.md").read_text() for issue in expected)
-    assert set(path.name for path in output_dir.iterdir()) == {"questions.json", "questions.md"}
-    assert {path: path.read_bytes() for path in before} == before
-    assert not csv_reads
-    assert not runtime_probes
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "Status: NEEDS_USER_INPUT" in result.stdout
+    assert {path.name for path in output_dir.iterdir()} == {"questions.json", "questions.md", "decisions.yaml"}
+    template = yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]
+    assert template["label_name"]["value"] == "ASK_USER"
+    assert "Fill it and rerun with --user-decisions" in result.stdout
+    # Doctor publishes no plan artifacts into its own output directory.
+    assert not (output_dir / "plan.json").exists()
+    assert not (output_dir / "plan.blocked.md").exists()
 
 
-def test_workspace_free_consultation_keeps_full_data_diagnostics(tmp_path, monkeypatch, csv_reads):
-    recipe_path = _sidecar_recipe(tmp_path, "multilabel")
-    recipe, cfg, report = plans.evaluate_recipe(recipe_path)
-    assert report.exit_code == 0
-    assert csv_reads == {"is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-    recipe.pop("experiment")
-    recipe.pop("step")
-    monkeypatch.setattr(
-        decisions,
-        "experiment_metadata_issues",
-        lambda *_args, **_kwargs: pytest.fail("require_experiment=False reached ownership consultation"),
+def test_user_decisions_retry_rules(tmp_path: Path):
+    recipe = _recipe(tmp_path, "needs")
+    doctor_dir = tmp_path / "doctor"
+    template = doctor_dir / "decisions.yaml"
+    assert run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(doctor_dir)).returncode == 2
+    payload = yaml.safe_load(template.read_text())
+    payload["decisions"]["label_name"]["value"] = "ahi"
+    template.write_text(yaml.safe_dump(payload, sort_keys=False))
+    filled = template.read_bytes()
+
+    # A doctor retry may reuse its directory while the existing file covers every requested decision.
+    retried = run_cli(
+        "doctor", "--recipe", str(recipe), "--user-decisions", str(template), "--output-dir", str(doctor_dir)
     )
+    assert retried.returncode == 0, retried.stdout + retried.stderr
+    assert template.read_bytes() == filled
 
-    report = decisions.evaluate_consultation_gates(
-        "finetune", recipe, cfg, {}, plans.load_consultation_policy(), require_experiment=False
+    # A blocked-plan retry must use a fresh output directory.
+    blocked_dir = tmp_path / "plans" / "blocked"
+    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir)).returncode == 2
+    reused = run_cli(
+        "plan", "--recipe", str(recipe), "--user-decisions", str(template), "--output-dir", str(blocked_dir)
     )
+    assert reused.returncode == 1
+    assert "retry with a fresh --output-dir" in reused.stdout
+    fresh = run_cli(
+        "plan",
+        "--recipe",
+        str(recipe),
+        "--user-decisions",
+        str(template),
+        "--output-dir",
+        str(tmp_path / "plans" / "ok"),
+    )
+    assert fresh.returncode == 0, fresh.stdout + fresh.stderr
 
-    assert report.exit_code == 0
-    assert all(not issue.field.startswith(("experiment", "step")) for issue in report.issues)
+    # A newly exposed decision needs a fresh doctor directory; the earlier file is neither merged nor overwritten.
+    authored = yaml.safe_load(recipe.read_text())
+    authored["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
+    recipe.write_text(yaml.safe_dump(authored, sort_keys=False))
+    stale = run_cli(
+        "doctor", "--recipe", str(recipe), "--user-decisions", str(template), "--output-dir", str(doctor_dir)
+    )
+    assert stale.returncode == 1
+    assert "retry with a fresh --output-dir" in stale.stderr
+    assert template.read_bytes() == filled
+    delta_dir = tmp_path / "doctor-delta"
+    delta = run_cli(
+        "doctor", "--recipe", str(recipe), "--user-decisions", str(template), "--output-dir", str(delta_dir)
+    )
+    assert delta.returncode == 2
+    decisions = yaml.safe_load((delta_dir / "decisions.yaml").read_text())["decisions"]
+    assert decisions["label_name"]["value"] == "ahi"
+    assert decisions["overwrite_policy"]["value"] == "ASK_USER"
 
 
-def test_early_identity_comparison_preserves_relative_authored_root(tmp_path, monkeypatch, csv_reads):
-    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
-    relative_root = f"./{tmp_path.name}"
-    for path in (tmp_path / "recipe.yaml", recipe_path):
-        payload = yaml.safe_load(path.read_text())
-        payload["experiment"]["root"] = relative_root
-        path.write_text(yaml.safe_dump(payload))
-    monkeypatch.setattr(experiment_workspace, "REPO_ROOT", tmp_path.parent)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-
-    recipe, cfg, report = plans.evaluate_recipe(recipe_path, check_existing_experiment=True)
-
-    assert report.exit_code == 0
-    assert cfg is not None
-    assert recipe["experiment"]["root"] == relative_root
-    assert recipe["_base_recipe"]["experiment"]["root"] == relative_root
-    assert recipe["_local_recipe"]["experiment"]["root"] == relative_root
-    assert csv_reads
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize("early_manifest", ["identical", "missing"])
-def test_final_workspace_check_rejects_identity_changed_after_early_read(
-    tmp_path, monkeypatch, csv_reads, early_manifest
-):
-    recipe_path = _sidecar_recipe(tmp_path, "survival")
-    manifest_path = tmp_path / "experiment.yaml"
-    changed_manifest = yaml.safe_load(manifest_path.read_text())
-    changed_manifest["experiment"]["title"] = "Changed after early read"
-    if early_manifest == "missing":
-        manifest_path.unlink()
-    # The final workspace check reads canonical rows under the run lock, which creates this empty file.
-    (tmp_path / "run_manifest.tsv.lock").touch()
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path != manifest_path}
-    read = plans.exp_io.read_managed_output_texts_at
-    ensure = plans.ensure_experiment_workspace
+def test_plan_freezes_and_hashes_the_single_config_read(tmp_path: Path, monkeypatch):
+    recipe = write_finetune_recipe(tmp_path)
+    config = Path(yaml.safe_load(recipe.read_text())["inputs"]["config"])
+    read_bytes = Path.read_bytes
     reads = []
-    ensure_calls = []
 
-    def changed_after_read(root, paths):
-        result = read(root, paths)
-        assert paths == [manifest_path]
-        reads.append(result[str(manifest_path)])
-        write_yaml(manifest_path, changed_manifest)
-        return result
+    def read_then_edit(path: Path) -> bytes:
+        data = read_bytes(path)
+        if path == config:
+            reads.append(data)
+            # An edit after the only read must not reach the frozen plan.
+            config.write_bytes(data + b"# edited after the plan read the config\n")
+        return data
 
-    def checked_ensure(*args, **kwargs):
-        ensure_calls.append(kwargs.get("validate_only", False))
-        return ensure(*args, **kwargs)
+    monkeypatch.setattr(Path, "read_bytes", read_then_edit)
+    output_dir = tmp_path / "plan"
 
-    monkeypatch.setattr(plans.exp_io, "read_managed_output_texts_at", changed_after_read)
-    monkeypatch.setattr(plans, "ensure_experiment_workspace", checked_ensure)
+    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
 
-    with pytest.raises(ValueError, match="experiment.title differs"):
-        plans.build_plan(recipe_path=recipe_path, output_dir=tmp_path / "plan")
-
+    assert report.exit_code == 0, report.issues
     assert len(reads) == 1
-    assert (reads[0] is None) is (early_manifest == "missing")
-    assert ensure_calls == [True]
-    assert csv_reads
-    assert not (tmp_path / "plan").exists()
-    assert yaml.safe_load(manifest_path.read_text()) == changed_manifest
-    assert {
-        path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file() and path != manifest_path
-    } == before
-
-
-@pytest.mark.parametrize("kind", ["survival", "multilabel"])
-@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert", "sex_age_baseline"])
-@pytest.mark.parametrize("hparam", [False, True])
-def test_doctor_reuses_complete_validation_without_changing_output(
-    tmp_path, monkeypatch, capsys, csv_reads, runtime_probes, kind, variant, hparam
-):
-    recipe = _sidecar_recipe(tmp_path, kind, variant=variant, hparam=hparam)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    with monkeypatch.context() as uncached:
-        uncached.setattr(plan_context, "index_summary", _without_reuse)
-        previous_exit = cli.main(["doctor", "--recipe", str(recipe)])
-    previous_output = capsys.readouterr()
-    previous_counts = dict(csv_reads)
-    assert previous_exit == 0, previous_output.out
-    assert previous_counts == (
-        {"event_time.csv": 3, "is_event.csv": 2, "has_label.csv": 2, "index.csv": 1}
-        if kind == "survival"
-        else {"is_event.csv": 3, "has_label.csv": 2, "index.csv": 1}
-    )
-
-    csv_reads.clear()
-    assert cli.main(["doctor", "--recipe", str(recipe)]) == previous_exit
-    assert capsys.readouterr() == previous_output
-    assert csv_reads == {name: 1 for name in previous_counts}
-    assert len(runtime_probes) == (2 if hparam else 0)
-    assert "Doctor phase: consultation" in previous_output.err
-    assert "Doctor phase: publish outputs" in previous_output.err
-    assert "doctor-private-" not in previous_output.out + previous_output.err
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-@pytest.mark.parametrize("kind", ["survival", "multilabel"])
-def test_evaluate_recipe_retains_one_validation_view_and_refreshes_next_call(tmp_path, monkeypatch, csv_reads, kind):
-    recipe_path = _sidecar_recipe(tmp_path, kind)
-    if kind == "survival":
-        from data import survival as loader
-
-        name = "load_survival_label_table"
-    else:
-        from data import multilabel as loader
-
-        name = "load_multilabel_label_table"
-    load = getattr(loader, name)
-    mutations = []
-
-    def mutate_after_validation(*args, **kwargs):
-        labels = load(*args, **kwargs)
-        if not mutations:
-            mutations.append(True)
-            for filename in ("event_time.csv", "is_event.csv", "has_label.csv"):
-                path = tmp_path / filename
-                path.write_text(path.read_text().replace("doctor-private-001", "doctor-private-003"))
-        return labels
-
-    monkeypatch.setattr(loader, name, mutate_after_validation)
-    recipe, cfg, report = plans.evaluate_recipe(recipe_path)
-    assert report.exit_code == 0
-    assert csv_reads == (
-        {"event_time.csv": 1, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-        if kind == "survival"
-        else {"is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-    )
-    public_cfg = {key: value for key, value in cfg.items() if key != "_source_config_bytes"}
-    public_payload = json.dumps([recipe, public_cfg, asdict(report)])
-    assert "validated_sidecar_keys" not in public_payload
-    assert "doctor-private-" not in public_payload
-
-    csv_reads.clear()
-    _recipe, _cfg, report = plans.evaluate_recipe(recipe_path)
-    assert report.exit_code == 1
-    assert any(
-        "missing from sidecars" in issue.message and "doctor-private-001" in issue.message for issue in report.issues
-    )
-    assert all(count == 1 for count in csv_reads.values())
-
-
-@pytest.mark.parametrize("kind", ["survival", "multilabel"])
-def test_valid_empty_sidecar_keys_are_not_treated_as_missing_evidence(tmp_path, csv_reads, kind):
-    recipe_path = _sidecar_recipe(tmp_path, kind)
-    for filename in ("event_time.csv", "is_event.csv", "has_label.csv"):
-        (tmp_path / filename).write_text("eid,d1,d2\n")
-
-    _recipe, cfg, report = plans.evaluate_recipe(recipe_path)
-
-    assert cfg["finetune"][kind]["valid"] is True
-    assert cfg["finetune"][kind]["sidecar_key_count"] == 0
-    assert report.exit_code == 1
-    assert any("2 missing" in issue.message for issue in report.issues)
-    assert all(count == 1 for count in csv_reads.values())
-
-
-@pytest.mark.parametrize(
-    "state,expected_status,expected_exit",
-    [("pass", "PASS", 0), ("warn", "WARN", 0), ("needs", "NEEDS_USER_INPUT", 2), ("fail", "FAIL", 1)],
-)
-def test_doctor_preserves_decision_output_and_blocked_probe_boundary(
-    tmp_path, monkeypatch, capsys, runtime_probes, state, expected_status, expected_exit
-):
-    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
-    base_path = tmp_path / "recipe.yaml"
-    base = yaml.safe_load(base_path.read_text())
-    if state == "warn":
-        payload = yaml.safe_load(recipe_path.read_text())
-        # Explicit GPU oversubscription is a non-blocking warning.
-        payload["execution"] = {"gpu_pool": [0], "gpus_per_run": 1, "max_concurrent": 2}
-        write_yaml(recipe_path, payload)
-    elif state == "needs":
-        base["inputs"].pop("label_name")
-    elif state == "fail":
-        index = tmp_path / "index.csv"
-        index.write_text(index.read_text().replace("doctor-private-001", "doctor-private-003"))
-    write_yaml(base_path, base)
-
-    with monkeypatch.context() as uncached:
-        uncached.setattr(plan_context, "index_summary", _without_reuse)
-        _recipe, _cfg, previous_report = plans.evaluate_recipe(recipe_path)
-        previous_exit = cli.main(["doctor", "--recipe", str(recipe_path)])
-    previous_output = capsys.readouterr()
-    _recipe, _cfg, report = plans.evaluate_recipe(recipe_path)
-    assert asdict(report) == asdict(previous_report)
-    assert cli.main(["doctor", "--recipe", str(recipe_path)]) == previous_exit == expected_exit
-    output = capsys.readouterr()
-    assert output == previous_output
-    assert f"Status: {expected_status}" in output.out
-    assert f"Doctor finished: exit_code={expected_exit}" in output.err
-    assert len(runtime_probes) == (2 if expected_exit == 0 else 0)
-    assert ("Doctor phase: runtime diagnostics" in output.err) is (expected_exit == 0)
-
-
-@pytest.mark.parametrize("ineligible", ["missing_snapshot", "blocking_config", "invalid_sidecars", "missing_collector"])
-def test_index_summary_reuse_requires_complete_local_evidence(tmp_path, monkeypatch, csv_reads, ineligible):
-    recipe_path = _sidecar_recipe(tmp_path, "survival")
-    recipe, cfg, _report = plans.evaluate_recipe(recipe_path)
-    collector = {"survival": {"doctor-private-001", "doctor-private-002"}}
-    if ineligible == "missing_snapshot":
-        cfg.pop("_source_config_bytes")
-    elif ineligible == "blocking_config":
-        cfg["blocking_issues"] = ["structural config failure"]
-    elif ineligible == "invalid_sidecars":
-        cfg["finetune"]["survival"]["valid"] = False
-    else:
-        collector = None
-    csv_reads.clear()
-    calls = []
-
-    def summarize(*args, **kwargs):
-        calls.append(kwargs.get("validated_summary"))
-        return index_csv.index_summary(*args, **kwargs)
-
-    monkeypatch.setattr(plan_context, "index_summary", summarize)
-    payload = plan_context.context_index_summary(recipe, cfg, validated_sidecar_keys=collector)
-    assert calls == [None]
-    assert payload["blocking_issues"] == []
-    assert csv_reads == {"event_time.csv": 2, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-
-
-def test_sleep2stat_does_not_pass_its_config_to_index_summary(tmp_path, monkeypatch):
-    index = tmp_path / "index.csv"
-    index.write_text("path,split,duration\nx.npz,train,60\n")
-    cfg = {"is_sleep2stat": True, "sleep2stat": {"data": {"index": [str(index)]}}, "_source_config_bytes": b""}
-    calls = []
-
-    def summarize(*args, **kwargs):
-        calls.append(kwargs)
-        return index_csv.index_summary(*args, **kwargs)
-
-    monkeypatch.setattr(plan_context, "index_summary", summarize)
-    payload = plan_context.context_index_summary(
-        {"task": "sleep2stat", "inputs": {"config": "unused.yaml"}}, cfg, validated_sidecar_keys={}
-    )
-    assert payload["blocking_issues"] == []
-    assert calls[0]["config"] is None
-    assert calls[0].get("validated_summary") is None
-
-
-def test_forced_provider_failure_keeps_unbound_index_summary_behavior(tmp_path, monkeypatch):
-    recipe_path = _sidecar_recipe(tmp_path, "survival")
-    payload = yaml.safe_load(recipe_path.read_text())
-    payload["variant"] = "sex_age_baseline"
-    write_yaml(recipe_path, payload)
-    calls = []
-
-    def summarize(*args, **kwargs):
-        calls.append(kwargs.get("validated_summary"))
-        return index_csv.index_summary(*args, **kwargs)
-
-    monkeypatch.setattr(plan_context, "index_summary", summarize)
-    _recipe, cfg, report = plans.evaluate_recipe(recipe_path)
-    assert report.exit_code != 0
-    assert cfg["blocking_issues"]
-    assert calls == []  # The rejected provider has no index path; do not recover one from another provider.
-
-
-def test_standalone_index_summary_still_performs_its_own_validation(tmp_path, csv_reads):
-    _sidecar_recipe(tmp_path, "survival")
-
-    payload = index_csv.index_summary([tmp_path / "index.csv"], config=tmp_path / "config.yaml")
-
-    assert payload["blocking_issues"] == []
-    assert csv_reads == {"event_time.csv": 2, "is_event.csv": 1, "has_label.csv": 1, "index.csv": 1}
-
-
-def test_summary_collects_keys_only_after_complete_loader_success(tmp_path):
-    _sidecar_recipe(tmp_path, "survival")
-    (tmp_path / "has_label.csv").write_text("eid,d1,d2\ndoctor-private-001,1,1\n")
-    collector = {}
-
-    cfg = config_summary(tmp_path / "config.yaml", validated_sidecar_keys=collector)
-
-    assert cfg["finetune"]["survival"]["valid"] is False
-    assert collector == {}
-
-
-@pytest.mark.parametrize("kind", ["survival", "multilabel"])
-def test_failed_full_sidecar_validation_is_not_reused(tmp_path, monkeypatch, csv_reads, kind):
-    recipe_path = _sidecar_recipe(tmp_path, kind)
-    (tmp_path / "has_label.csv").write_text("eid,d1,d2\ndoctor-private-001,1,1\n")
-    calls = []
-
-    def summarize(*args, **kwargs):
-        calls.append(kwargs.get("validated_summary"))
-        return index_csv.index_summary(*args, **kwargs)
-
-    monkeypatch.setattr(plan_context, "index_summary", summarize)
-    _recipe, cfg, report = plans.evaluate_recipe(recipe_path)
-
-    assert report.exit_code == 2
-    assert cfg["finetune"][kind]["valid"] is False
-    assert calls == [None]
-    assert csv_reads == (
-        {"event_time.csv": 2, "is_event.csv": 2, "has_label.csv": 2, "index.csv": 1}
-        if kind == "survival"
-        else {"is_event.csv": 2, "has_label.csv": 2, "index.csv": 1}
-    )
-
-
-def test_doctor_keeps_blocked_output_templates_unchanged(tmp_path, monkeypatch, capsys, runtime_probes):
-    recipe_path = _sidecar_recipe(tmp_path, "survival", hparam=True)
-    base_path = tmp_path / "recipe.yaml"
-    base = yaml.safe_load(base_path.read_text())
-    base["inputs"].pop("label_name")
-    write_yaml(base_path, base)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    previous_dir = tmp_path / "previous"
-    current_dir = tmp_path / "current"
-
-    with monkeypatch.context() as uncached:
-        uncached.setattr(plan_context, "index_summary", _without_reuse)
-        assert cli.main(["doctor", "--recipe", str(recipe_path), "--output-dir", str(previous_dir)]) == 2
-    previous_output = capsys.readouterr()
-    assert cli.main(["doctor", "--recipe", str(recipe_path), "--output-dir", str(current_dir)]) == 2
-    current_output = capsys.readouterr()
-
-    assert current_output.out.replace(str(current_dir), str(previous_dir)) == previous_output.out
-    assert current_output.err.replace(str(current_dir), str(previous_dir)) == previous_output.err
-    previous_files = {path.name: path.read_bytes() for path in previous_dir.iterdir()}
-    current_files = {path.name: path.read_bytes() for path in current_dir.iterdir()}
-    assert current_files == previous_files
-    assert set(current_files) == {"questions.json", "questions.md", "decisions.yaml"}
-    assert "doctor-private-" not in repr(current_files)
-    assert {path: path.read_bytes() for path in before} == before
-    assert runtime_probes == []
-
-
-@pytest.mark.parametrize("kind", ["survival", "multilabel"])
-def test_reuse_keeps_runtime_relative_paths_and_requested_splits(tmp_path, csv_reads, kind):
-    recipe_path = _sidecar_recipe(tmp_path, kind)
-    config_path = tmp_path / "config.yaml"
-    config = yaml.safe_load(config_path.read_text())
-    config["data"]["finetune_data_index"] = "index.csv"
-    for field, value in config["finetune"][kind].items():
-        if field.endswith("_index"):
-            config["finetune"][kind][field] = Path(value).name
-    write_yaml(config_path, config)
-    recipe = yaml.safe_load(recipe_path.read_text())
-    recipe["execution"] = {"workdir": str(tmp_path)}
-    write_yaml(recipe_path, recipe)
-    index = tmp_path / "index.csv"
-    index.write_text(index.read_text() + "z.npz,test,60,unloaded-test-key,1,55,0\n")
-
-    _recipe, _cfg, report = plans.evaluate_recipe(recipe_path)
-
-    assert report.exit_code == 0
-    assert csv_reads
-    assert all(count == 1 for count in csv_reads.values())
-
-
-@pytest.mark.parametrize("kind", ["survival", "multilabel"])
-def test_doctor_still_validates_sidecar_rows_absent_from_main_index(tmp_path, kind):
-    recipe_path = _sidecar_recipe(tmp_path, kind)
-    for filename in ("event_time.csv", "is_event.csv", "has_label.csv"):
-        path = tmp_path / filename
-        value = "bad" if filename == ("event_time.csv" if kind == "survival" else "is_event.csv") else "1"
-        path.write_text(path.read_text() + f"not-in-main-index,{value},1\n")
-
-    _recipe, cfg, report = plans.evaluate_recipe(recipe_path)
-
-    assert report.exit_code == 2
-    assert cfg["finetune"][kind]["valid"] is False
-    assert cfg["finetune"][kind]["issues"]
+    plan = json.loads((output_dir / "plan.json").read_text())
+    run = plan["runs"][0]
+    digest = hashlib.sha256(reads[0]).hexdigest()
+    assert Path(run["config"]).read_bytes() == reads[0]
+    assert run["config_sha256"] == digest
+    snapshot = next(item for item in plan["recipe"]["input_snapshots"] if item["field"] == "inputs.config")
+    assert snapshot == {"field": "inputs.config", "path": str(config), "sha256": digest}

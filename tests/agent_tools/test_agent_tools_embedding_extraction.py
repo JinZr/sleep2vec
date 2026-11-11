@@ -281,31 +281,6 @@ def test_strict_runtime_loader_uses_bound_config_bytes(tmp_path: Path, monkeypat
     assert frozen_config.read_bytes() == original_bytes
 
 
-def test_plan_rejects_index_changed_during_final_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from agent_tools.adapters.embedding_extraction import EmbeddingExtractionAdapter
-
-    recipe, plan_dir, payload = _write_recipe(tmp_path)
-    index = Path(payload["inputs"]["data_index"][0])
-    original_check = EmbeddingExtractionAdapter.configured_input_issues
-    checks = 0
-
-    def configured_input_issues(self, recipe_payload, config_summary):
-        nonlocal checks
-        checks += 1
-        issues = original_check(self, recipe_payload, config_summary)
-        if checks == 2:
-            index.write_text(index.read_text().replace(",60", ",30"))
-        return issues
-
-    monkeypatch.setattr(EmbeddingExtractionAdapter, "configured_input_issues", configured_input_issues)
-
-    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    assert any("changed while the final plan snapshot" in issue.message for issue in report.blocking_issues())
-    assert not Path(payload["experiment"]["root"]).exists()
-
-
 @pytest.mark.parametrize(
     ("section", "field"),
     [

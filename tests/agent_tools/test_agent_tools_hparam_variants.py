@@ -365,9 +365,7 @@ def test_hparam_card_skips_sidecar_tables_without_weakening_validation(
     assert calls == []
 
     summary = configs.load_config_summary_for_recipe(recipe, config_bytes=config_bytes)
-    report = evaluate_consultation_gates(
-        "finetune", recipe, summary, {}, load_consultation_policy(), require_experiment=False
-    )
+    report = evaluate_consultation_gates("finetune", recipe, summary, {}, load_consultation_policy())
 
     assert calls == [sidecar_kind]
     assert any("columns must exactly match" in message for message in summary["finetune"][sidecar_kind]["issues"])

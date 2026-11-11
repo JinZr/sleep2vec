@@ -338,32 +338,28 @@ def test_plan_cli_contract():
 def test_doctor_reports_pid_phases_and_runtime_diagnostics(monkeypatch, capsys):
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
     calls = []
-    monkeypatch.setattr(
-        cli,
-        "evaluate_recipe",
-        lambda *_args: calls.append("consultation") or ({"task": "hparam_tune"}, None, report),
-    )
+
+    def preflight(**kwargs):
+        calls.append(("consultation", kwargs["output_dir"]))
+        return {"task": "hparam_tune"}, None, report
+
+    monkeypatch.setattr(cli, "preflight_plan", preflight)
     monkeypatch.setattr(
         cli,
         "doctor_runtime_card",
         lambda _recipe: calls.append("runtime") or "Doctor runtime: python=/target/python",
     )
-    monkeypatch.setattr(
-        cli,
-        "prepare_doctor_report",
-        lambda *_args: calls.append("task diagnostics") or report,
-    )
     monkeypatch.setattr(cli, "write_doctor_outputs", lambda *_args: calls.append("publish"))
 
     assert cli.main(["doctor", "--recipe", "recipe.yaml", "--output-dir", "doctor-out"]) == 0
     captured = capsys.readouterr()
-    assert calls == ["consultation", "runtime", "task diagnostics", "publish"]
+    # Doctor runs plan's validation with publication disabled; its --output-dir only receives doctor files.
+    assert calls == [("consultation", None), "runtime", "publish"]
     assert captured.err.splitlines() == [
         f"Doctor started: pid={os.getpid()} recipe=recipe.yaml output_dir=doctor-out",
         "Doctor phase: consultation",
         "Doctor phase: runtime diagnostics",
         "Doctor runtime: python=/target/python",
-        "Doctor phase: task diagnostics",
         "Doctor phase: publish outputs",
         "Doctor finished: exit_code=0",
     ]
@@ -373,34 +369,27 @@ def test_doctor_reports_pid_phases_and_runtime_diagnostics(monkeypatch, capsys):
 def test_doctor_skips_runtime_diagnostics_when_consultation_blocks(monkeypatch, capsys):
     issue = plans.DecisionIssue(plans.DecisionStatus.FAIL, "recipe", "blocked", None, {})
     report = plans.DecisionReport(status=plans.DecisionStatus.FAIL, issues=[issue], decisions={})
-    monkeypatch.setattr(cli, "evaluate_recipe", lambda *_args: ({"task": "hparam_tune"}, None, report))
+    monkeypatch.setattr(cli, "preflight_plan", lambda **_kwargs: ({"task": "hparam_tune"}, None, report))
     monkeypatch.setattr(cli, "doctor_runtime_card", lambda _recipe: pytest.fail("unexpected runtime diagnostics"))
-    monkeypatch.setattr(
-        cli,
-        "prepare_doctor_report",
-        lambda *_args: report,
-    )
     monkeypatch.setattr(cli, "write_doctor_outputs", lambda *_args: None)
 
     assert cli.main(["doctor", "--recipe", "recipe.yaml"]) == 1
     captured = capsys.readouterr()
     assert "Doctor phase: runtime diagnostics" not in captured.err
-    assert "Doctor phase: task diagnostics" in captured.err
     assert "Doctor phase: publish outputs" in captured.err
     assert "Doctor finished: exit_code=1" in captured.err
 
 
 def test_doctor_skips_hparam_runtime_probe_for_other_tasks(monkeypatch, capsys):
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(cli, "evaluate_recipe", lambda *_args: ({"task": "finetune"}, None, report))
+    monkeypatch.setattr(cli, "preflight_plan", lambda **_kwargs: ({"task": "finetune"}, None, report))
     monkeypatch.setattr(cli, "doctor_runtime_card", lambda _recipe: pytest.fail("unexpected runtime diagnostics"))
-    monkeypatch.setattr(cli, "prepare_doctor_report", lambda *_args: report)
     monkeypatch.setattr(cli, "write_doctor_outputs", lambda *_args: None)
 
     assert cli.main(["doctor", "--recipe", "recipe.yaml"]) == 0
     captured = capsys.readouterr()
     assert "Doctor phase: runtime diagnostics" not in captured.err
-    assert "Doctor phase: task diagnostics" in captured.err
+    assert "Doctor phase: publish outputs" in captured.err
 
 
 def test_doctor_runtime_card_probes_target_versions_without_importing_lightning(monkeypatch):

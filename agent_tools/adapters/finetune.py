@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..decision_models import DecisionIssue, DecisionReport, DecisionStatus, ResolvedDecision, merge_status, needs_issue
+from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue
 from ..decision_paths import (
     finetune_init_checkpoint_issue,
     finetune_init_from_source_issue,
@@ -170,12 +170,6 @@ class FinetuneAdapter(TaskAdapter):
                 )
             ]
         return []
-
-    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
-        if report.exit_code != 0:
-            return report
-        issues = [*report.issues, *self.preflight_issues(recipe, None, unlock_final_test=False)]
-        return DecisionReport(status=merge_status(issues), issues=issues, decisions=report.decisions)
 
     def commands(self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None) -> list[str]:
         inputs = recipe_inputs(recipe)
