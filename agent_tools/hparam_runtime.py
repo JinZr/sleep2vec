@@ -1,7 +1,8 @@
 """Launch, queue, monitor, and stop for a registered hyper-parameter plan's runs.
 
 Layer 0 leaf. Dispatches through ``managed_scheduler`` for capacity and process
-lifecycle.
+lifecycle. A direct plan's queue runs as one detached runner per plan, guarded by
+the plan's ``queue_runner.lock``.
 """
 
 from __future__ import annotations
@@ -10,7 +11,10 @@ from collections.abc import Mapping, Sequence
 import dataclasses
 import functools
 import math
+import os
 from pathlib import Path
+import subprocess
+import sys
 import time
 
 from . import (
@@ -28,6 +32,7 @@ from .experiment_workspace import (
     LAUNCHABLE_STATUSES,
     PROCESS_IDENTITY_FIELDS,
     TERMINAL_STATUSES,
+    RunKey,
     append_event,
     experiment_root,
     has_managed_launch_evidence,
@@ -44,6 +49,12 @@ from .manifests import utc_now, write_rows
 from .models import JsonValue
 
 LAUNCH_TIMEOUT_SECONDS = scheduler.LAUNCH_TIMEOUT_SECONDS
+
+
+@dataclasses.dataclass(frozen=True)
+class QueueRunnerStart:
+    pid: int
+    log_path: Path
 
 
 def read_hparam_plan_under_run_lock(run_dir: Path) -> plan_contract.HparamPlan:
@@ -109,6 +120,57 @@ def launch_hparam_runs(
         )
 
 
+def start_hparam_queue_runner(plan_dir: str | Path, *, poll_seconds: float = 60) -> QueueRunnerStart | None:
+    """Start one detached queue runner for a direct hparam plan and return its PID and log path.
+
+    Validates the plan under the workspace run lock, then fails without blocking if
+    another runner holds the plan's queue_runner.lock. The runner is
+    ``hparam-run-queue --execute --foreground`` in a new session, with stdin from
+    /dev/null and stdout/stderr appended to queue_runner.log, so it outlives the
+    caller's terminal or SSH session; the runner takes the lock itself. Returns
+    None without starting anything for a Slurm plan, whose queue still runs in the
+    caller's process."""
+    if not math.isfinite(poll_seconds) or poll_seconds <= 0:
+        raise ValueError("poll_seconds must be positive.")
+    run_dir = Path(plan_dir).expanduser()
+    if not run_dir.is_absolute():
+        run_dir = run_dir.resolve()
+    plan = read_hparam_plan_under_run_lock(run_dir)
+    if not _is_direct_plan(plan):
+        return None
+    workspace = experiment_root(plan["recipe"])
+    assert workspace is not None  # read_hparam_plan rejects a plan without experiment.root.
+    log_path = run_dir / scheduler.QUEUE_RUNNER_LOG_NAME
+    exp_io.validate_managed_output_paths(workspace, [run_dir / scheduler.QUEUE_RUNNER_LOCK_NAME, log_path])
+    with scheduler.queue_runner_lock(run_dir, record_pid=False):
+        pass
+    argv = [
+        sys.executable,
+        "-m",
+        "agent_tools",
+        "hparam-run-queue",
+        "--plan-dir",
+        str(run_dir),
+        "--execute",
+        "--foreground",
+        "--poll-seconds",
+        str(poll_seconds),
+    ]
+    log_descriptor = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        os.write(log_descriptor, f"{utc_now()} starting queue runner for {run_dir}\n".encode())
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log_descriptor,
+            stderr=log_descriptor,
+            start_new_session=True,
+        )
+    finally:
+        os.close(log_descriptor)
+    return QueueRunnerStart(pid=process.pid, log_path=log_path)
+
+
 def run_hparam_queue(
     plan_dir: str | Path,
     *,
@@ -119,9 +181,12 @@ def run_hparam_queue(
 
     With dry_run=True, performs one launch preview and returns launch_manifest.tsv,
     including that preview's projection writes. With dry_run=False, repeatedly
-    monitors and launches eligible runs, writing canonical state and projections,
-    until every run in this plan is terminal; returns run_status.tsv then.
-    Terminal includes failed/stopped runs and does not imply selection succeeded.
+    monitors and launches eligible runs in the calling process, writing canonical
+    state and projections, until every run in this plan is terminal; returns
+    run_status.tsv then. Terminal includes failed/stopped runs and does not imply
+    selection succeeded. A direct plan's loop holds the plan's queue_runner.lock
+    (recording this PID) and fails at once if another runner holds it; a Slurm
+    plan's loop takes no runner lock.
 
     poll_seconds must be finite and positive. Missing process identity and
     unresolved scheduler/launch outcomes can raise instead of advancing the
@@ -148,6 +213,26 @@ def run_hparam_queue(
     expected_keys = {validated_run_key(run) for run in plan["runs"]}
     status_path = run_dir / "run_status.tsv"
     exp_io.validate_managed_output_paths(workspace, [status_path])
+    if not _is_direct_plan(plan):
+        return _drain_hparam_queue(run_dir, workspace, plan, expected_keys, status_path, poll_seconds)
+    # Taken outside the run lock and held for the whole loop, which takes the run lock repeatedly.
+    exp_io.validate_managed_output_paths(workspace, [run_dir / scheduler.QUEUE_RUNNER_LOCK_NAME])
+    with scheduler.queue_runner_lock(run_dir, record_pid=True):
+        return _drain_hparam_queue(run_dir, workspace, plan, expected_keys, status_path, poll_seconds)
+
+
+def _is_direct_plan(plan: plan_contract.HparamPlan) -> bool:
+    return {scheduler_type(run) for run in plan["runs"]} == {"direct"}
+
+
+def _drain_hparam_queue(
+    run_dir: Path,
+    workspace: Path,
+    plan: plan_contract.HparamPlan,
+    expected_keys: set[RunKey],
+    status_path: Path,
+    poll_seconds: float,
+) -> Path:
     while True:
         with experiment_workspace.managed_run_lock(workspace):
             rows_by_key = {validated_run_key(row): row for row in read_run_manifest(workspace)}

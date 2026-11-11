@@ -33,6 +33,7 @@ Read by question:
     ├── plan.json
     ├── run_all.sh
     ├── execution_snapshot.json  # hparam registration preflight; task-specific elsewhere
+    ├── queue_runner.lock / queue_runner.log  # direct hparam queue runner only
     └── runs/run-000--<semantic-name>/
         ├── run.json
         ├── config.yaml
@@ -370,10 +371,10 @@ fact should not create an entry.
 | `doctor`, `context` | Consultation/diagnostics and diagnostic bundles, not execution authority; [diagnostic contract](task_recipe.md#consultation-and-diagnostics). |
 | `runtime-sync` | Inspect `origin/main` by default; with `--execute`, fast-forward one clean existing checkout in place under the short runtime lock. It does not clone, reset, or launch work. |
 | `plan` | Freeze and register recipe, config, commands, hashes and planned runs; [publication](#publication-and-registration). |
-| `hparam-launch`, `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](hparam_workflow.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. |
+| `hparam-launch`, `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](hparam_workflow.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. For a direct plan, `hparam-run-queue --execute` starts one detached [queue runner](hparam_workflow.md#direct-queue-runner) and returns; `--foreground` runs the queue in the calling process. |
 | `infer-launch`, `infer-stop` | Managed ordinary Slurm inference launch/stop; [ordinary inference](task_recipe.md#managed-ordinary-inference). |
 | `preset-launch`, `preset-stop` | Execution-host local detached preset launch/stop; launch defaults to dry-run, stop requires a reason; [managed preset preparation](task_recipe.md#managed-preset-preparation). |
-| `hparam-monitor`, `experiment-monitor` | Observe and write canonical evidence/projections, never launch pending work. |
+| `hparam-monitor`, `experiment-monitor` | Observe and write canonical evidence/projections and report direct queue-runner liveness; never launch pending work or start a runner. |
 | `hparam-stop` | Reasoned stop under authenticated identity rules; [prelaunch stop](hparam_workflow.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-uncertain-states). |
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
@@ -399,6 +400,10 @@ and W&B state are not alternate lifecycle inputs.
 Modern hparam selection reports and shared rankings are read only as hash-bound
 consistency evidence for canonical selection
 rows. Status does not read checkpoint contents or write workspace state.
+Its only live read is a non-blocking shared-lock probe of each hparam plan with
+launchable runs: a live [queue runner](hparam_workflow.md#direct-queue-runner)
+replaces that plan's `hparam-run-queue` advice with a `queue_runner_active`
+blocker that names the runner PID and log.
 
 Frozen recipe structure is validated by the same dictionary-only
 `decision_rules` owner used by planning, without consultation, policy decisions,

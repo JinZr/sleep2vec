@@ -12,11 +12,14 @@ execution callbacks.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -64,6 +67,8 @@ ACTIVE_STATUSES = frozenset(
 )
 LAUNCH_TIMEOUT_SECONDS = 60
 RETRYABLE_PRE_SPAWN_EXIT_CODE = 75
+QUEUE_RUNNER_LOCK_NAME = "queue_runner.lock"
+QUEUE_RUNNER_LOG_NAME = "queue_runner.log"
 
 
 class MissingPidCapacityError(RuntimeError):
@@ -81,6 +86,9 @@ __all__ = [
     "RETRYABLE_PRE_SPAWN_EXIT_CODE",
     "LaunchResult",
     "MissingPidCapacityError",
+    "QUEUE_RUNNER_LOCK_NAME",
+    "QUEUE_RUNNER_LOG_NAME",
+    "QueueRunnerLiveness",
     "SchedulerHooks",
     "SlurmMonitorContext",
     "build_launch_command",
@@ -90,11 +98,74 @@ __all__ = [
     "observe_run",
     "observe_runs",
     "observe_slurm_run",
+    "queue_runner_liveness",
+    "queue_runner_lock",
     "script_commits_terminal_status",
     "shares_capacity",
     "start_process",
     "stop_slurm_run_locked",
 ]
+
+
+class QueueRunnerLiveness(TypedDict):
+    plan_dir: str
+    active: bool
+    pid: str | None
+    log_path: str
+
+
+@contextmanager
+def queue_runner_lock(plan_dir: Path, *, record_pid: bool) -> Iterator[None]:
+    """Hold a direct plan's exclusive queue-runner lock, failing at once if another runner holds it.
+
+    The lock is separate from the workspace run lock: take it before, never while holding,
+    ``managed_run_lock``. With record_pid the holder's PID replaces the lock file's text, for
+    liveness display only; the flock, not the PID, decides liveness. Closing the descriptor
+    (or the holder's exit) releases the lock."""
+    path = plan_dir / QUEUE_RUNNER_LOCK_NAME
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(
+                f"A queue runner is already active for {plan_dir} (pid {_queue_runner_pid(descriptor) or 'unknown'}); "
+                f"see its log {plan_dir / QUEUE_RUNNER_LOG_NAME}."
+            ) from exc
+        if record_pid:
+            os.ftruncate(descriptor, 0)
+            os.pwrite(descriptor, f"{os.getpid()}\n".encode(), 0)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def queue_runner_liveness(plan_dir: Path) -> QueueRunnerLiveness:
+    """Probe a plan's queue runner with a non-blocking shared lock; never creates the lock file or starts a runner.
+
+    A held lock means a runner is alive; a missing lock file means none has run."""
+    liveness: QueueRunnerLiveness = {
+        "plan_dir": str(plan_dir),
+        "active": False,
+        "pid": None,
+        "log_path": str(plan_dir / QUEUE_RUNNER_LOG_NAME),
+    }
+    try:
+        descriptor = os.open(plan_dir / QUEUE_RUNNER_LOCK_NAME, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return liveness
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        liveness["active"] = True
+        liveness["pid"] = _queue_runner_pid(descriptor)
+    finally:
+        os.close(descriptor)
+    return liveness
+
+
+def _queue_runner_pid(descriptor: int) -> str | None:
+    return os.pread(descriptor, 32, 0).decode("ascii", errors="replace").strip() or None
 
 
 @dataclass(frozen=True)

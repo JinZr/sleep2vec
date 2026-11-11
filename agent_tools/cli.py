@@ -27,7 +27,8 @@ import yaml
 from .configs import config_summary
 from .domain.index_csv import index_summary
 from .domain.presets import preset_summary
-from .experiment_tracking import format_experiment_status
+from .experiment_tracking import format_experiment_status, format_queue_runner
+from .experiment_workspace import scheduler_type
 from .experiments import (
     append_experiment_note,
     experiment_status,
@@ -39,8 +40,15 @@ from .experiments import (
     stop_infer_run,
     stop_preset_run,
 )
-from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, run_hparam_queue, stop_hparam_run
+from .hparam_runtime import (
+    launch_hparam_runs,
+    monitor_hparam_runs,
+    run_hparam_queue,
+    start_hparam_queue_runner,
+    stop_hparam_run,
+)
 from .hparam_selection import select_hparam_candidates
+from .managed_scheduler import queue_runner_liveness
 from .manifests import read_rows
 from .markdown import report_text
 from .models import json_ready
@@ -286,12 +294,19 @@ def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
     run_queue = _command(
         sub,
         "hparam-run-queue",
-        "Drain a hyper-parameter plan's run queue within its GPU capacity, polling until every run "
-        "reaches a terminal state. Dry run unless --execute is given.",
+        "Drain a hyper-parameter plan's run queue within its GPU capacity until every run is terminal. "
+        "Dry run unless --execute is given; --execute starts one detached runner per direct plan "
+        "(logging to queue_runner.log) and returns; --foreground runs the queue in this process.",
     )
     run_queue.add_argument("--plan-dir", required=True, help="Registered plan directory to drain.")
     _add_dry_run_or_execute(
         run_queue, subject="queue", execute_help="Actually launch queued runs; enables state changes."
+    )
+    run_queue.add_argument(
+        "--foreground",
+        action="store_true",
+        help="With --execute, run the queue loop in this process until every run is terminal instead of "
+        "starting a detached runner; fails if another runner holds the plan's queue_runner.lock.",
     )
     run_queue.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between queue polls.")
     run_queue.set_defaults(func=_cmd_hparam_run_queue)
@@ -299,7 +314,8 @@ def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
     monitor = _command(
         sub,
         "hparam-monitor",
-        "Poll a hyper-parameter run directory and report lifecycle states. Never launches runs.",
+        "Poll a hyper-parameter run directory and report lifecycle states and, for a direct plan, "
+        "queue-runner liveness. Never launches runs or starts a runner.",
     )
     monitor.add_argument("--run-dir", required=True, help="Run directory holding run_manifest.tsv.")
     monitor.add_argument("--once", action="store_true", help="Poll a single round and exit instead of looping.")
@@ -358,7 +374,8 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     experiment_monitor = _command(
         sub,
         "experiment-monitor",
-        "Refresh an experiment's status report from its manifests. Never launches runs.",
+        "Refresh an experiment's status report from its manifests and report queue-runner liveness. "
+        "Never launches runs or starts a runner.",
     )
     experiment_monitor.add_argument("--run-dir", required=True, help="Experiment workspace root to monitor.")
     experiment_monitor.add_argument(
@@ -553,6 +570,13 @@ def _cmd_preset_stop(args: argparse.Namespace) -> int:
 
 
 def _cmd_hparam_run_queue(args: argparse.Namespace) -> int:
+    if args.execute and not args.foreground:
+        runner = start_hparam_queue_runner(args.plan_dir, poll_seconds=args.poll_seconds)
+        # None means a Slurm plan, whose queue still runs in this process.
+        if runner is not None:
+            print("Mode: execute (detached queue runner started)")
+            print(f"Queue runner: started; pid={runner.pid}; log={runner.log_path}")
+            return 0
     status = run_hparam_queue(
         args.plan_dir,
         dry_run=not args.execute,
@@ -579,6 +603,8 @@ def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
     counts = Counter(str(row.get("status") or "unknown") for row in rows)
     states = ", ".join(f"{status}={count}" for status, count in sorted(counts.items())) or "none"
     print(f"Lifecycle states: {states}")
+    if rows and all(scheduler_type(row) == "direct" for row in rows):
+        print(f"Queue runner: {format_queue_runner(queue_runner_liveness(Path(args.run_dir)))}")
     evidence_rows = [
         row
         for row in rows
@@ -641,6 +667,8 @@ def _cmd_experiment_monitor(args: argparse.Namespace) -> int:
     if args.json:
         _emit(result, as_json=True)
     else:
+        for runner in result["queue_runners"]:
+            print(f"Queue runner {runner['plan_dir']}: {format_queue_runner(runner)}")
         print(f"Wrote {result['report']}")
     return 0
 

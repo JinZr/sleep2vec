@@ -16,7 +16,8 @@ experiments and legible scientific contracts, not engineering generality.
   No retry/backoff layers, caching tiers, rate limits, worker pools, migration
   frameworks, or defensive re-validation of values the canonical path already
   rejects. Reuse the canonical lock for the operation; runtime checkout,
-  plan publication, and experiment registration have distinct lock owners.
+  plan publication, experiment registration, and the per-plan queue runner
+  have distinct lock owners.
 - Prefer deleting over adding and inline trivial wrappers. A single-caller
   helper is appropriate when it names a coherent validation or execution phase
   and improves readability or satisfies an existing complexity gate. Keep it
@@ -143,7 +144,7 @@ Before the first plan, inspect available prior results and the effective base/ru
 - Runnable plans must be written inside `experiment.root`. Use the workspace as the human entry point; keep heavyweight datasets, checkpoints, W&B files, and trainer logs in their canonical locations and record links to them.
 - Runs must have both a stable `run-NNN` id and a semantic parameter-derived name. Do not create new `trial_000`-style artifact names that require opening configs to understand.
 - Freeze the resolved recipe, generated config, launch command, and hashes before execution. Do not silently rewrite a planned run after launch.
-- Monitoring may update status and reports but must not start pending runs; `hparam-monitor` and `experiment-monitor` remain non-launching. Launching is an explicit action.
+- Monitoring may update status and reports but must not start pending runs; `hparam-monitor` and `experiment-monitor` remain non-launching. Launching is an explicit action. `hparam-run-queue --execute` starts one detached runner for a direct plan (a Slurm plan's queue still runs in the calling process); monitors report runner liveness but never start one.
 - Stopping a run requires a recorded reason. Finalization requires no active runs and a non-empty final report. New completed experiment metadata binds the canonical final report path and SHA-256, plus the selection-report SHA-256 when hparam selection exists; completed status must fail closed if those bound bytes drift. Historical completed metadata without these bindings remains readable without migration.
 - On takeover, read `experiment.yaml`, `RESEARCH_LOG.md` when present, and the current canonical manifests before acting. Treat `run_manifest.tsv` as the only lifecycle owner.
 - Use `experiment-note` to append evidence-backed, meaningful research actions, observations, interpretations, decisions, conclusions, and corrections. Do not log unchanged monitoring polls, rewrite prior entries, or use narrative text to infer lifecycle state.

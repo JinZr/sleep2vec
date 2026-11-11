@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 
 from agent_tool_test_helpers import FakeLauncher, call_while_run_lock_holder_commits, run_cli
 import pytest
@@ -25,6 +26,7 @@ from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  
 import yaml
 
 from agent_tools import (
+    cli,
     experiments,
     hparam_runtime,
     managed_scheduler,
@@ -1306,3 +1308,128 @@ def test_hparam_stop_ignores_execution_identity_drift_in_projection(
     assert calls == ["stop"]
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
     assert _read_table(tmp_path / "launch_manifest.tsv")[0][field] == canonical[field]
+
+
+def _publish_queue_plan(tmp_path: Path, backend: str) -> Path:
+    if backend == "slurm":
+        plan_dir, _plan = _write_slurm_plan(tmp_path)
+        return plan_dir
+    recipe = _hparam_recipe(tmp_path)
+    plan_dir = tmp_path / "plan"
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
+    assert result.returncode == 0, result.stderr
+    return plan_dir
+
+
+def _record_queue_runner_spawns(monkeypatch) -> list[tuple[list[str], dict]]:
+    real_popen = subprocess.Popen
+    spawns = []
+
+    def popen(argv, **kwargs):
+        if list(argv[1:4]) != ["-m", "agent_tools", "hparam-run-queue"]:
+            return real_popen(argv, **kwargs)
+        log = os.fstat(kwargs["stdout"])
+        kwargs["log_identity"] = (log.st_dev, log.st_ino)
+        kwargs["log_flags"] = fcntl.fcntl(kwargs["stdout"], fcntl.F_GETFL)
+        spawns.append((list(argv), kwargs))
+        return SimpleNamespace(pid=4242)
+
+    monkeypatch.setattr(hparam_runtime.subprocess, "Popen", popen)
+    return spawns
+
+
+def test_hparam_run_queue_execute_detaches_one_runner_for_a_direct_plan(tmp_path: Path, monkeypatch, capsys):
+    plan_dir = _publish_queue_plan(tmp_path, "direct")
+    spawns = _record_queue_runner_spawns(monkeypatch)
+    launcher = FakeLauncher()
+    monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
+    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_a, **_k: pytest.fail("no queue monitor"))
+    manifest_before = (tmp_path / "run_manifest.tsv").read_bytes()
+    log_path = plan_dir / "queue_runner.log"
+
+    assert cli.main(["hparam-run-queue", "--plan-dir", str(plan_dir), "--execute", "--poll-seconds", "5"]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        "Mode: execute (detached queue runner started)",
+        f"Queue runner: started; pid=4242; log={log_path}",
+    ]
+    [(argv, kwargs)] = spawns
+    assert argv == [
+        sys.executable,
+        "-m",
+        "agent_tools",
+        "hparam-run-queue",
+        "--plan-dir",
+        str(plan_dir),
+        "--execute",
+        "--foreground",
+        "--poll-seconds",
+        "5.0",
+    ]
+    assert kwargs["start_new_session"] is True
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["stdout"] == kwargs["stderr"]
+    log_stat = log_path.stat()
+    assert kwargs["log_identity"] == (log_stat.st_dev, log_stat.st_ino)
+    assert kwargs["log_flags"] & os.O_APPEND
+    assert f"starting queue runner for {plan_dir}" in log_path.read_text()
+    # The caller only checked the lock: the detached runner takes it, and this process launched nothing.
+    assert managed_scheduler.queue_runner_liveness(plan_dir)["active"] is False
+    assert (tmp_path / "run_manifest.tsv").read_bytes() == manifest_before
+    launcher.assert_not_started()
+
+
+def test_hparam_run_queue_refuses_a_second_runner_while_the_lock_is_held(tmp_path: Path, monkeypatch, capsys):
+    plan_dir = _publish_queue_plan(tmp_path, "direct")
+    spawns = _record_queue_runner_spawns(monkeypatch)
+    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", lambda *_a, **_k: pytest.fail("no queue monitor"))
+    log_path = plan_dir / "queue_runner.log"
+
+    with managed_scheduler.queue_runner_lock(plan_dir, record_pid=True):
+        assert cli.main(["hparam-run-queue", "--plan-dir", str(plan_dir), "--execute"]) == 1
+        error = capsys.readouterr().err
+        assert "already active" in error
+        assert f"pid {os.getpid()}" in error
+        assert str(log_path) in error
+        with pytest.raises(RuntimeError, match="already active"):
+            hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
+
+    assert spawns == []
+    assert not log_path.exists()
+
+
+def test_hparam_run_queue_foreground_holds_the_runner_lock_for_the_loop(tmp_path: Path, monkeypatch):
+    plan_dir = _publish_queue_plan(tmp_path, "direct")
+    plan = run_artifacts.read_hparam_plan(plan_dir)
+    observed = []
+
+    def monitor(_run_dir):
+        observed.append(managed_scheduler.queue_runner_liveness(plan_dir))
+        for run in plan["runs"]:
+            hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="settle queue")
+
+    monkeypatch.setattr(hparam_runtime, "monitor_hparam_runs", monitor)
+    monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_a, **_k: pytest.fail("no launch"))
+
+    assert hparam_runtime.run_hparam_queue(plan_dir, dry_run=False) == plan_dir / "run_status.tsv"
+
+    assert observed == [
+        {
+            "plan_dir": str(plan_dir),
+            "active": True,
+            "pid": str(os.getpid()),
+            "log_path": str(plan_dir / "queue_runner.log"),
+        }
+    ]
+    assert managed_scheduler.queue_runner_liveness(plan_dir)["active"] is False
+
+
+def test_hparam_queue_runner_is_not_started_for_a_slurm_plan(tmp_path: Path, monkeypatch):
+    plan_dir = _publish_queue_plan(tmp_path, "slurm")
+    spawns = _record_queue_runner_spawns(monkeypatch)
+
+    assert hparam_runtime.start_hparam_queue_runner(plan_dir) is None
+
+    assert spawns == []
+    assert not (plan_dir / "queue_runner.lock").exists()
+    assert not (plan_dir / "queue_runner.log").exists()

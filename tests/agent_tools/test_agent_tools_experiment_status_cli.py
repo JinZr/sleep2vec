@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from agent_tools import (
     experiment_io,
     experiment_tracking,
     experiments,
+    managed_scheduler,
     plans,
     recipes,
 )
@@ -292,6 +294,74 @@ def test_experiment_status_keeps_local_hparam_queue_on_controller(tmp_path):
         "--execute",
     ]
     assert "control host:" not in experiment_tracking.format_experiment_status(snapshot)
+
+
+def test_experiment_status_defers_the_hparam_queue_to_an_active_runner(tmp_path):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _row = _add_plan(
+        root,
+        step_id="tune",
+        task="hparam_tune",
+        status="pending",
+    )
+    log_path = plan_dir / "queue_runner.log"
+
+    with managed_scheduler.queue_runner_lock(plan_dir, record_pid=True):
+        snapshot = experiments.experiment_status(root)
+        text = experiment_tracking.format_experiment_status(snapshot)
+
+    assert snapshot["summary"]["state"] == "in_progress"
+    assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
+    assert snapshot["decision"]["other_legal_actions"] == []
+    [blocker] = [blocker for blocker in snapshot["blockers"] if blocker["code"] == "queue_runner_active"]
+    assert blocker["step_id"] == "tune"
+    assert f"active; pid={os.getpid()}; log={log_path}" in blocker["message"]
+    assert "- `queue_runner_active` [step=tune]: A detached hparam-run-queue runner" in text
+    assert "hparam-run-queue --plan-dir" not in text
+
+    # A released lock leaves the file behind; the probe then reports no runner and the queue is advised again.
+    released = experiments.experiment_status(root)
+    assert released["decision"]["recommended_next"]["id"] == "hparam-run-queue"
+    assert not any(blocker["code"] == "queue_runner_active" for blocker in released["blockers"])
+
+
+def test_experiment_monitor_reports_queue_runner_liveness_without_starting_one(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "experiment"
+    _init_workspace(root)
+    plan_dir, _row = _add_plan(
+        root,
+        step_id="tune",
+        task="hparam_tune",
+        status="pending",
+    )
+    log_path = plan_dir / "queue_runner.log"
+    # Keep run observation inert; this test pins only the runner probe and its report.
+    monkeypatch.setattr(
+        experiment_tracking,
+        "monitor_run_row",
+        lambda _root, row, _previous_rows, **_kwargs: {
+            "step_id": row["step_id"],
+            "run_id": row["run_id"],
+            "status": row["status"],
+        },
+    )
+
+    assert experiments.monitor_experiment(root)["queue_runners"] == []
+
+    with managed_scheduler.queue_runner_lock(plan_dir, record_pid=True):
+        assert cli.main(["experiment-monitor", "--run-dir", str(root)]) == 0
+    report = (root / "reports" / "monitor.md").read_text()
+    after = experiments.monitor_experiment(root)
+
+    active_text = f"active; pid={os.getpid()}; log={log_path}"
+    assert capsys.readouterr().out.splitlines()[0] == f"Queue runner {plan_dir}: {active_text}"
+    assert f"## Queue runners\n\n- `{plan_dir}`: {active_text}\n" in report
+    assert after["queue_runners"] == [
+        {"plan_dir": str(plan_dir), "active": False, "pid": None, "log_path": str(log_path)}
+    ]
+    assert _read_manifest_rows(root)[0]["status"] == "pending"
+    assert not log_path.exists()
 
 
 def test_experiment_status_cli_converts_malformed_yaml_to_exit_one(tmp_path, capsys):
