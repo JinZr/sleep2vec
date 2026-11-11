@@ -38,7 +38,7 @@ Other exceptions are bugs and keep their traceback.
 | How do I resolve `NEEDS_USER_INPUT`? | [Decision materialization and retry](user_decisions.md) |
 | Doctor passed; why can plan still fail? | [Registration preflight](hparam_workflow.md#registration-preflight) and [publication](experiment_workspace.md#publication-and-registration) |
 | Which search sources and technical defaults are supported? | [Search space](hparam_workflow.md#search-space) |
-| Is test-selected tuning allowed? | [Selection and test-access policy](external_test_locking.md#selection-and-test-access-policy) |
+| Can tuning select on the test split? | [Selection and test-access policy](external_test_locking.md#selection-and-test-access-policy) |
 | How do I launch or queue a frozen plan? | [Hparam launch and queue](hparam_workflow.md#launch-and-queue), [ordinary inference](task_recipe.md#managed-ordinary-inference), or [managed preset preparation](task_recipe.md#managed-preset-preparation) |
 | When is the execution snapshot frozen and rechecked? | [Execution snapshot and launch revalidation](hparam_workflow.md#execution-snapshot-and-launch-revalidation) |
 | Which `.tsv` owns lifecycle state, and what are the others? | [Table index](run_manifest.md#table-index) |

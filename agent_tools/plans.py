@@ -230,7 +230,7 @@ def _materialize_decisions(
                 )
 
     canonical_fields = _resolve_write_targets(recipe.get("task"))
-    if decision_values.get("train_val_test_policy") not in ("val", "test"):
+    if decision_values.get("train_val_test_policy") != "val":
         canonical_fields.pop("train_val_test_policy", None)
 
     for field, (section, key) in canonical_fields.items():
@@ -272,10 +272,6 @@ def _materialize_decisions(
         if field == "hparam_search_space":
             # A search-space decision replaces the authored search shape.
             target = dict(target)
-            if "profile" in target:
-                if target.get("method") is None:
-                    target["method"] = "grid"
-                target.pop("profile")
             target.pop("configurations", None)
         recipe[section] = {**target, key: value}
     if user_supplied:
@@ -284,14 +280,14 @@ def _materialize_decisions(
         recipe["decisions"] = {**recipe_decisions, **decisions}
         evaluation_policy = recipe.get("evaluation_policy")
         selection_split = evaluation_policy.get("selection_split") if isinstance(evaluation_policy, dict) else None
-        if selection_split not in (None, "", "ASK_USER", "val", "test") and not any(
+        if selection_split not in (None, "", "ASK_USER", "val") and not any(
             issue.field == "train_val_test_policy" for issue in issues
         ):
             issues.append(
                 DecisionIssue(
                     DecisionStatus.FAIL,
                     "evaluation_policy.selection_split",
-                    "evaluation_policy.selection_split must be val or test.",
+                    "evaluation_policy.selection_split must be val; the test split is never a selection split.",
                     None,
                     {"value": selection_split, "preflight_before_workspace": True},
                 )

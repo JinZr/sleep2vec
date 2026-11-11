@@ -232,6 +232,34 @@ def test_recipe_rejects_unknown_runtime_field(tmp_path: Path):
     assert "runtime.lrr" in {issue.field for issue in report.blocking_issues()}
 
 
+def test_recipe_rejects_test_selection_split(tmp_path: Path):
+    payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
+    payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
+    payload["evaluation_policy"].update({"selection_metric": "test_ahi_pearson", "selection_split": "test"})
+    path = tmp_path / "hparam.yaml"
+    path.write_text(yaml.safe_dump(payload))
+
+    _recipe, _cfg, report = evaluate_recipe(path)
+
+    assert report.exit_code == 1
+    issue = next(issue for issue in report.blocking_issues() if issue.field == "evaluation_policy.selection_split")
+    assert "never a selection split" in issue.message
+    assert issue.evidence["preflight_before_workspace"] is True
+
+
+def test_recipe_rejects_search_profile(tmp_path: Path):
+    payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
+    payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
+    payload["search"] = {"method": "grid", "max_runs": 1, "profile": "balanced"}
+    path = tmp_path / "hparam.yaml"
+    path.write_text(yaml.safe_dump(payload))
+
+    _recipe, _cfg, report = evaluate_recipe(path)
+
+    assert report.exit_code == 1
+    assert "search.profile" in {issue.field for issue in report.blocking_issues()}
+
+
 def test_recipe_accepts_explicit_search_configurations(tmp_path: Path):
     payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
     payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())

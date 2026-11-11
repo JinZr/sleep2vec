@@ -19,7 +19,6 @@ SOURCE_HASHES = {
     "experiment_workspace.write_run_matrix_if_current": (
         "82220ec43daaa0e9244a6a30fddabfba5a6ee7e7a5406bcd1d42a74bca38c0b9"
     ),
-    "hparam_postprocess.verify_checkpoint_sha256": "edff342d976933beabffc01bfc98080c49cdbe673d1a9ec8e8958989fef569ee",
     "managed_scheduler.cli_preflight": "5620962bcbd5db619b4f934773ad9e3d67e2c6ddc1edc212fac7cda872cb0cd1",
     "managed_scheduler.process_launch": "0ad40681fac86dc521274271c68cfa0661e24176fc1d45d6ea25c553f15a1634",
     "managed_scheduler.runtime_identity": "ad21db85b664d221a18430c9e053c7626c4055036fd71b653090d87ee334ff96",
@@ -48,7 +47,6 @@ COMMAND_HASHES = {
     "experiment_workspace.write_run_matrix_if_current": (
         "89160398c17ccd32df9d2949fe4e6273de5f0ccc62dbc1da514c4aa9fbe9f7eb"
     ),
-    "hparam_postprocess.verify_checkpoint_sha256": "0423ef2081129f2e665a1128ccacb092120596d35dd57f8093782ebc3a737869",
     "managed_scheduler.cli_preflight": "f29964331539fb594e8736b27be9aa4005980f493df994833f00a5364c837418",
     "managed_scheduler.process_launch": "1c04cb9a82c8e4b39b74e0e2788023c410c814f685190220e1321829e32dcc9f",
     "managed_scheduler.runtime_identity": "dca67842bd1be75e69edce2cf03a1562a6c6d525bdae55f600b3ce33435e02be",
@@ -95,7 +93,6 @@ def test_unknown_python_program_name_is_rejected():
         "agent_tools.run_evidence",
         "agent_tools.managed_scheduler",
         "agent_tools.plan_rendering",
-        "agent_tools.hparam_postprocess",
     ],
 )
 def test_python_program_owners_import(module_name):

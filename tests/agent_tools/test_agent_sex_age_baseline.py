@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 import shlex
@@ -514,76 +513,6 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     assert "--wandb-mode" not in script
 
 
-@pytest.mark.parametrize(
-    ("runtime", "search_parameters", "max_runs", "expected_issue"),
-    [
-        (None, None, 1, None),
-        ({"ckpt_every_n_epochs": 1}, None, 1, None),
-        ({"ckpt_every_n_epochs": 2}, None, 1, "runtime.ckpt_every_n_epochs"),
-        ({"ckpt_every_n_epochs": 2}, {"runtime.ckpt_every_n_epochs": [1]}, 1, None),
-        ({"ckpt_every_n_epochs": 1}, {"runtime.ckpt_every_n_epochs": [1, 2]}, 1, None),
-        (
-            {"ckpt_every_n_epochs": 1},
-            {"runtime.ckpt_every_n_epochs": [1, 2]},
-            2,
-            "runtime.ckpt_every_n_epochs",
-        ),
-        ({"epochs": 0, "ckpt_every_n_epochs": 1}, None, 1, "runtime.epochs"),
-        ({"epochs": 0, "ckpt_every_n_epochs": 1}, {"runtime.epochs": [1]}, 1, None),
-    ],
-)
-def test_sex_age_baseline_hparam_test_selection_requires_checkpoint_opportunity(
-    tmp_path: Path,
-    runtime: dict | None,
-    search_parameters: dict | None,
-    max_runs: int,
-    expected_issue: str | None,
-):
-    config = _write_survival_config(tmp_path)
-    recipe = _hparam_recipe(tmp_path, config)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["evaluation_policy"].update(
-        {
-            "selection_metric": "test_c_index",
-            "selection_split": "test",
-            "external_test_locked": False,
-        }
-    )
-    payload["evaluation_policy"].pop("test_after_fit")
-    payload["decisions"]["external_test_locked"] = {"value": False, "source": "explicit_recipe"}
-    payload["decisions"]["train_val_test_policy"] = {"value": "test", "source": "explicit_recipe"}
-    if runtime is not None:
-        payload.setdefault("runtime", {}).update(runtime)
-    if search_parameters is not None:
-        payload["search"] = {
-            "method": "grid",
-            "max_runs": max_runs,
-            "parameters": search_parameters,
-        }
-    _write_yaml(recipe, payload)
-    plan_dir = tmp_path / "plan-hparam-test-selection"
-
-    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == int(expected_issue is not None)
-    if expected_issue:
-        assert any(
-            f"selection_split=test requires effective {expected_issue}" in issue.message for issue in report.issues
-        )
-        assert not (plan_dir / "plan.json").exists()
-        return
-    scripts = list((plan_dir / "runs").glob("run-000--*/launch.sh"))
-    assert len(scripts) == 1
-    script = scripts[0].read_text()
-    assert "python -m sex_age_baseline.finetune" in script
-    assert "--test-after-fit" in script
-    assert "--no-test-after-fit" not in script
-    assert "--test-all-checkpoints-after-fit" in script
-    assert "--wandb-project" not in script
-    assert "--wandb-group" not in script
-    assert "--wandb-mode" not in script
-
-
 @pytest.mark.parametrize("ckpt_name", ["epoch=02.ckpt", "last"])
 def test_baseline_infer_plan_renders_checkpoint_averaging_like_sleep2vec(tmp_path: Path, ckpt_name):
     config = _write_survival_config(tmp_path)
@@ -680,8 +609,6 @@ def test_covariate_baseline_bmi_only_and_decay_plan(tmp_path: Path, wandb_mode):
 
 
 def test_covariate_hparam_preserves_wandb_routing(tmp_path: Path, monkeypatch):
-    from agent_tools.experiment_workspace import merge_run_manifest
-    from agent_tools.hparam_postprocess import generate_external_eval
     from agent_tools.plan_hparam import compile_hparam_final_command
     from sex_age_baseline.finetune import parse_args
     from sex_age_baseline.infer import parse_args as parse_infer_args
@@ -716,29 +643,19 @@ def test_covariate_hparam_preserves_wandb_routing(tmp_path: Path, monkeypatch):
     checkpoint = Path(run["checkpoint_dir"]) / "epoch=0.ckpt"
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text("fixture checkpoint")
-    merge_run_manifest(
-        Path(plan["recipe"]["experiment"]["root"]),
-        [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "completed"}],
-    )
-    selected = tmp_path / "selected.csv"
-    selected.write_text("step_id,run_id,rank,checkpoint_path\n" f"{run['step_id']},{run['run_id']},1,{checkpoint}\n")
-    generate_external_eval(output, selected, unlock_final_test=True)
-    with (output / "external_eval_manifest.tsv").open() as manifest:
-        external_command = next(csv.DictReader(manifest, delimiter="\t"))["external_command"]
     final_recipe = plan["recipe"]
     final_recipe["inputs"]["ckpt_path"] = str(checkpoint)
     final_recipe["evaluation_policy"]["final_test_unlocked"] = True
     final_recipe["evaluation_policy"]["external_test_locked"] = False
     final_command = compile_hparam_final_command(final_recipe, output)
     assert final_command is not None
-    for rendered in (external_command, final_command):
-        parts = shlex.split(rendered)
-        monkeypatch.setattr(sys, "argv", ["infer", *parts[parts.index("sex_age_baseline.infer") + 1 :]])
-        infer_args = parse_infer_args()
-        # Like sleep2vec, evaluation commands keep inference W&B logging off and carry only the runtime mode.
-        assert infer_args.wandb is False
-        assert (infer_args.wandb_project, infer_args.wandb_group) == (None, None)
-        assert infer_args.wandb_mode == "offline"
+    parts = shlex.split(final_command)
+    monkeypatch.setattr(sys, "argv", ["infer", *parts[parts.index("sex_age_baseline.infer") + 1 :]])
+    infer_args = parse_infer_args()
+    # Like sleep2vec, evaluation commands keep inference W&B logging off and carry only the runtime mode.
+    assert infer_args.wandb is False
+    assert (infer_args.wandb_project, infer_args.wandb_group) == (None, None)
+    assert infer_args.wandb_mode == "offline"
 
 
 def test_covariate_baseline_window_index_passes_doctor_without_signal_files(tmp_path: Path):

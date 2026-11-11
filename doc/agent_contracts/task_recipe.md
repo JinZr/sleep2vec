@@ -77,7 +77,7 @@ must be quoted when a string is intended; unsupported values are not silently
 converted. Task-owned checks also reject known hard input errors at this point,
 including malformed hparam search spaces. These checks use the effective values
 after user overrides and do not turn missing decisions into new hard failures.
-Config-dependent profile expansion and full consultation still run afterward.
+Config-dependent consultation still runs afterward.
 
 Static experiment/step consultation also runs before config or data reads. A
 layered hparam recipe must supply its own local ownership; complete base-recipe
@@ -95,7 +95,7 @@ register: final workspace validation and registration locks remain authoritative
 
 `plan.json` and `recipe.resolved.yaml` must contain the same complete effective
 recipe. Retained base/local recipe copies are source audit only; launch,
-selection, and postprocess consumers read the effective recipe.
+selection, and final-evaluation consumers read the effective recipe.
 For hparam plans, top-level `plan.json.resolved_recipe_sha256` binds the exact
 bytes of `recipe.resolved.yaml`; consumers verify that digest before parsing the
 recipe and then verify complete semantic equality between the two copies.

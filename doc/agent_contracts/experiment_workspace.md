@@ -113,7 +113,7 @@ canonical manifest establishes the recorded lifecycle, not the other way round.
 | Which experiment and declared work? | `experiment.yaml`, registered `steps/<step.id>/step.yaml` | Confirm root, objective, step and controller ownership. |
 | What is registered, active or terminal? | Canonical `run_manifest.tsv` | Read current lifecycle and frozen execution identity. |
 | What will run, or already ran? | Registered frozen recipe, plan, configs, scripts and identity records | Verify exact execution content; do not reconstruct it from chat. |
-| Are required results complete? | Task-required runtime/result manifests, metrics and bound audit evidence | Decide selection and finalization eligibility. |
+| Are required results complete? | Task-required runtime/result manifests and metrics | Decide selection and finalization eligibility. |
 | What decisions are authorized, and why? | Authorized recipe/decisions and their authorization record; `RESEARCH_LOG.md` when present | Recover scope and rationale, never substitute narrative for lifecycle evidence. |
 
 The following phases are explanatory, not new state fields. Actions still use
@@ -124,16 +124,15 @@ the entrypoint-specific checks and the current authorization.
 | Prepared recipe, no registered managed plan | Complete consultation, then publish through the relevant planner/init owner. | Doctor PASS or an output directory proves registration, writability, submission or success. |
 | Registered plan, no credible submission evidence | Perform that entrypoint's launch checks; launch only within existing authorization. | `planned` alone proves a historical manually wrapped job was never submitted. |
 | Credible queued/running scheduler or process evidence | Continue monitoring the same frozen run. | Queue delay, missing output or SSH disconnection permits duplicate submission. |
-| Training terminal, required checkpoint tests incomplete | Follow the task's remaining test phase or diagnose missing evidence. | Fit completion or a log message permits test ranking. |
 | Current tuning round terminal, required results complete, budget remains | Record the evidence with `experiment-note`, then plan the next round as a new ordinary plan within the total budget ([search space](hparam_workflow.md#search-space)); launching it needs launch authority. | A generic continue instruction expands the budget or bypasses an evidence blocker. |
 | Declared work complete, no active runs, selection/report requirements met | Apply [finalization](#finalization), including controller-owned completion checks. | One completed phase closes every assigned obligation, or a result directory proves success. |
 
-Distinguish normal waiting (queue, training, checkpoint testing) from diagnosis
+Distinguish normal waiting (queue, training, post-fit testing) from diagnosis
 (identity mismatch, unavailable state, missing required results) and a new user
 decision (uncovered scientific choice or required `NEEDS_USER_INPUT`). Do not
 re-ask already explicit label/split/metric/budget choices. A new launch blocker
 does not cancel monitoring duties for existing work. Estimate end-to-end time
-including queue delay, post-fit checkpoint tests and preflight, not just
+including queue delay, post-fit tests and preflight, not just
 training fit time.
 
 An incidental question about status, GPU use or timing does not revoke unfinished
@@ -296,10 +295,10 @@ partly failed multi-step searches require a separate combined report, and
 all-failed hparam experiments may close with a non-empty failure report. The
 canonical selection report cannot substitute for a combined or failure report.
 
-Status validates the frozen selection audit bytes and reconstructs step-wide
-checkpoint/run ranks without reopening runtime manifests or checkpoint contents.
-Finalization additionally rehashes every checkpoint named by the bound audits
-on its canonical execution host, then holds the canonical run-manifest lock
+Status validates the frozen selection report and ranking bytes and the
+step-wide run ranks without reopening runtime manifests or checkpoint contents.
+Finalization additionally rehashes every ranked checkpoint on its canonical
+execution host, then holds the canonical run-manifest lock
 while it verifies the same manifest snapshot and commits terminal metadata.
 
 New finalization commits `status: completed` only with the canonical
@@ -414,8 +413,8 @@ prints a deterministic snapshot. It may display already-recorded scheduler,
 process, health, checkpoint and runtime-manifest fields but never refreshes
 them. `run_status.tsv`, `launch_manifest.tsv`, events, logs, runtime manifests,
 and W&B state are not alternate lifecycle inputs.
-Modern hparam selection reports, shared rankings and plan-local checkpoint
-audits are read only as hash-bound consistency evidence for canonical selection
+Modern hparam selection reports and shared rankings are read only as hash-bound
+consistency evidence for canonical selection
 rows. Status does not read checkpoint contents or write workspace state.
 
 Frozen recipe structure is validated by the same dictionary-only

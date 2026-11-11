@@ -863,8 +863,6 @@ def finetune_init_checkpoint_issue(recipe: dict) -> DecisionIssue | None:
         message = "init_checkpoint_path cannot be combined with pretrained_backbone_path."
     elif (recipe.get("execution") or {}).get("target", "local") != "local":
         message = "Full-model initialization requires local plan publication on the checkpoint execution host."
-    elif (recipe.get("search") or {}).get("profile"):
-        message = "Full-model initialization requires an explicit compatible search, not a structural search profile."
     if message is None:
         return None
     return DecisionIssue(

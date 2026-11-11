@@ -47,8 +47,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Analysis bundle output | `AnalysisBundleWriter` in [`sleep2stat/io/writers.py`](../../sleep2stat/io/writers.py) | analyzers or CLI branches |
 | Analysis plotting | `plot_record`, `plot_cohort` in [`sleep2stat/plot.py`](../../sleep2stat/plot.py) | scripts that inspect analyzer internals |
 | Static recipe structure | `recipe_structure_issues` in [`agent_tools/decision_rules.py`](../../agent_tools/decision_rules.py) for registered task/variant and section closure | planner- or status-local copies of recipe structure validation |
-| Automatic finetune hparam profile | `compile_finetune_balanced_profile` in [`agent_tools/domain/finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py), invoked through the hparam adapter binding hook | kernel branches, skills, or templates that duplicate technical candidate generation |
-| Hparam selection, candidate resolution, and report | canonical selection fields and read-only top-K/all candidate resolution in [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py), with checkpoint-test validation and best-candidate ordering in [`agent_tools/checkpoint_test_results.py`](../../agent_tools/checkpoint_test_results.py) and projection validation/rendering in [`agent_tools/experiment_tracking.py`](../../agent_tools/experiment_tracking.py) | postprocess-, event-, ranking-, status-, or finalizer-local selection logic |
+| Hparam selection and report | canonical selection fields in [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py), with projection validation/rendering in [`agent_tools/experiment_tracking.py`](../../agent_tools/experiment_tracking.py) | event-, ranking-, status-, or finalizer-local selection logic |
 | Frozen plan semantics | [`agent_tools/plan_contract.py`](../../agent_tools/plan_contract.py), `compile_plan_contract` adapter hooks, and hparam compilers in [`agent_tools/plan_hparam.py`](../../agent_tools/plan_hparam.py) for creator-host context, recipe-derived run matrices, configs, complete executable scripts, and final-evaluation requirements | writer/status copies, reader-host defaults, or validation derived from mutable manifests |
 | Hparam candidate validation | planner-local canonical variant validation of final config bytes (`validate_hparam_run_configs`), managed output checks (`validate_hparam_output_paths`), and truthful config/argv provenance (`render_hparam_preflight_card`) in [`agent_tools/plan_hparam.py`](../../agent_tools/plan_hparam.py); path topology in `experiment_io.validate_managed_output_paths` | proposal-specific model schemas, caller-local YAML summaries, or path checkers |
 | Hparam plan registration | `preflight_hparam_plan` for staged bundle checks, the target probe, and the frozen execution snapshot, then `commit_hparam_plan` for run-manifest registration, both in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) and called directly by `plans`; `HparamRegistrationPreflightError` marks a failure before any workspace write; target identity and argv evidence in `execution_snapshot.inspect_execution_target` | adapter registration hooks, argv parsers, or separate preflight state |
@@ -68,8 +67,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 | Managed log evidence | [`agent_tools/run_evidence.py`](../../agent_tools/run_evidence.py) owns bounded local tails and the paired Slurm SSH health tail/age probe | monitor-local log readers or cross-observation caches |
 | Managed scheduler lifecycle | [`agent_tools/managed_scheduler.py`](../../agent_tools/managed_scheduler.py) with Slurm primitives in [`agent_tools/slurm.py`](../../agent_tools/slurm.py); shared scheduler queries stay within one round and frozen route, never launch/stop/reconciliation; snapshot hooks distinguish missing from empty snapshots and request writes only for present snapshots | hparam-local capacity, scheduler commands, observation, reconciliation, snapshot, start, or stop implementations |
 | GPU pool partitioning | `gpu_group_plan` in [`agent_tools/gpu_rules.py`](../../agent_tools/gpu_rules.py); live capacity and process placement stay in `managed_scheduler` | scheduler-, planner-, or adapter-local device arithmetic |
-| Registered plan reads | `is_registered_blocked_plan` for exact nested local/SSH blocked-plan envelopes and strict plan-owned artifacts in root-resident workspaces, `read_registered_plan` for materialized control bundles reusing the static recipe structure owner, and `read_hparam_plan` for stronger local launch-time validation in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | status, launcher, or postprocess-specific parsing |
-| Public hparam operations | [`agent_tools/hparam_runtime.py`](../../agent_tools/hparam_runtime.py) for launch, queue, monitor, and stop; [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) for candidate resolution, checkpoint scan, and selection; [`agent_tools/hparam_postprocess.py`](../../agent_tools/hparam_postprocess.py) for external eval, logits, threshold, and ensemble | direct private cross-module imports |
+| Registered plan reads | `is_registered_blocked_plan` for exact nested local/SSH blocked-plan envelopes and strict plan-owned artifacts in root-resident workspaces, `read_registered_plan` for materialized control bundles reusing the static recipe structure owner, and `read_hparam_plan` for stronger local launch-time validation in [`agent_tools/run_artifacts.py`](../../agent_tools/run_artifacts.py) | status- or launcher-specific parsing |
+| Public hparam operations | [`agent_tools/hparam_runtime.py`](../../agent_tools/hparam_runtime.py) for launch, queue, monitor, and stop; [`agent_tools/hparam_selection.py`](../../agent_tools/hparam_selection.py) for selection | direct private cross-module imports |
 | Experiment evidence acquisition | W&B and local/SSH checkpoint readers in [`agent_tools/experiment_sources.py`](../../agent_tools/experiment_sources.py), consumed by [`agent_tools/experiment_tracking.py`](../../agent_tools/experiment_tracking.py) | status-, ranking-, or CLI-local source readers |
 | Public experiment operations | [`agent_tools/experiments.py`](../../agent_tools/experiments.py) facade, including canonical-only `experiment_status`, with I/O/tracking owners behind it | skills or CLI handlers |
 | Index/config/preset summaries | [`agent_tools/domain/`](../../agent_tools/domain/) through stable top-level facades | shell parsing templates |
@@ -165,14 +164,10 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Keep task input checks in adapters and shared consultation in `decisions.py` / `plans.py`;
   [consultation and diagnostics](../agent_contracts/task_recipe.md#consultation-and-diagnostics)
   owns decision gates and per-call validation reuse.
-- Reuse the profile compiler, `plan_contract`, adapter compilation hooks, `plan_hparam`, and the
+- Reuse `plan_contract`, adapter compilation hooks, `plan_hparam`, and the
   `run_artifacts` registration phase for [search expansion](../agent_contracts/hparam_workflow.md#search-space) and
   [frozen candidate/registration checks](../agent_contracts/hparam_workflow.md#registration-preflight),
-  not caller-local schemas or frozen-plan validators. The profile owns joint
-  training-length/schedule/early-stopping levels and bounded gradient clipping,
-  keeps batch and accumulation fixed, and uses resolved task semantics
-  for custom survival and multilabel eligibility; consult the search contract
-  for its fixed settings and budget limits. Managed scheduler checks reuse the
+  not caller-local schemas or frozen-plan validators. Managed scheduler checks reuse the
   selected variant's argument validator through `plan_rendering`, including
   every effective hparam candidate before publication. The same bridge resolves
   built-in task flags when a frozen config omits an explicit task block.
@@ -192,8 +187,8 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   `frozen_commands`, `planned_plan_paths`, `frozen_input_paths`, `configured_input_issues`, `task_issues`).
   Builder rows whose `rank`, `score` or `epoch` is consumed numerically stay `dict[str, Any]`, and
   `experiment_workspace.resolve_run_row` returns the caller's own row type.
-- Reuse `hparam_selection` and `checkpoint_test_results` for
-  [selection and selected-candidate consumers](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers).
+- Reuse `hparam_selection` for
+  [selection](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers).
   Append semantic notes through `experiments.append_experiment_note` and `research_log`,
   not direct Markdown writes; see [research-log ownership](../agent_contracts/experiment_workspace.md#research-log).
 - Reuse `managed_scheduler` for backend lifecycle and `slurm` for resource, command, state,

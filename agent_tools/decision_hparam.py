@@ -12,7 +12,6 @@ from pathlib import Path
 import re
 from typing import Any
 
-from . import plan_hparam
 from .decision_models import DecisionIssue, DecisionStatus, ResolvedDecision, needs_issue, question_for
 from .decision_paths import (
     finetune_init_checkpoint_issue,
@@ -72,7 +71,7 @@ _HPARAM_INPUT_FIELDS = {
     "override_dataset_names",
     "pretrained_backbone_path",
 }
-_HPARAM_SEARCH_FIELDS = {"configurations", "max_runs", "max_trials", "method", "parameters", "profile"}
+_HPARAM_SEARCH_FIELDS = {"configurations", "max_runs", "max_trials", "method", "parameters"}
 
 
 def hparam_recipe_contract_issues(recipe: dict, *, source_layer: str) -> list[DecisionIssue]:
@@ -219,7 +218,6 @@ def _hparam_config_issues(
 def hparam_search_issues(recipe: dict, *, high_impact: dict[str, dict[str, Any]]) -> list[DecisionIssue]:
     search_value = recipe.get("search")
     search = search_value if isinstance(search_value, dict) else {}
-    profile_mode = "profile" in search
     issues = []
     if "max_trials" in search:
         issues.append(
@@ -231,7 +229,7 @@ def hparam_search_issues(recipe: dict, *, high_impact: dict[str, dict[str, Any]]
                 {"max_trials": search.get("max_trials")},
             )
         )
-    if not search.get("method") and not profile_mode:
+    if not search.get("method"):
         issues.append(needs_issue("search_method", "search.method is required.", high_impact))
     elif search.get("method") not in (None, "grid"):
         issues.append(
@@ -256,7 +254,7 @@ def hparam_search_issues(recipe: dict, *, high_impact: dict[str, dict[str, Any]]
         )
     elif "configurations" in search:
         issues.extend(_hparam_search_configurations_issues(configurations))
-    elif not search.get("parameters") and not profile_mode:
+    elif not search.get("parameters"):
         issues.append(needs_issue("hparam_search_space", "search.parameters is required.", high_impact))
     elif "parameters" in search:
         issues.extend(_hparam_search_parameter_issues(search.get("parameters")))
@@ -266,12 +264,11 @@ def hparam_search_issues(recipe: dict, *, high_impact: dict[str, dict[str, Any]]
 def _hparam_search_budget_issues(
     search: dict[str, Any],
     *,
-    profile_mode: bool,
     high_impact: dict[str, dict[str, Any]],
 ) -> list[DecisionIssue]:
     issues = []
     max_runs = search.get("max_runs")
-    if max_runs in (None, "") and not profile_mode:
+    if max_runs in (None, ""):
         issues.append(needs_issue("hparam_budget", "search.max_runs is required.", high_impact))
     elif max_runs not in (None, "") and (type(max_runs) is not int or max_runs <= 0):
         issues.append(
@@ -294,10 +291,6 @@ def _hparam_evaluation_issues(
     issues = []
     evaluation_value = recipe.get("evaluation_policy")
     evaluation = evaluation_value if isinstance(evaluation_value, dict) else {}
-    search_value = recipe.get("search")
-    search = search_value if isinstance(search_value, dict) else {}
-    runtime_value = recipe.get("runtime")
-    runtime = runtime_value if isinstance(runtime_value, dict) else {}
     local_recipe_value = recipe.get("_local_recipe")
     local_recipe = local_recipe_value if isinstance(local_recipe_value, dict) else recipe
     local_evaluation_value = local_recipe.get("evaluation_policy")
@@ -314,94 +307,6 @@ def _hparam_evaluation_issues(
         issues.append(needs_issue("external_test_locked", "external_test_locked must be explicit.", high_impact))
     test_after_fit = decisions["test_after_fit"].value
     external_test_locked = evaluation.get("external_test_locked")
-    selection_split = evaluation.get("selection_split")
-    selection_metric = evaluation.get("selection_metric")
-    max_runs = search.get("max_runs")
-    configurations = search.get("configurations")
-    if (
-        selection_split == "test"
-        and selection_metric not in (None, "", "ASK_USER")
-        and (not isinstance(selection_metric, str) or not selection_metric.startswith("test_"))
-    ):
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.FAIL,
-                "selection_metric",
-                "selection_split=test requires a test_* selection_metric.",
-                None,
-                {"evaluation_policy": evaluation},
-            )
-        )
-    if selection_split == "test":
-        parameters = search.get("parameters")
-        search_space_is_plannable = (
-            search.get("method") == "grid"
-            and type(max_runs) is int
-            and max_runs > 0
-            and not ("configurations" in search and "parameters" in search)
-            and (
-                isinstance(configurations, list)
-                and bool(configurations)
-                and all(isinstance(point, dict) and point for point in configurations)
-                or isinstance(parameters, dict)
-                and bool(parameters)
-                and all(isinstance(values, list) and values for values in parameters.values())
-            )
-        )
-        if search_space_is_plannable:
-            planned_combos = plan_hparam.hparam_combos(recipe)
-            checkpoint_intervals = [
-                combo.get("runtime.ckpt_every_n_epochs", runtime.get("ckpt_every_n_epochs", 1))
-                for combo in planned_combos
-            ]
-            epoch_counts = [combo.get("runtime.epochs", runtime.get("epochs", 30)) for combo in planned_combos]
-            validation_intervals = [
-                combo.get("runtime.check_val_every_n_epoch", runtime.get("check_val_every_n_epoch", 1))
-                for combo in planned_combos
-            ]
-        else:
-            checkpoint_intervals = []
-            epoch_counts = []
-            validation_intervals = []
-        # Early stopping can occur before a wider interval fires, so test-selected tuning must save every epoch.
-        if any(type(interval) is not int or interval != 1 for interval in checkpoint_intervals):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "runtime.ckpt_every_n_epochs",
-                    "selection_split=test requires effective runtime.ckpt_every_n_epochs=1 for every trial.",
-                    None,
-                    {"effective_values": checkpoint_intervals},
-                )
-            )
-        if any(type(epochs) is not int or epochs <= 0 for epochs in epoch_counts):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "runtime.epochs",
-                    (
-                        "selection_split=test requires effective runtime.epochs to be a positive integer for "
-                        "every trial so each trial has an epoch checkpoint opportunity."
-                    ),
-                    None,
-                    {"effective_values": epoch_counts},
-                )
-            )
-        if decisions["label_name"].value in {"ahi", "arousal"} and any(
-            type(interval) is not int or interval != 1 for interval in validation_intervals
-        ):
-            issues.append(
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "runtime.check_val_every_n_epoch",
-                    (
-                        "selection_split=test requires effective runtime.check_val_every_n_epoch=1 for ahi/arousal "
-                        "so every tested checkpoint contains validation-fitted thresholds."
-                    ),
-                    None,
-                    {"effective_values": validation_intervals},
-                )
-            )
     if type(test_after_fit) is not bool:
         issues.append(
             DecisionIssue(
@@ -422,19 +327,6 @@ def _hparam_evaluation_issues(
                 {"evaluation_policy": evaluation},
             )
         )
-    if selection_split == "test" and test_after_fit is False:
-        issues.append(
-            DecisionIssue(
-                DecisionStatus.NEEDS_USER_INPUT,
-                "test_after_fit",
-                (
-                    "selection_split=test requires test_after_fit=true so every trial produces the frozen "
-                    "selection metric."
-                ),
-                "Should test_after_fit be true for test-selected hyper-parameter tuning?",
-                {"evaluation_policy": evaluation},
-            )
-        )
     if evaluation.get("final_eval_split") == "test" and "require_manual_unlock_for_final_test" not in evaluation:
         issues.append(
             needs_issue("final_eval_unlock", "Final test evaluation requires manual unlock policy.", high_impact)
@@ -450,7 +342,6 @@ def hparam_tune_issues(
 ) -> list[DecisionIssue]:
     search_value = recipe.get("search")
     search = search_value if isinstance(search_value, dict) else {}
-    profile_mode = "profile" in search
     execution_value = recipe.get("execution")
     execution = execution_value if isinstance(execution_value, dict) else {}
     runtime_value = recipe.get("runtime")
@@ -471,7 +362,7 @@ def hparam_tune_issues(
             variant=str(recipe.get("variant") or ""),
         )
     )
-    issues.extend(_hparam_search_budget_issues(search, profile_mode=profile_mode, high_impact=high_impact))
+    issues.extend(_hparam_search_budget_issues(search, high_impact=high_impact))
     issues.extend(_hparam_evaluation_issues(recipe, decisions, high_impact))
     return issues
 

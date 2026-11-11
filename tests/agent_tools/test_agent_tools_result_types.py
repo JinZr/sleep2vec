@@ -10,7 +10,7 @@ def test_result_types_reach_callers(tmp_path: Path):
         textwrap.dedent("""\
             from pathlib import Path
             from agent_tools import (
-                checkpoint_test_results, experiment_tracking,
+                experiment_tracking,
                 execution_snapshot, experiments,
                 experiment_io, experiment_sources, experiment_workspace, hparam_selection,
                 managed_scheduler, models,
@@ -147,10 +147,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                     config_path: str = diagnostic["config_path"]
                     diagnostic["blocking_issues"] = [1]  # type: ignore[list-item]
                     diagnostic["_source_config_bytes"] = "bytes"  # type: ignore[arg-type]
-                from types import MappingProxyType
-                from agent_tools.domain.finetune_hparam_profile import compile_finetune_balanced_profile
-                readonly: MappingProxyType[str, Any] = MappingProxyType({"data": {}, "finetune": {}})
-                compile_finetune_balanced_profile({}, readonly)  # type: ignore[arg-type]
                 fine = finetune_summary_body(Path("config.yaml"))
                 fine["model"]["channels"][0]["unknown"] = 1  # type: ignore[typeddict-unknown-key]
                 fine["model"]["layer_mix_present"] = "yes"  # type: ignore[typeddict-item]
@@ -298,7 +294,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                 next(run_artifacts.iter_registered_hparam_plans(
                     Path("/workspace"), "step", selection_metric="score", selection_mode="max", selection_split="val",
                 ))[1],
-                next(iter(hparam_selection.resolve_hparam_candidates(Path("/plan"), [])[1].values())),
             ):
                 plan_recipe: dict[str, Any] = hparam_plan["recipe"]
                 plan_runs: list[dict[str, Any]] = hparam_plan["runs"]
@@ -334,7 +329,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                 del frozen_input["sha256"]  # type: ignore[misc]
 
             def post_freeze_recipe_writers() -> None:
-                from agent_tools.domain.finetune_hparam_profile import compile_finetune_balanced_profile
                 frozen_recipe: dict[str, models.JsonValue] = {"inputs": {"config": "/config.yaml"}}
                 plan_contract.bind_plan_context(frozen_recipe)
                 plan_contract.bind_frozen_input_snapshot(frozen_recipe, "inputs.config", "/config.yaml", "a" * 64)
@@ -343,11 +337,6 @@ def test_result_types_reach_callers(tmp_path: Path):
                 plan_contract.bind_frozen_input_snapshot(
                     byte_recipe, "inputs.config", "/config.yaml", "a" * 64  # type: ignore[arg-type]
                 )
-                compiled_search, _issues = compile_finetune_balanced_profile({}, None)
-                optional_search: dict[str, models.JsonValue] | None = compiled_search
-                required_search: dict[str, models.JsonValue] = compiled_search  # type: ignore[assignment]
-                if compiled_search is not None:
-                    compiled_search["configurations"] = b"points"  # type: ignore[assignment]
 
             class FrozenRecipeHookAdapter(TaskAdapter):
                 def bind_effective_recipe(
@@ -515,25 +504,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             capabilities["preemption_enabled"] = 1  # type: ignore[typeddict-item]
             capabilities["reservation_count"] = "1"  # type: ignore[typeddict-item]
 
-            checkpoint_rows = checkpoint_test_results.validate_checkpoint_test_results(
-                [], "metric", {}, step_id="tune", run_id="run-001",
-            )
-            checkpoint_path: str = checkpoint_rows[0]["checkpoint_path"]
-            checkpoint_epoch: int = checkpoint_rows[0]["epoch"]
-            checkpoint_score: float = checkpoint_rows[0]["score"]
-            checkpoint_rows[0]["checkpoint_paths"]  # type: ignore[typeddict-item]
-            checkpoint_rows[0]["score"] = "0.5"  # type: ignore[typeddict-item]
-            checkpoint_rows[0]["epoch"] = 1.5  # type: ignore[typeddict-item]
-
-            class RankingRow(checkpoint_test_results.CheckpointTestResult):
-                checkpoint_sha256: str
-
-            ranking_rows: list[RankingRow] = []
-            winner = checkpoint_test_results.best_checkpoint_test_result(ranking_rows, "max")
-            winner_hash: str = winner["checkpoint_sha256"]
-            winner["checkpoint_sha256"] = 1  # type: ignore[typeddict-item]
-            winner["checkpoint_sha"]  # type: ignore[typeddict-item]
-
             minimal_identity: run_evidence.ProcessIdentity = {
                 "pid": 12, "process_group_id": 12, "process_start_token": "token",
             }
@@ -606,9 +576,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             selected_step["legacy_selection"] = "yes"  # type: ignore[typeddict-item]
             selected_row_status: str = selected_step["rows"][0]["status"]
             selected_step["rows"][0]["status"] = None  # type: ignore[assignment]
-            if "checkpoint_audit_rows" in selected_step:
-                audit_score: str = selected_step["checkpoint_audit_rows"][0]["score"]
-                selected_step["checkpoint_audit_rows"][0]["score"] = 0.5  # type: ignore[assignment]
             report_steps = hparam_selection._selection_report_steps([])
             report_steps[0]["step_id"] = 1  # type: ignore[typeddict-item]
             report_steps[0]["ranked"] = ["run-001"]  # type: ignore[list-item]

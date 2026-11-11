@@ -49,7 +49,6 @@ KERNEL_MODULES: frozenset[str] = frozenset(
         "experiments",
         "run_artifacts",
         "run_evidence",
-        "checkpoint_test_results",
         "hparam_runtime",
         "execution_snapshot",
         "managed_scheduler",
@@ -72,7 +71,6 @@ DOMAIN_MODULES: frozenset[str] = frozenset(
     {
         "domain.sidecar_summaries",
         "domain.finetune_summary",
-        "domain.finetune_hparam_profile",
         "domain.sex_age_summary",
         "domain.presets",
         "domain.index_csv",
@@ -97,7 +95,6 @@ MIXED_MODULES: frozenset[str] = frozenset(
         "decision_hparam",
         "plan_hparam",
         "plan_context",
-        "hparam_postprocess",
         "cli",
     }
 )

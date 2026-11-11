@@ -132,8 +132,7 @@ identify evaluated checkpoints, including all inputs to checkpoint averaging.
 
 External or final test data stays locked until the recorded decision allows it;
 see [selection and test access](../agent_contracts/external_test_locking.md#selection-and-test-access-policy).
-Direct finetune cannot select checkpoints on test; the supported route is a
-[one-configuration hparam plan](../agent_contracts/external_test_locking.md#test-selected-runtime-requirements).
+The test split is never a selection split.
 
 New tuning requests use static plans: author either exact points in
 `search.configurations` or a `search.parameters` grid, and plan each further
@@ -143,8 +142,6 @@ round as a new plan within the total budget after an
 [registration preflight](../agent_contracts/hparam_workflow.md#registration-preflight),
 [launch and queue](../agent_contracts/hparam_workflow.md#launch-and-queue), then
 [selection](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers).
-For an explicitly chosen static profile, the hparam adapter delegates expansion to
-[`finetune_hparam_profile.py`](../../agent_tools/domain/finetune_hparam_profile.py).
 The recipe contract owns candidate/config/argv validation and its evidence
 limits; [workspace finalization](../agent_contracts/experiment_workspace.md#finalization)
 owns report acceptance and final evidence checks.
@@ -262,8 +259,8 @@ carry those choices into launch and recovery.
    distinguishes them. [Run-manifest evidence](../agent_contracts/run_manifest.md#evidence-ownership)
    and [Slurm evidence](../agent_contracts/run_manifest.md#slurm-scheduler-evidence)
    own lifecycle interpretation.
-6. Select and consume candidates through the
-   [selection and consumer workflow](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers),
+6. Select candidates through the
+   [selection workflow](../agent_contracts/hparam_workflow.md#selection-and-selected-candidate-consumers),
    append meaningful [research notes](../agent_contracts/experiment_workspace.md#research-log),
    then follow [finalization](../agent_contracts/experiment_workspace.md#finalization).
 

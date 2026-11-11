@@ -1,4 +1,4 @@
-name: sleep2expert_ahi_test_tuning_example
+name: sleep2expert_ahi_val_tuning_example
 task: hparam_tune
 variant: sleep2expert
 
@@ -35,9 +35,9 @@ artifacts:
   overwrite: false
 
 evaluation_policy:
-  selection_metric: test_ahi_pearson
+  selection_metric: val_ahi_pearson
   selection_mode: max
-  selection_split: test
+  selection_split: val
   final_eval_split: test
   external_test_locked: false
   test_after_fit: true
@@ -55,9 +55,9 @@ decisions:
     value: false
     source: explicit_recipe
   train_val_test_policy:
-    value: test
+    value: val
     source: explicit_recipe
-    rationale: Select hyper-parameters on the test metric with test access unlocked.
+    rationale: Select hyper-parameters on validation evidence; post-fit test results do not change the selection split.
   test_after_fit:
     value: true
     source: explicit_recipe

@@ -372,11 +372,7 @@ def hparam_script_lines(
     external_test_policy = "# - This script evaluates the configured final test split."
     final_test_policy = "# - Final test evaluation was explicitly unlocked."
     if not final_external_test:
-        if test_after_fit and selection_split == "test":
-            external_test_policy = (
-                "# - Run commands evaluate every saved epoch checkpoint on the configured test split after fit."
-            )
-        elif test_after_fit:
+        if test_after_fit:
             external_test_policy = "# - Run commands evaluate the configured test split after fit."
         else:
             external_test_policy = "# - Run commands do not evaluate the configured test split."

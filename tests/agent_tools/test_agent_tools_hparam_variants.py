@@ -91,7 +91,7 @@ def test_finetune_config_bytes_use_variant_loader(monkeypatch, variant: str, con
         ("sleep2vec2", "age", "configs/sleep2vec2/ppg_age_finetune_large.yaml"),
     ],
 )
-def test_finetune_balanced_validation_stays_torch_free(variant: str, label: str, config_path: str):
+def test_finetune_config_validation_stays_torch_free(variant: str, label: str, config_path: str):
     script = """
 import builtins
 from pathlib import Path
@@ -111,7 +111,6 @@ validate_finetune_config_bytes(
     {
         "variant": sys.argv[1],
         "inputs": {"label_name": sys.argv[2]},
-        "search": {"profile": "finetune_balanced"},
     },
     Path(sys.argv[3]).read_bytes(),
 )

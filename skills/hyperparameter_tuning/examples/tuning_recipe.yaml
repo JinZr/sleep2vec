@@ -8,9 +8,9 @@ experiment:
   root: ASK_USER
   baseline: ASK_USER
 step:
-  id: tune-test
+  id: tune-val
   phase: train
-  purpose: Tune the model using test selection.
+  purpose: Tune the model using validation selection.
 base_recipe: recipes/templates/finetune_ppg_ahi.yaml
 # Starting example only: adjust the axes and points to the actual
 # base/runtime config, prior evidence and compute authority before planning.
@@ -29,9 +29,9 @@ search:
       yaml:/model/head/dropout: 0.1
 
 evaluation_policy:
-  selection_metric: test_ahi_pearson
+  selection_metric: val_ahi_pearson
   selection_mode: max
-  selection_split: test
+  selection_split: val
   external_test_locked: false
   test_after_fit: true
   final_eval_split: test
