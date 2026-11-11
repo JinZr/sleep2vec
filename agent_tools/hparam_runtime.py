@@ -381,8 +381,6 @@ def stop_hparam_run(run_dir: str | Path, run_id: str, *, reason: str) -> Path:
                         f"{', '.join(sorted(missing_execution_identity))}"
                     )
 
-                if previous.get("target") != "local":
-                    raise ValueError(f"Canonical run target must be local for run_id: {run_id}")
                 populated_process_fields = {
                     field for field in PROCESS_IDENTITY_FIELDS if previous.get(field) not in (None, "")
                 }

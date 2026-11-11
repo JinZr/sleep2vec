@@ -41,7 +41,7 @@ Consultation and plans:
 - `configs`: config path to structured summary, including the shape-claimed sleep2stat and `sex_age_baseline` families.
 - `plan_context`: plan-time index summary checks and plan Markdown.
 - `plans`: `doctor` reports and frozen plan publication; `preflight_plan` is the one validation pass both share.
-- `plan_contract`: run identities, paths, config bytes, and scripts shared by publication and registered-plan validation.
+- `plan_contract`: run identities, paths, config bytes, and scripts that plan publication produces.
 - `plan_hparam`: hparam plan materialization and the final-evaluation config snapshot.
 - `plan_rendering`: recipe fields rendered into argv and launch scripts.
 - `adapters/`: `base` declares the `TaskAdapter` protocol, `registry` maps task names to adapters, and one module per task carries that task's declarations and hooks.

@@ -685,8 +685,6 @@ def hparam_selection_lifecycle(
     selected_steps: list[HparamSelectionStep] = []
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
         manifest = registered["manifest"]
-        if manifest["plan_controller"] != "ordinary":
-            continue
         plans = [plan for plan in registered["plans"] if plan.get("task") == "hparam_tune"]
         if not plans:
             continue
@@ -769,9 +767,7 @@ def hparam_selection_lifecycle(
         bool(hparam_steps)
         and len(selected_steps) == len(hparam_steps)
         and all(
-            registered["manifest"]["plan_controller"] == "ordinary"
-            and bool(registered["plans"])
-            and all(plan.get("task") == "hparam_tune" for plan in registered["plans"])
+            bool(registered["plans"]) and all(plan.get("task") == "hparam_tune" for plan in registered["plans"])
             for registered in registered_steps
         )
     )

@@ -21,7 +21,7 @@ from typing import Any, Mapping
 from .. import plan_contract, plan_rendering, slurm
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision
 from ..models import ConfigSummaryInput, JsonValue, coerce_list
-from ..plan_contract import CompiledPlanContract, GenericCompiledPlanContract
+from ..plan_contract import GenericCompiledPlanContract
 from ..plan_rendering import finetune_loaded_split_values
 
 
@@ -244,7 +244,7 @@ class TaskAdapter:
         *,
         run_index_offset: int,
         config_bytes: bytes,
-    ) -> CompiledPlanContract:
+    ) -> GenericCompiledPlanContract:
         frozen_inputs = plan_contract.frozen_input_snapshots(recipe)
         source_config = plan_contract.resolve_frozen_repo_path(recipe, (recipe.get("inputs") or {}).get("config"))
         if source_config is None:

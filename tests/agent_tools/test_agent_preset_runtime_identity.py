@@ -270,34 +270,6 @@ def test_preset_invalid_identity_fails_before_workspace_creation(tmp_path: Path,
     assert not preset_runtime["workspace"].exists()
 
 
-def test_preset_coherent_command_and_script_hash_tamper_is_rejected(tmp_path: Path, preset_runtime, monkeypatch):
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
-    plan_dir = preset_runtime["workspace"] / "plan"
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-    assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
-    assert experiments.experiment_status(preset_runtime["workspace"])["summary"]["state"] == "ready_to_launch"
-    plan_path = plan_dir / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    old_command = plan["commands"][0]
-    changed_command = shlex.join(["python", *shlex.split(old_command)[1:]])
-    run = plan["runs"][0]
-    run["command"] = changed_command
-    plan["commands"] = [changed_command]
-    for script in (plan_dir / "run.sh", Path(run["script"])):
-        script.write_text(script.read_text().replace(old_command, changed_command, 1))
-    run["script_sha256"] = file_sha256(Path(run["script"]))
-    plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
-    rows = read_run_manifest(preset_runtime["workspace"])
-    rows[0]["script_sha256"] = run["script_sha256"]
-    write_rows(preset_runtime["workspace"] / "run_manifest.tsv", rows)
-    before = _workspace_files(preset_runtime["workspace"])
-
-    with pytest.raises(ValueError, match="commands differ from its frozen recipe"):
-        experiments.experiment_status(preset_runtime["workspace"])
-
-    assert _workspace_files(preset_runtime["workspace"]) == before
-
-
 @pytest.mark.parametrize("variant", _PRESET_SCRIPTS)
 def test_preset_manager_defaults_freeze_actual_python_commit_and_workdir(tmp_path: Path, preset_runtime, variant):
     preset_runtime["execution"] = {}

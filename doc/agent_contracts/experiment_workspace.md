@@ -396,8 +396,8 @@ sensitive data. Monitoring never launches pending work.
 
 ## Read-only status and advisory actions
 
-`experiment-status` strictly validates the experiment owner, every registered
-step and frozen plan control bundle, and canonical `run_manifest.tsv`, then
+`experiment-status` validates the experiment owner, every registered step,
+each registered plan's binding, and canonical `run_manifest.tsv`, then
 prints a deterministic snapshot computed from those records on demand; it
 writes no report or manifest. It may display already-recorded scheduler,
 process, health, checkpoint and runtime-manifest fields but never refreshes
@@ -411,16 +411,18 @@ launchable runs: a live [queue runner](hparam_workflow.md#direct-queue-runner)
 replaces that plan's `hparam-run-queue` advice with a `queue_runner_active`
 blocker that names the runner PID and log.
 
-Frozen recipe structure is validated by the same dictionary-only
-`decision_rules` owner used by planning, without consultation, policy decisions,
-config loading or external input/path probes. Layered recipes validate both
-source layers plus their effective-only overlay. A pure adapter hook may parse
-frozen config bytes solely to reproduce planner commands; source configs and
-other external inputs are not reopened. Recipe input snapshots and the frozen
-creator-host context reproduce run matrices, paths, derived configs, complete
-scripts and final-evaluation requirements through the same `plan_contract`
-owner as publication. Agreement between edited canonical rows and scripts is
-insufficient if they differ from that recipe-derived contract.
+A registered plan is read for its binding only: its step registers it,
+`plan.json`'s recipe equals `recipe.resolved.yaml` (and, for an hparam plan,
+the digest of that file recorded in `plan.json`), its experiment and step
+metadata equal the workspace and its step, and every plan run has a canonical
+row, with each step's plan run keys equal to its canonical keys. Status and
+finalization do not re-run recipe structure checks, recompile plans, or reread
+frozen configs and scripts, so a later edit to a finished run's frozen files is
+not reported here; the recorded hashes remain the record. Frozen bytes are
+verified where they are used: generated scripts and Slurm jobs check their
+config and script hashes before running, and the launch paths verify what they
+start or submit. `infer-launch`, `preset-launch` and their `run-stop` paths read
+only the plan they name.
 
 Step output projects registered `plan_controller`; run output projects canonical
 execution target and recorded Slurm node separately. Advisory argv arrays run on

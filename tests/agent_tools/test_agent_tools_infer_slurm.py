@@ -23,7 +23,6 @@ import yaml
 from agent_tools import (
     cli,
     execution_snapshot,
-    experiment_io,
     experiment_workspace,
     experiments,
     managed_scheduler,
@@ -149,11 +148,9 @@ def _read_registered_infer_plan(plan_dir: Path):
     assert step is not None
     return run_artifacts.read_registered_plan(
         plan_dir,
-        workspace=workspace,
         workspace_experiment=experiment,
         step_manifest=step,
         workspace_rows=rows,
-        expected_recipe_path=str(workspace / "recipe.yaml"),
     )
 
 
@@ -354,65 +351,23 @@ def test_infer_slurm_rejects_invalid_execution_contract(
     assert experiment_workspace.read_run_manifest(recipe_path.parent) == []
 
 
-@pytest.mark.parametrize("artifact", ["manager", "worker", "scheduler"])
-def test_infer_slurm_reader_rejects_changed_script(tmp_path: Path, artifact: str, _runtime_commit, _runtime_probe):
-    recipe_path = _infer_slurm_recipe(tmp_path, variant="sleep2vec", task="infer", runtime_commit=_runtime_commit)
-    plan_dir = recipe_path.parent / "plan"
-    assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
-    (run,) = _read_registered_infer_plan(plan_dir)["runs"]
-    path = {
-        "manager": plan_dir / "run.sh",
-        "worker": Path(run["script"]),
-        "scheduler": Path(run["scheduler_script"]),
-    }[artifact]
-    path.write_text(path.read_text() + "# unregistered edit\n")
-    manifest_path = recipe_path.parent / "run_manifest.tsv"
-    before = manifest_path.read_bytes()
-
-    with pytest.raises(ValueError, match="differs|changed"):
-        _read_registered_infer_plan(plan_dir)
-
-    assert manifest_path.read_bytes() == before
-
-
-def test_infer_slurm_reader_recompiles_coherently_edited_scheduler(tmp_path: Path, _runtime_commit, _runtime_probe):
-    recipe_path = _infer_slurm_recipe(tmp_path, variant="sleep2vec", task="infer", runtime_commit=_runtime_commit)
-    plan_dir = recipe_path.parent / "plan"
-    assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
-    plan_path = plan_dir / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    (run,) = plan["runs"]
-    scheduler_path = Path(run["scheduler_script"])
-    scheduler_path.write_text(scheduler_path.read_text() + "# coherent but unauthorized edit\n")
-    edited_digest = hashlib.sha256(scheduler_path.read_bytes()).hexdigest()
-    run["scheduler_script_sha256"] = edited_digest
-    plan_path.write_text(json.dumps(plan))
-    run_path = Path(run["run_dir"]) / "run.json"
-    run_payload = json.loads(run_path.read_text())
-    run_payload["scheduler_script_sha256"] = edited_digest
-    run_path.write_text(json.dumps(run_payload))
-    rows = experiment_workspace.read_run_manifest(recipe_path.parent)
-    rows[0]["scheduler_script_sha256"] = edited_digest
-    experiment_io.write_rows_at(recipe_path.parent / "run_manifest.tsv", rows)
-
-    with pytest.raises(ValueError, match="scheduler_script_sha256|Slurm script"):
-        _read_registered_infer_plan(plan_dir)
-
-
-def test_infer_slurm_reader_rejects_run_payload_drift(tmp_path: Path, _runtime_commit, _runtime_probe):
+def test_infer_launch_rejects_changed_job_script_before_submission(
+    tmp_path: Path, monkeypatch, _runtime_commit, _runtime_probe
+):
     plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
-    (run,) = plan["runs"]
-    run_path = Path(run["run_dir"]) / "run.json"
-    run_payload = json.loads(run_path.read_text())
-    run_payload["unexpected"] = True
-    run_path.write_text(json.dumps(run_payload, indent=2, sort_keys=True) + "\n")
-    manifest_path = plan_dir.parent / "run_manifest.tsv"
-    before = manifest_path.read_bytes()
+    fake = _FakeSlurm(monkeypatch, plan_dir, plan)
+    scheduler_script = Path(fake.run["scheduler_script"])
+    scheduler_script.write_text(scheduler_script.read_text() + "# unregistered edit\n")
 
-    with pytest.raises(ValueError, match="run payload differs from its frozen plan"):
-        _read_registered_infer_plan(plan_dir)
+    with pytest.raises(ValueError, match="Frozen Slurm script changed before submission"):
+        experiments.launch_infer_run(plan_dir, dry_run=False)
 
-    assert manifest_path.read_bytes() == before
+    # The submit pass checks job.sbatch against its frozen SHA-256 before recording launch evidence or calling Slurm.
+    row = _row(plan_dir)
+    assert fake.calls == []
+    assert row["status"] == "launch_failed"
+    assert "Frozen Slurm script changed before submission" in row["scheduler_reason"]
+    assert not experiment_workspace.has_managed_launch_evidence(row)
 
 
 def test_infer_launch_dry_run_then_one_submit_pass(tmp_path: Path, monkeypatch, _runtime_commit, _runtime_probe):
@@ -622,16 +577,59 @@ def test_infer_lifecycle_reads_workspace_state_only_under_run_lock(
 
 
 def test_infer_launch_untrusted_plan_does_not_invent_failure_state(tmp_path: Path, _runtime_commit, _runtime_probe):
-    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
-    script = Path(plan["runs"][0]["script"])
-    script.write_text(script.read_text() + "# edited after registration\n")
+    plan_dir, _plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    plan_path = plan_dir / "plan.json"
+    payload = json.loads(plan_path.read_text())
+    payload["recipe"]["runtime"]["batch_size"] = 64
+    plan_path.write_text(json.dumps(payload))
     manifest = plan_dir.parent / "run_manifest.tsv"
     before = manifest.read_bytes()
 
-    with pytest.raises(ValueError, match="differs|changed"):
+    with pytest.raises(ValueError, match="differs from recipe.resolved.yaml"):
         experiments.launch_infer_run(plan_dir, dry_run=False)
 
     assert manifest.read_bytes() == before
+
+
+def test_infer_launch_reads_only_its_target_plan(tmp_path: Path, monkeypatch, _runtime_commit, _runtime_probe):
+    plan_dir, plan = _build_infer_slurm_plan(tmp_path, _runtime_commit)
+    workspace = plan_dir.parent
+    experiment_path = workspace / "experiment.yaml"
+    experiment = yaml.safe_load(experiment_path.read_text())["experiment"]
+    broken_dir = workspace / "plans" / "unrelated"
+    broken_dir.mkdir(parents=True)
+    (broken_dir / "plan.json").write_text("{not json\n")
+    (workspace / "steps" / "unrelated").mkdir()
+    write_yaml(
+        workspace / "steps" / "unrelated" / "step.yaml",
+        {
+            "step": {"id": "unrelated", "phase": "evaluate", "purpose": "Hold a broken unrelated plan."},
+            "experiment_id": experiment["id"],
+            "plan_controller": "ordinary",
+            "recipe_path": "",
+            "plans": [str(broken_dir)],
+        },
+    )
+    with pytest.raises(ValueError):
+        experiments.experiment_status(workspace)
+    fake = _FakeSlurm(monkeypatch, plan_dir, plan)
+    read_plan_dirs = []
+    read_registered_plan = run_artifacts.read_registered_plan
+
+    def recording_reader(registered_plan_dir, **kwargs):
+        read_plan_dirs.append(Path(registered_plan_dir))
+        return read_registered_plan(registered_plan_dir, **kwargs)
+
+    monkeypatch.setattr(run_artifacts, "read_registered_plan", recording_reader)
+
+    preview = experiments.launch_infer_run(plan_dir)
+    launched = experiments.launch_infer_run(plan_dir, dry_run=False)
+    experiments.stop_infer_run(plan_dir, "run-000", reason="unrelated plan stays unread")
+
+    assert read_plan_dirs == [plan_dir, plan_dir, plan_dir]
+    assert preview.launch_rows[0]["target"] == "local"
+    assert launched.committed_rows[0]["status"] == "queued"
+    assert fake.count("bash") == 1
 
 
 def test_run_stop_cli_stops_unsubmitted_infer_plan_without_cancelling(

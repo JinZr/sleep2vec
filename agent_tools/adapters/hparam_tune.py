@@ -3,8 +3,8 @@
 The single composite adapter: its ``base_task`` is ``finetune``, so recipes
 carrying ``_base_recipe`` / ``_local_recipe`` layers close under its contract.
 
-Binds the hparam decision contract and compiles the plan contract for
-hyper-parameter plans.
+Binds the hparam decision contract for hyper-parameter plans; ``plan_hparam``
+materializes and compiles their plan contract.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .. import plan_contract, plan_hparam
+from .. import plan_hparam
 from ..decision_hparam import hparam_recipe_contract_issues, hparam_search_issues, hparam_tune_issues
 from ..decision_models import DecisionIssue, DecisionStatus, ResolvedDecision
 from ..models import ConfigSummaryInput, JsonValue
@@ -113,18 +113,6 @@ class HparamTuneAdapter(TaskAdapter):
 
     def registration_rows(self, plan: dict[str, Any]) -> list[dict[str, Any]]:
         return plan_hparam.hparam_manifest_rows(plan)
-
-    def compile_plan_contract(
-        self,
-        recipe: dict[str, Any],
-        out: Path,
-        *,
-        run_index_offset: int,
-        config_bytes: bytes,
-    ) -> plan_contract.HparamCompiledPlanContract:
-        return plan_hparam.compile_hparam_plan_contract(
-            recipe, out, run_index_offset=run_index_offset, config_bytes=config_bytes
-        )
 
 
 HPARAM_TUNE_ADAPTER = HparamTuneAdapter()

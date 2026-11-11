@@ -19,7 +19,6 @@ def test_result_types_reach_callers(tmp_path: Path):
 
             from agent_tools.adapters.base import TaskAdapter, recipe_inputs
             from agent_tools.decision_models import DecisionIssue
-            from agent_tools.adapters.hparam_tune import HPARAM_TUNE_ADAPTER
 
             from typing import Any, Literal
 
@@ -314,20 +313,8 @@ def test_result_types_reach_callers(tmp_path: Path):
             generic_compiled: plan_contract.GenericCompiledPlanContract = {
                 "runs": [generic_run], "commands": [], "script_text": "",
             }
-            generic_compiled["run_files"] = []  # type: ignore[typeddict-item]
-            generic_compiled["final_command"] = None  # type: ignore[typeddict-item]
             del generic_compiled["commands"]  # type: ignore[misc]
             del generic_compiled["script_text"]  # type: ignore[misc]
-            hparam_compiled = HPARAM_TUNE_ADAPTER.compile_plan_contract(
-                {}, Path("/plan"), run_index_offset=7, config_bytes=b"config",
-            )
-            hparam_launch: str = hparam_compiled["launch_script_text"]
-            hparam_final: str | None = hparam_compiled["final_command"]
-            hparam_compiled["commands"] = []  # type: ignore[typeddict-item]
-            hparam_compiled["script_text"] = ""  # type: ignore[typeddict-item]
-            del hparam_compiled["run_files"]  # type: ignore[misc]
-            del hparam_compiled["final_eval_config_required"]  # type: ignore[misc]
-            hparam_compiled["runs"][0]["custom"] = {"raw": [None, 1]}
             raw_plan, raw_recipe = run_artifacts._read_plan_documents(Path("/plan"))
             raw_plan["custom"] = {"raw": [None, 1]}
             raw_recipe["custom"] = None
@@ -361,28 +348,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             optional_bytes: bytes | None = row_contracts[0].get("config_bytes")
             required_bytes: bytes = row_contracts[0].get("config_bytes")  # type: ignore[assignment]
             row_contracts[0]["script_text"] = 7  # type: ignore[typeddict-item]
-
-            adapter = TaskAdapter()
-            for plan_result in (
-                adapter.compile_plan_contract({}, Path("/plan"), run_index_offset=7, config_bytes=b"config"),
-                HPARAM_TUNE_ADAPTER.compile_plan_contract(
-                    {}, Path("/plan"), run_index_offset=7, config_bytes=b"config",
-                ),
-            ):
-                launch_text: str = plan_result["launch_script_text"]
-                final_command: str | None = plan_result["final_command"]
-                plan_result["launch_script_text"] = b"bytes"  # type: ignore[arg-type]
-                plan_result["final_eval_config_required"] = "yes"  # type: ignore[arg-type]
-                plan_result["run_file"]  # type: ignore[typeddict-item]
-                for run_files in plan_result["run_files"]:
-                    file_bytes: bytes = run_files["config_bytes"]
-                    file_script: str = run_files["script_text"]
-                    invalid_bytes: str = run_files["config_bytes"]  # type: ignore[assignment]
-                    invalid_script: bytes = run_files["script_text"]  # type: ignore[assignment]
-                plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), plan_result)
-            plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), generic_compiled)
-            plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), hparam_compiled)
-            plan_contract.validate_final_eval_contract({}, {}, Path("/plan"), {})
 
             resources = slurm.normalize_resources({}, 1)
             cpus: int = resources["cpus_per_task"]
@@ -418,8 +383,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             default_files["/workspace/file"]["sha256"] = None  # type: ignore[typeddict-item]
 
             plan = run_artifacts.read_registered_plan(
-                "/plan", workspace="/workspace", workspace_experiment={},
-                step_manifest={}, workspace_rows=[], expected_recipe_path=None,
+                "/plan", workspace_experiment={}, step_manifest={}, workspace_rows=[],
             )
             key: tuple[str, str] = plan["run_keys"][0]
             plan["run_key"]  # type: ignore[typeddict-item]
