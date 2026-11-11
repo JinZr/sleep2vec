@@ -1,8 +1,9 @@
 """The consultation gate: where a recipe is judged ready, blocked, or in question.
 
-Layer 2 kernel. Folds structural rules, path and sidecar validation, adapter
-task hooks, experiment metadata, and resolved user decisions into one
-``DecisionReport``.
+Layer 2 kernel. Folds variant rules, path and sidecar validation, adapter
+task hooks, and resolved user decisions into one ``DecisionReport``. Recipe
+and decision-entry structure and experiment ownership are checked once before
+this gate by ``plans.evaluate_recipe``; the helpers for those checks live here.
 
 Holds the task-specific dispatch hoisted out of ``decision_paths`` and reaches
 tasks through the adapter registry.
@@ -215,8 +216,6 @@ def evaluate_consultation_gates(
     config_summary: ConfigSummaryInput | None,
     cli_args: dict | None,
     policy: dict,
-    *,
-    require_experiment: bool = True,
 ) -> DecisionReport:
     recipe = recipe or {}
     cli_args = cli_args or {}
@@ -267,11 +266,7 @@ def evaluate_consultation_gates(
         return DecisionReport(status=merge_status(issues), issues=issues, decisions=decisions)
     task_adapter = get_adapter(str(task_value))
     issues.extend(task_rules.variant_structure_issues(str(task_value), recipe.get("variant"), source_layer="effective"))
-
-    issues.extend(consultation_contract_issues(str(task_value), recipe, policy, source_layer="effective"))
-
-    if require_experiment:
-        issues.extend(experiment_consultation_issues(str(task_value), recipe))
+    # Recipe/decision structure and experiment ownership are checked once, before this gate, by plans.evaluate_recipe.
 
     for decision_field, rule in high_impact.items():
         if task_value not in rule.get("required_for_tasks", []):
@@ -552,14 +547,7 @@ def _base_task_issues(
         base_cli_args["user_decisions"] = {
             field: value for field, value in base_cli_args["user_decisions"].items() if field in base_decision_fields
         }
-    report = evaluate_consultation_gates(
-        base_task,
-        base_gate,
-        config_summary,
-        base_cli_args,
-        policy,
-        require_experiment=False,
-    )
+    report = evaluate_consultation_gates(base_task, base_gate, config_summary, base_cli_args, policy)
     issues = []
     for issue in report.blocking_issues():
         evidence = dict(issue.evidence)

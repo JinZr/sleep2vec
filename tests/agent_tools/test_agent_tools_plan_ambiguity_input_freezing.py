@@ -395,42 +395,6 @@ def test_unlock_final_test_rejects_variant_incompatible_explicit_config_before_w
     assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
 
 
-def test_unlock_final_test_detects_explicit_config_drift_before_workspace_mutation(tmp_path: Path, monkeypatch):
-    from sleep2vec import config as runtime_config
-
-    ckpt = tmp_path / "best.ckpt"
-    ckpt.write_text("checkpoint")
-    selected_config = tmp_path / "selected_run.yaml"
-    recipe = _hparam_recipe(
-        tmp_path,
-        parameters={"yaml:/finetune/task/output_dim": [31]},
-        ckpt_path=ckpt,
-        final_config_path=selected_config,
-    )
-    selected_bytes = _valid_final_config_bytes(tmp_path) + b"# Selected final-evaluation snapshot.\n"
-    selected_config.write_bytes(selected_bytes)
-    real_load_finetune_config = runtime_config.load_finetune_config
-    mutated = []
-
-    def mutate_source_after_validation(path: Path):
-        bundle = real_load_finetune_config(path)
-        if Path(path).read_bytes() == selected_bytes:
-            selected_config.write_text("{}\n")
-            mutated.append(selected_bytes)
-        return bundle
-
-    monkeypatch.setattr(runtime_config, "load_finetune_config", mutate_source_after_validation)
-    output_dir = tmp_path / "unlocked"
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=output_dir, unlock_final_test=True)
-
-    assert report.exit_code == 1
-    assert mutated == [selected_bytes]
-    assert any("changed while plan preflight" in issue.message for issue in report.issues)
-    assert not output_dir.exists()
-    assert not (tmp_path / "steps" / "unit-hparam-tune").exists()
-
-
 def test_unlock_final_test_freezes_explicit_config_without_yaml_search(tmp_path: Path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")

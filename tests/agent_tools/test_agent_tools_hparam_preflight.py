@@ -1006,64 +1006,6 @@ def test_staged_plan_publish_failure_restores_appended_runs(tmp_path: Path, monk
     assert not list(tmp_path.rglob(".plan.*.backup"))
 
 
-def test_hparam_plan_rejects_destination_appearing_during_preflight(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
-    plan_dir = workspace / "plans" / "tune"
-    preflight = run_artifacts.preflight_hparam_plan
-
-    def create_destination(physical_out, *, semantic_out):
-        snapshot = preflight(physical_out, semantic_out=semantic_out)
-        plan_dir.mkdir(parents=True)
-        (plan_dir / "other-session.txt").write_text("do not replace\n")
-        return snapshot
-
-    monkeypatch.setattr(run_artifacts, "preflight_hparam_plan", create_destination)
-    monkeypatch.setattr(
-        execution_snapshot,
-        "inspect_execution_target",
-        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
-    )
-
-    with pytest.raises(ValueError, match="output changed during preflight"):
-        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert (plan_dir / "other-session.txt").read_text() == "do not replace\n"
-    assert not (plan_dir / "plan.json").exists()
-    assert read_run_manifest(workspace) == []
-    assert _staging_dirs(workspace, plan_dir) == []
-
-
-def test_hparam_plan_rechecks_blocked_artifacts_created_after_preflight(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
-    plan_dir = workspace / "plans" / "tune"
-    effective, _cfg, _report = plans.evaluate_recipe(recipe)
-    ensure_experiment_workspace(effective, plan_dir, register_step=False)
-    competitor = plan_dir / "decisions.yaml"
-    validate_bound_recipe = plans._validate_bound_recipe
-
-    def inject_competitor(*args, **kwargs):
-        result = validate_bound_recipe(*args, **kwargs)
-        plan_dir.mkdir(parents=True)
-        competitor.write_text("user competitor\n")
-        return result
-
-    monkeypatch.setattr(plans, "_validate_bound_recipe", inject_competitor)
-    monkeypatch.setattr(
-        execution_snapshot,
-        "inspect_execution_target",
-        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
-    )
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    assert competitor.read_text() == "user competitor\n"
-    assert not (plan_dir / "plan.json").exists()
-    assert not (plan_dir / "runs").exists()
-    assert read_run_manifest(workspace) == []
-    assert _staging_dirs(workspace, plan_dir) == []
-
-
 @pytest.mark.parametrize("competitor_kind", ["file", "symlink"])
 def test_hparam_plan_rolls_back_blocked_artifact_created_after_final_guard(
     tmp_path: Path,
@@ -1083,7 +1025,7 @@ def test_hparam_plan_rolls_back_blocked_artifact_created_after_final_guard(
         nonlocal guard_calls
         guarded = guard_pass(*args, **kwargs)
         guard_calls += 1
-        if guard_calls == 2:
+        if guard_calls == 1:
             if competitor_kind == "symlink":
                 target = tmp_path / "user-decisions.yaml"
                 target.write_text("user competitor\n")

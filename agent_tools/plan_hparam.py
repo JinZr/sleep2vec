@@ -210,9 +210,6 @@ def final_test_checkpoint_issues(
                     {"final_eval_config_path": str(final_config), "preflight_before_workspace": True},
                 )
             )
-        drift_issue = _final_eval_config_drift_issue(recipe, final_config_snapshot)
-        if drift_issue is not None:
-            issues.append(drift_issue)
     issues.extend(
         path_issues(
             "infer",
@@ -282,31 +279,6 @@ def _read_final_eval_config_bytes(config_path: Any) -> bytes:
     if resolved is None or not resolved.is_file():
         raise ValueError(f"config is not a readable local file: {config_path}")
     return resolved.read_bytes()
-
-
-def _final_eval_config_drift_issue(recipe: dict, snapshot: BoundFinalEvalConfigSnapshot) -> DecisionIssue | None:
-    try:
-        current_bytes = _read_final_eval_config_bytes(snapshot["source_path"])
-    except (OSError, ValueError) as exc:
-        return DecisionIssue(
-            DecisionStatus.FAIL,
-            "final_eval_config_path",
-            f"Final evaluation config could not be re-read before planning: {exc}",
-            None,
-            {"preflight_before_workspace": True},
-        )
-    if current_bytes == snapshot["bytes"]:
-        return None
-    return DecisionIssue(
-        DecisionStatus.FAIL,
-        "final_eval_config_path",
-        "Final evaluation config changed while plan preflight was validating it.",
-        None,
-        {
-            "final_eval_config_path": snapshot["source_path"],
-            "preflight_before_workspace": True,
-        },
-    )
 
 
 def check_trial_init_from_sources(trial_inputs: dict, run_config: dict, combo: dict) -> None:

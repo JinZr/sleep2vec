@@ -61,7 +61,6 @@ def test_adapter_precommit_failure_removes_staging_without_publication(tmp_path:
         report=report,
         out=out,
         write_out=staging,
-        output_identity=None,
         generated_staging=True,
         run_index_offset=None,
         validate_only=False,

@@ -5,7 +5,8 @@ policy-dependent decision validation on top of the structural contract in
 ``decision_rules``, then stages and publishes a plan under the publication
 lock.
 
-``doctor`` reports consultation results without publishing runnable commands.
+``doctor`` runs the same single validation pass (``preflight_plan`` with
+``output_dir=None``) and reports it without publishing runnable commands.
 """
 
 from __future__ import annotations
@@ -340,7 +341,22 @@ def evaluate_recipe(
     checks the existing workspace metadata for compatibility. Consultation
     blockers and handled config-loading failures are returned in the report;
     unhandled loading, validation and I/O errors propagate."""
-    recipe = load_recipe_with_base(recipe_path)
+    return _evaluate_loaded_recipe(
+        load_recipe_with_base(recipe_path),
+        recipe_path,
+        user_decisions_path,
+        check_existing_experiment=check_existing_experiment,
+    )
+
+
+def _evaluate_loaded_recipe(
+    recipe: dict,
+    recipe_path: str | Path,
+    user_decisions_path: str | Path | None,
+    *,
+    check_existing_experiment: bool,
+) -> tuple[dict, ConfigSummaryInput | None, DecisionReport]:
+    # Structure -> decisions -> metadata/workspace identity -> config and gates, each checked once.
     source_recipe = copy.deepcopy(recipe)
     source = resolve_repo_path(recipe_path)
     if source is not None:
@@ -477,6 +493,7 @@ def _evaluate_config_consultation(
     source_config_path = resolve_repo_path(source_config)
     source_config_bytes = None
     if source_config_path is not None and source_config_path.is_file():
+        # The only read of the source config: validation, hashing and freezing all use these bytes.
         source_config_bytes = source_config_path.read_bytes()
 
     cfg: ConfigSummaryInput | None
@@ -493,19 +510,11 @@ def _evaluate_config_consultation(
             raise
         cfg = None
         config_error = str(exc)
-    config_changed_during_validation = False
-    if source_config_bytes is not None:
-        try:
-            config_changed_during_validation = (
-                source_config_path is None or source_config_path.read_bytes() != source_config_bytes
-            )
-        except OSError:
-            config_changed_during_validation = True
-        if cfg is not None and not config_changed_during_validation:
-            bound_cfg = dict(cfg)
-            bound_cfg["_source_config_bytes"] = source_config_bytes
-            bound_cfg["_source_config_sha256"] = hashlib.sha256(source_config_bytes).hexdigest()
-            cfg = bound_cfg
+    if source_config_bytes is not None and cfg is not None:
+        bound_cfg = dict(cfg)
+        bound_cfg["_source_config_bytes"] = source_config_bytes
+        bound_cfg["_source_config_sha256"] = hashlib.sha256(source_config_bytes).hexdigest()
+        cfg = bound_cfg
     consultation_cfg = dict(cfg) if cfg is not None else None
     if consultation_cfg is not None:
         consultation_cfg.pop("_source_config_bytes", None)
@@ -524,19 +533,6 @@ def _evaluate_config_consultation(
     )
     report = _append_issues(report, materialization_issues)
     report = _append_issues(report, binding_issues)
-    if config_changed_during_validation:
-        report = _append_issues(
-            report,
-            [
-                DecisionIssue(
-                    DecisionStatus.FAIL,
-                    "config",
-                    "Config changed while consultation gates were validating it.",
-                    None,
-                    {"config": str(source_config), "preflight_before_workspace": True},
-                )
-            ],
-        )
     report = _evaluate_required_channels_decision(report, cfg, recipe_adapter, user_decisions, recipe_decisions)
     report, override_issues = _evaluate_config_override_decisions(report, recipe, cfg, recipe_adapter)
     report = _evaluate_selected_config_decision(report, cfg, recipe_adapter, user_decisions, config_error)
@@ -856,22 +852,6 @@ def write_user_decision_template(
     return target, created
 
 
-def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: DecisionReport) -> DecisionReport:
-    """Apply task-specific doctor findings to an evaluated recipe/report pair.
-
-    Use the returned report for display, output publication, and exit status:
-    an adapter may return a replacement with additional warnings or blockers.
-    With no adapter, returns the original report. output_dir is currently unused
-    and is not passed to the adapter; this step does not write doctor artifacts.
-
-    Findings are read-only. Does not publish plans or launch runs. Adapter-handled
-    inspection failures become report issues; unhandled errors propagate. This is
-    not a substitute for preflight_plan.
-    """
-    adapter = get_adapter(recipe.get("task"))
-    return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report
-
-
 def doctor_runtime_diagnostics_supported(recipe: dict[str, Any]) -> bool:
     adapter = get_adapter(recipe.get("task"))
     return bool(adapter is not None and adapter.supports_doctor_runtime_diagnostics)
@@ -946,8 +926,6 @@ def _validate_bound_recipe(
     if report.exit_code == 0:
         if not isinstance(validated_config_bytes, bytes) or not isinstance(validated_config_sha256, str):
             raise ValueError("Successful plan preflight did not bind the source config bytes.")
-        if hashlib.sha256(validated_config_bytes).hexdigest() != validated_config_sha256:
-            raise ValueError("Validated source config bytes do not match their SHA-256.")
         return validated_config_bytes, validated_config_sha256, final_eval_config
     return None
 
@@ -959,7 +937,6 @@ def _materialize_adapter_plan(
     report: DecisionReport,
     out: Path,
     write_out: Path,
-    output_identity: tuple[int, int] | None,
     generated_staging: bool,
     run_index_offset: int | None,
     validate_only: bool,
@@ -1012,23 +989,6 @@ def _materialize_adapter_plan(
     staged_tree_sha256 = artifacts.plan_tree_sha256(write_out)
     plan_tree_entries = frozenset(path.name for path in write_out.iterdir()) if out == experiment_root(recipe) else None
     with plan_publication_lock(out):
-        report = _guard_pass_plan_publication(
-            report,
-            recipe,
-            out,
-            unlock_final_test=unlock_final_test,
-        )
-        if _has_output_artifact_issue(report):
-            if write_out.exists() and not write_out.is_symlink():
-                shutil.rmtree(write_out)
-            return report
-        current_output_identity = None
-        if os.path.lexists(out):
-            output_stat = out.lstat()
-            current_output_identity = (output_stat.st_dev, output_stat.st_ino)
-        if current_output_identity != output_identity:
-            shutil.rmtree(write_out)
-            raise ValueError(f"Atomic plan output changed during preflight: {out}")
         try:
             registration_state = _plan_registration_state(
                 recipe,
@@ -1044,7 +1004,7 @@ def _materialize_adapter_plan(
         if registration_state == "complete":
             shutil.rmtree(write_out)
             return _registered_plan_immutable_report(report, out)
-        out_preexisted = current_output_identity is not None
+        out_preexisted = os.path.lexists(out)
         if registration_state == "unregistered" and generated_staging:
             try:
                 publish_staged_plan_locked(
@@ -1086,10 +1046,8 @@ def _materialize_single_run_plan(
     report: DecisionReport,
     out: Path,
     write_out: Path,
-    output_identity: tuple[int, int] | None,
     generated_staging: bool,
     run_index_offset: int | None,
-    unlock_final_test: bool,
     validated_config_bytes: bytes,
 ) -> DecisionReport:
     root = experiment_root(recipe)
@@ -1141,25 +1099,8 @@ def _materialize_single_run_plan(
     manifest_rows = run_adapter.registration_rows(plan)
     staged_tree_sha256 = artifacts.plan_tree_sha256(write_out)
     plan_tree_entries = frozenset(path.name for path in write_out.iterdir()) if out == root else None
-    # Generic plans stay staged until the same locked publication gate as materialized hparam plans.
+    # Generic plans stay staged until the same locked publication step as materialized hparam plans.
     with plan_publication_lock(out):
-        report = _guard_pass_plan_publication(
-            report,
-            recipe,
-            out,
-            unlock_final_test=unlock_final_test,
-        )
-        if _has_output_artifact_issue(report):
-            if write_out != out and write_out.exists() and not write_out.is_symlink():
-                shutil.rmtree(write_out)
-            return report
-        current_output_identity = None
-        if os.path.lexists(out):
-            output_stat = out.lstat()
-            current_output_identity = (output_stat.st_dev, output_stat.st_ino)
-        if current_output_identity != output_identity:
-            shutil.rmtree(write_out)
-            raise ValueError(f"Atomic plan output changed during preflight: {out}")
         try:
             registration_state = _plan_registration_state(
                 recipe,
@@ -1176,7 +1117,7 @@ def _materialize_single_run_plan(
             if write_out != out:
                 shutil.rmtree(write_out)
             return _registered_plan_immutable_report(report, out)
-        out_preexisted = current_output_identity is not None
+        out_preexisted = os.path.lexists(out)
         if registration_state == "unregistered" and generated_staging:
             try:
                 publish_staged_plan_locked(
@@ -1237,12 +1178,14 @@ def build_plan(
     Consultation and handled precommit failures return a non-passing report;
     other exceptions propagate. A failure does not promise rollback of every
     workspace artifact. See doc/agent_contracts/ for the publication contracts."""
+    recipe: dict | None = None
     build_lock: AbstractContextManager
     if validate_only:
-        root = None
+        # Validate-only leaves the recipe load to preflight_plan, under the publication lock.
         build_lock = plan_publication_lock(Path(output_dir))
     else:
-        root = experiment_root(load_recipe_with_base(recipe_path))
+        recipe = load_recipe_with_base(recipe_path)
+        root = experiment_root(recipe)
         build_lock = plan_registration_lock(root) if root is not None else nullcontext()
     request = PlanBuildRequest(
         recipe_path=recipe_path,
@@ -1253,7 +1196,7 @@ def build_plan(
         validate_only=validate_only,
     )
     with build_lock:
-        return _build_plan(request=request, locked_root=root, check_locked_root=not validate_only)
+        return _build_plan(request=request, loaded_recipe=recipe)
 
 
 def _prepare_plan_staging(*, out: Path, plan_adapter: TaskAdapter | None) -> tuple[Path, bool]:
@@ -1268,12 +1211,7 @@ def _prepare_plan_staging(*, out: Path, plan_adapter: TaskAdapter | None) -> tup
     return Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent)), True
 
 
-def _build_plan(
-    *,
-    request: PlanBuildRequest,
-    locked_root: Path | None,
-    check_locked_root: bool,
-) -> DecisionReport:
+def _build_plan(*, request: PlanBuildRequest, loaded_recipe: dict | None) -> DecisionReport:
     out = canonical_local_experiment_root(request.output_dir, Path.cwd())
     preflight_recipe, cfg, report = preflight_plan(
         recipe_path=request.recipe_path,
@@ -1281,9 +1219,8 @@ def _build_plan(
         user_decisions_path=request.user_decisions_path,
         allow_unresolved=request.allow_unresolved,
         unlock_final_test=request.unlock_final_test,
+        recipe=loaded_recipe,
     )
-    if check_locked_root and experiment_root(preflight_recipe) != locked_root:
-        raise ValueError("Experiment root changed while acquiring the plan registration lock.")
     bound_config = _validate_bound_recipe(cfg, report)
     plan_adapter = get_adapter(preflight_recipe.get("task"))
     if _has_output_artifact_issue(report):
@@ -1304,7 +1241,7 @@ def _build_plan(
     if report.exit_code != 0 or bound_config is None:
         if request.validate_only:
             return report
-        preflight_failed_before_workspace = bool(experiment_metadata_issues(preflight_recipe)) or any(
+        preflight_failed_before_workspace = any(
             issue.field in {"experiment", "step", "execution.workdir"}
             or issue.field.startswith("experiment.")
             or issue.field.startswith("step.")
@@ -1314,15 +1251,6 @@ def _build_plan(
         if preflight_failed_before_workspace:
             return report
         with plan_publication_lock(out):
-            report = _guard_blocked_plan_publication(
-                report,
-                preflight_recipe,
-                out,
-                allow_unresolved=request.allow_unresolved,
-                unlock_final_test=request.unlock_final_test,
-            )
-            if _has_output_artifact_issue(report):
-                return report
             workspace, _step_dir = ensure_experiment_workspace(preflight_recipe, out, register_step=False)
             _write_questions(out, report)
             template = write_user_decision_template(out, preflight_recipe, report, preserve_existing=False)
@@ -1357,17 +1285,13 @@ def _build_plan(
         experiment["root"] = str(root)
     input_snapshots: list[JsonValue] = []
     if plan_adapter is not None:
-        input_paths = plan_adapter.frozen_input_paths(recipe)
         try:
             input_snapshots = [
-                {"field": field, "path": str(path), "sha256": file_sha256(path)} for field, path in input_paths
-            ]
-            report = _append_issues(report, plan_adapter.configured_input_issues(recipe, cfg))
-            current_snapshots = [
-                {"field": field, "path": str(path), "sha256": file_sha256(path)} for field, path in input_paths
+                {"field": field, "path": str(path), "sha256": file_sha256(path)}
+                for field, path in plan_adapter.frozen_input_paths(recipe)
             ]
         except OSError as exc:
-            report = _append_issues(
+            return _append_issues(
                 report,
                 [
                     DecisionIssue(
@@ -1379,22 +1303,6 @@ def _build_plan(
                     )
                 ],
             )
-        else:
-            if input_snapshots != current_snapshots:
-                report = _append_issues(
-                    report,
-                    [
-                        DecisionIssue(
-                            DecisionStatus.FAIL,
-                            "inputs",
-                            "An input file changed while the final plan snapshot was validating it.",
-                            None,
-                            {"preflight_before_workspace": True},
-                        )
-                    ],
-                )
-        if report.exit_code != 0:
-            return report
     # Preflight already resolved inputs.config as a path, so a passing recipe holds it as a string.
     inputs = recipe.get("inputs")
     source_config = inputs.get("config") if isinstance(inputs, dict) else None
@@ -1414,10 +1322,6 @@ def _build_plan(
         _assert_no_incomplete_step_registration(recipe, out)
     run_index_offset = _registered_plan_run_index(recipe, out)
 
-    output_identity = None
-    if plan_adapter is not None and os.path.lexists(out):
-        output_stat = out.lstat()
-        output_identity = (output_stat.st_dev, output_stat.st_ino)
     write_out, generated_staging = _prepare_plan_staging(out=out, plan_adapter=plan_adapter)
 
     if plan_adapter is not None and plan_adapter.materializes_plan:
@@ -1427,7 +1331,6 @@ def _build_plan(
             report=report,
             out=out,
             write_out=write_out,
-            output_identity=output_identity,
             generated_staging=generated_staging,
             run_index_offset=run_index_offset,
             validate_only=request.validate_only,
@@ -1442,10 +1345,8 @@ def _build_plan(
         report=report,
         out=out,
         write_out=write_out,
-        output_identity=output_identity,
         generated_staging=generated_staging,
         run_index_offset=run_index_offset,
-        unlock_final_test=request.unlock_final_test,
         validated_config_bytes=validated_config_bytes,
     )
 
@@ -1571,42 +1472,52 @@ def publish_staged_plan_locked(
 def preflight_plan(
     *,
     recipe_path: str | Path,
-    output_dir: str | Path,
+    output_dir: str | Path | None,
     user_decisions_path: str | Path | None = None,
     allow_unresolved: bool = False,
     unlock_final_test: bool = False,
+    recipe: dict | None = None,
 ) -> tuple[dict, ConfigSummaryInput | None, DecisionReport]:
-    """Check whether a recipe can be published at output_dir, without publishing it.
+    """Run plan validation once, without publishing anything.
 
     Returns (recipe, optional config summary, DecisionReport), retaining
-    evaluate_recipe's early-blocked materialization limits and adding workspace,
-    freezeability, task and output checks. Reads the inputs and existing artifacts
-    needed for these checks; launches no runs.
-    Expected blockers are reported, while unhandled loading/I/O errors propagate.
+    evaluate_recipe's early-blocked materialization limits and adding
+    freezeability, task preflight and command checks. With an output_dir it also
+    checks the experiment workspace and the plan output; output_dir=None is
+    doctor's publication-disabled path through the same validation. recipe is
+    the recipe already loaded from recipe_path (build_plan loads it once to pick
+    its lock); None loads it here. Reads the inputs and existing artifacts needed
+    for these checks; launches no runs. Expected blockers are reported, while
+    unhandled loading/I/O errors propagate.
 
     allow_unresolved permits a blocked draft, never a runnable unresolved plan.
     unlock_final_test is checked against the frozen evaluation policy, not a
-    substitute for it. A passing report does not reserve the output: build_plan
-    rechecks publication under its locks.
+    substitute for it. build_plan runs this under its registration lock and
+    publishes from this single validation pass.
 
     The recipe keeps evaluate_recipe's broad type: contract-blocked early
     returns precede its freeze check, so only a passing report establishes the
     JSON shape, and _build_plan narrows the recipe to dict[str, JsonValue] on
     its pass path."""
-    recipe, cfg, report = evaluate_recipe(recipe_path, user_decisions_path, check_existing_experiment=True)
-    # Static blockers, including NEEDS_USER_INPUT, must not restart reads through the later freeze checks.
+    recipe, cfg, report = _evaluate_loaded_recipe(
+        load_recipe_with_base(recipe_path) if recipe is None else recipe,
+        recipe_path,
+        user_decisions_path,
+        check_existing_experiment=True,
+    )
+    # Static blockers, including NEEDS_USER_INPUT, stop before the config, task and output checks.
     if cfg is None and any(
         issue.evidence.get("preflight_before_workspace") is True for issue in report.blocking_issues()
     ):
         return recipe, cfg, report
-    out = canonical_local_experiment_root(output_dir, Path.cwd())
-    metadata_unresolved = bool(experiment_metadata_issues(recipe)) or any(
+    out = None if output_dir is None else canonical_local_experiment_root(output_dir, Path.cwd())
+    metadata_unresolved = any(
         issue.field in {"experiment", "step"}
         or issue.field.startswith("experiment.")
         or issue.field.startswith("step.")
         for issue in report.blocking_issues()
     )
-    if not metadata_unresolved:
+    if out is not None and not metadata_unresolved:
         workspace_issue = validate_plan_output(
             recipe,
             out,
@@ -1620,37 +1531,29 @@ def preflight_plan(
     inputs_value = recipe.get("inputs")
     inputs = inputs_value if isinstance(inputs_value, dict) else {}
     source_config = inputs.get("config")
-    if source_config not in (None, "", "ASK_USER"):
-        source_path = resolve_repo_path(source_config)
-        try:
-            if source_path is not None and source_path.is_file():
-                source_path.read_text()
-                config_is_freezable = True
-            else:
-                config_is_freezable = False
-        except (OSError, UnicodeError):
-            config_is_freezable = False
-        if not config_is_freezable:
-            blocking_config_issue = next(
-                (issue for issue in report.blocking_issues() if issue.field == "config"),
-                None,
+    source_path = resolve_repo_path(source_config) if source_config not in (None, "", "ASK_USER") else None
+    # A stat, not a read: the config consultation already read and bound the only frozen bytes.
+    if source_config not in (None, "", "ASK_USER") and not (source_path is not None and source_path.is_file()):
+        blocking_config_issue = next(
+            (issue for issue in report.blocking_issues() if issue.field == "config"),
+            None,
+        )
+        if blocking_config_issue is not None and blocking_config_issue.status == DecisionStatus.FAIL:
+            # Keep the specific config failure (e.g. a missing file); it already blocks before the workspace.
+            blocking_config_issue.evidence["preflight_before_workspace"] = True
+        else:
+            report = _append_issues(
+                report,
+                [
+                    DecisionIssue(
+                        DecisionStatus.FAIL,
+                        "config",
+                        f"Config cannot be frozen from a local file: {source_config}",
+                        None,
+                        {"config": str(source_config), "preflight_before_workspace": True},
+                    )
+                ],
             )
-            if blocking_config_issue is not None and blocking_config_issue.status == DecisionStatus.FAIL:
-                blocking_config_issue.message = f"Config cannot be frozen from a local file: {source_config}"
-                blocking_config_issue.evidence["preflight_before_workspace"] = True
-            else:
-                report = _append_issues(
-                    report,
-                    [
-                        DecisionIssue(
-                            DecisionStatus.FAIL,
-                            "config",
-                            f"Config cannot be frozen from a local file: {source_config}",
-                            None,
-                            {"config": str(source_config), "preflight_before_workspace": True},
-                        )
-                    ],
-                )
     preflight_adapter = get_adapter(recipe.get("task"))
     if preflight_adapter is not None and (
         report.exit_code == 0 or (report.exit_code == 2 and preflight_adapter.preflight_on_unresolved)
@@ -1667,10 +1570,11 @@ def preflight_plan(
         commands = _commands_for_recipe(recipe, cfg)
         if not commands:
             report = _unsupported_command_report(report, str(recipe.get("task")))
-    successful_plan = report.exit_code == 0
-    if successful_plan:
+    if report.exit_code == 0:
         plan_contract.bind_plan_context(recipe)
-    if successful_plan:
+    if out is None:
+        return recipe, cfg, report
+    if report.exit_code == 0:
         report = _guard_pass_plan_publication(
             report,
             recipe,

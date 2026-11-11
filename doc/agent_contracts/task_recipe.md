@@ -85,13 +85,31 @@ metadata does not satisfy that requirement. Missing or unresolved ownership
 returns the existing `NEEDS_USER_INPUT` questions without probing config, data,
 workspace identity, or runtime. Legal user decisions still materialize first;
 ownership is filled in recipe fields, not new decision aliases. Base-task
-consultation with `require_experiment=False` and standalone diagnostics keep
-their existing scope.
+consultation does not repeat the ownership check, and standalone diagnostics
+keep their existing scope.
 
-Plan preflight also compares an existing `experiment.yaml` with the effective
-experiment identity before config/data inspection. Doctor does not add this
-workspace read. An absent manifest is not a reservation or authorization to
-register: final workspace validation and registration locks remain authoritative.
+Doctor and plan then compare an existing `experiment.yaml` with the effective
+experiment identity before config/data inspection. An absent manifest is not a
+reservation or authorization to register: workspace validation under the plan
+registration lock remains authoritative.
+
+`doctor` and `plan` share one validation pass, and each check runs once:
+
+1. Load the recipe (and its base recipe) once.
+2. Check recipe, decision-entry and user-decision structure.
+3. Resolve decisions (user file > CLI > recipe `decisions:` > section field >
+   config), check experiment ownership and the existing experiment identity.
+4. Run the consultation gates, reading the source config once; those bytes are
+   validated, hashed and later frozen, and the file is not reread to detect edits.
+5. Run task preflight and command rendering. Plan also checks the experiment
+   workspace and its output directory here; doctor has no plan output.
+6. Plan only: stage the bundle, publish it atomically into the checked output
+   directory, and register it under the plan registration and publication locks.
+
+`doctor` stops after step 5 with publication disabled, so doctor and plan reach
+the same verdict for the same recipe and decisions; `plan` can still fail on
+its output directory, workspace registration, or (for hparam) the staged
+registration preflight.
 
 `plan.json` and `recipe.resolved.yaml` must contain the same complete effective
 recipe. Retained base/local recipe copies are source audit only; launch,
@@ -131,9 +149,8 @@ Within one `doctor` or `plan` consultation, index checks reuse the accepted
 config summary and subject keys from successful, complete local survival or
 multilabel sidecar validation. This is one validation view, not a cross-call
 cache: later invocations reread inputs, and registration and launch retain
-independent checks. Failed or deferred validation keeps its existing path, and
-config-byte drift checks remain in force. Full subject key sets stay in memory,
-not reports or frozen artifacts.
+independent checks. Failed or deferred validation keeps its existing path.
+Full subject key sets stay in memory, not reports or frozen artifacts.
 
 Read the completed command's report and exit code together. For a normally
 completed `doctor` or `plan` consultation, PASS or nonblocking WARN returns 0,

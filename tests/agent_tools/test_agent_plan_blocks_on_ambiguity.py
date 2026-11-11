@@ -461,63 +461,6 @@ def test_generic_blocked_plan_rejects_foreign_output_entry(tmp_path: Path):
     assert read_run_manifest(workspace) == []
 
 
-def test_generic_blocked_plan_rechecks_foreign_entry_created_after_preflight(tmp_path: Path, monkeypatch):
-    source = tmp_path / "source"
-    recipe = write_finetune_recipe(source, include_label=False)
-    workspace = tmp_path / "workspace"
-    payload = yaml.safe_load(recipe.read_text())
-    payload["experiment"]["root"] = str(workspace)
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    plan_dir = workspace / "plans" / "blocked"
-    ensure_experiment_workspace(payload, plan_dir, register_step=False)
-    validate_bound_recipe = plans._validate_bound_recipe
-
-    def inject_competitor(*args, **kwargs):
-        result = validate_bound_recipe(*args, **kwargs)
-        (plan_dir / "runs").mkdir(parents=True)
-        return result
-
-    monkeypatch.setattr(plans, "_validate_bound_recipe", inject_competitor)
-    before = {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()}
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    assert any(issue.evidence.get("unexpected_paths") == [str(plan_dir / "runs")] for issue in report.issues)
-    assert {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()} == before
-    assert (plan_dir / "runs").is_dir()
-    assert read_run_manifest(workspace) == []
-
-
-def test_generic_pass_rechecks_blocked_artifacts_created_after_preflight(tmp_path: Path, monkeypatch):
-    source = tmp_path / "source"
-    recipe = write_finetune_recipe(source)
-    workspace = tmp_path / "workspace"
-    payload = yaml.safe_load(recipe.read_text())
-    payload["experiment"]["root"] = str(workspace)
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    plan_dir = workspace / "plans" / "current"
-    ensure_experiment_workspace(payload, plan_dir, register_step=False)
-    competitor = plan_dir / "decisions.yaml"
-    validate_bound_recipe = plans._validate_bound_recipe
-
-    def inject_competitor(*args, **kwargs):
-        result = validate_bound_recipe(*args, **kwargs)
-        plan_dir.mkdir(parents=True)
-        competitor.write_text("user competitor\n")
-        return result
-
-    monkeypatch.setattr(plans, "_validate_bound_recipe", inject_competitor)
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    assert competitor.read_text() == "user competitor\n"
-    assert not (plan_dir / "plan.json").exists()
-    assert not (plan_dir / "runs").exists()
-    assert read_run_manifest(workspace) == []
-
-
 @pytest.mark.parametrize("competitor_kind", ["file", "symlink"])
 def test_generic_pass_rolls_back_blocked_artifact_created_after_final_guard(
     tmp_path: Path,
@@ -541,7 +484,7 @@ def test_generic_pass_rolls_back_blocked_artifact_created_after_final_guard(
         nonlocal guard_calls
         guarded = guard_pass(*args, **kwargs)
         guard_calls += 1
-        if guard_calls == 2:
+        if guard_calls == 1:
             if competitor_kind == "symlink":
                 target = tmp_path / "user-decisions.yaml"
                 target.write_text("user competitor\n")

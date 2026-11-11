@@ -186,12 +186,9 @@ class TaskAdapter:
         unlock_final_test: bool,
         output_dir: Path | None = None,
     ) -> list[DecisionIssue]:
-        """Extra issues evaluated only during preflight_plan (not doctor)."""
+        """Extra task issues evaluated by preflight_plan, which doctor and plan share; output_dir is None
+        for doctor."""
         return []
-
-    def prepare_doctor_report(self, recipe: dict[str, Any], report: DecisionReport) -> DecisionReport:
-        """Add task-specific read-only doctor findings."""
-        return report
 
     def doctor_runtime_card(self, recipe: dict[str, Any]) -> str | None:
         """Return a read-only target runtime diagnostic for doctor."""

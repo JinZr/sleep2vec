@@ -56,8 +56,7 @@ from .plans import (
     build_plan,
     doctor_runtime_card,
     doctor_runtime_diagnostics_supported,
-    evaluate_recipe,
-    prepare_doctor_report,
+    preflight_plan,
     write_doctor_outputs,
 )
 from .progress import format_progress, read_progress
@@ -205,8 +204,8 @@ def _add_consultation_commands(sub: argparse._SubParsersAction) -> None:
     doctor = _command(
         sub,
         "doctor",
-        "Run consultation, runtime, and task diagnostics for a recipe. Reports blocking questions "
-        "instead of guessing them; does not publish runnable commands.",
+        "Run plan's validation for a recipe without publishing a plan, plus runtime diagnostics. Reports "
+        "blocking questions instead of guessing them; does not publish runnable commands.",
     )
     doctor.add_argument("--recipe", required=True, help="Path to the task recipe YAML to diagnose.")
     doctor.add_argument(
@@ -486,14 +485,17 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         flush=True,
     )
     print("Doctor phase: consultation", file=sys.stderr, flush=True)
-    recipe, _cfg, report = evaluate_recipe(args.recipe, args.user_decisions)
+    # Plan's own validation pass with publication disabled: doctor and plan reach the same verdict.
+    recipe, _cfg, report = preflight_plan(
+        recipe_path=args.recipe,
+        output_dir=None,
+        user_decisions_path=args.user_decisions,
+    )
     if not report.blocking_issues() and doctor_runtime_diagnostics_supported(recipe):
         print("Doctor phase: runtime diagnostics", file=sys.stderr, flush=True)
         runtime_card = doctor_runtime_card(recipe)
         if runtime_card is not None:
             print(runtime_card, file=sys.stderr, flush=True)
-    print("Doctor phase: task diagnostics", file=sys.stderr, flush=True)
-    report = prepare_doctor_report(args.output_dir, recipe, report)
     print(report_text(report), flush=True)
     print("Doctor phase: publish outputs", file=sys.stderr, flush=True)
     template = write_doctor_outputs(args.output_dir, recipe, report)
