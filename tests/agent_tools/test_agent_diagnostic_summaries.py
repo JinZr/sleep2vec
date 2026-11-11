@@ -61,8 +61,10 @@ def test_config_dispatch_preserves_summary_identity_and_original_path(tmp_path: 
         assert summary_path.read_bytes() == b"authored: snapshot\n"
         return payload
 
-    monkeypatch.setattr(configs, "looks_like_sleep2stat_config_data", lambda data: data == {"authored": "snapshot"})
-    monkeypatch.setattr(configs, "sleep2stat_config_summary", fake_summary)
+    monkeypatch.setattr(
+        configs.sleep2stat, "looks_like_sleep2stat_config_data", lambda data: data == {"authored": "snapshot"}
+    )
+    monkeypatch.setattr(configs.sleep2stat, "sleep2stat_config_summary", fake_summary)
     result = configs.config_summary(path, config_bytes=b"authored: snapshot\n")
     assert result is payload
     assert result["extra"] == {"raw": True}
