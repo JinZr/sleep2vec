@@ -26,7 +26,6 @@ Read by question:
 │   ├── status.md
 │   ├── ranking.csv
 │   ├── hparam_selection.md
-│   ├── experiment_ranking.csv
 │   └── final.md
 ├── steps/<step.id>/step.yaml
 └── <plan directory>/
@@ -49,9 +48,8 @@ hyphens, and underscores. Step phase is one of `prepare`, `train`, `evaluate`,
 or `analyze`. Every step file uses the shared
 `{step, experiment_id, plan_controller, recipe_path, plans}` envelope.
 `plan_controller` is the only owner of whether the step has a plan owner.
-`experiment-register-step` initially records `unassigned` with no recipe or
-plans; the first planner binds it to `ordinary`, and that binding cannot later
-change.
+The first planner creates the step and binds it to `ordinary`, the only
+controller; a step manifest with any other controller is rejected.
 
 Existing experiment and step metadata are read through the workspace owner and
 merged through their reducers. Missing files may be created only by their
@@ -157,7 +155,7 @@ still-live operation rather than starting another attempt. Missing or lost
 completion evidence remains uncertain even if a process disappears; do not retry
 a side effect to obtain a cleaner receipt. Uncertain submission is not definite
 failure; follow the [Slurm uncertainty rules](run_manifest.md#stopping-and-uncertain-states).
-Managed ordinary infer/evaluate now uses the shared Slurm transaction; older
+Managed ordinary infer now uses the shared Slurm transaction; older
 manual wrappers remain historical and are not repaired or adopted by this flow.
 
 ### Execution identity legend
@@ -395,7 +393,7 @@ fact should not create an entry.
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
 | `experiment-status` | Validate and display the [read-only snapshot](#read-only-status-and-advisory-actions). |
-| `experiment-rank`, `experiment-finalize` | Write experiment ranking; commit completion only under [finalization](#finalization). |
+| `experiment-finalize` | Commit completion only under [finalization](#finalization). |
 
 By default `hparam-monitor` rereads canonical state and observes the frozen
 current plan every `--poll-seconds` (60 seconds) until terminal; `--once` makes
@@ -441,8 +439,7 @@ exact envelope: missing required, extra or aliased entries fail closed. In a
 workspace-root plan, plan-owned artifacts remain strict while canonical
 workspace siblings are outside that envelope. Physical publication/validation
 precedes step ownership. Historical blocked plans without `decisions.yaml`
-remain readable. Plans bind the registered step's core `id`, `phase`, `purpose`;
-manifest-owned `inputs` and `outputs` remain valid metadata.
+remain readable. Plans bind the registered step's `id`, `phase`, and `purpose`.
 
 A registered plan's step must have the `ordinary` `plan_controller`. A
 registered step with no materialized plan and no canonical rows blocks

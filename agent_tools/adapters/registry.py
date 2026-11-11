@@ -22,7 +22,7 @@ from .embedding_extraction import EMBEDDING_EXTRACTION_ADAPTER
 # task-keyed ones.
 from .finetune import FINETUNE_ADAPTER
 from .hparam_tune import HPARAM_TUNE_ADAPTER
-from .infer_evaluate import EVALUATE_ADAPTER, INFER_ADAPTER
+from .infer import INFER_ADAPTER
 from .preset_prepare import PRESET_PREPARE_ADAPTER
 from .sleep2stat import SLEEP2STAT_ADAPTER
 
@@ -31,7 +31,6 @@ _REGISTERED_ADAPTERS = (
     EMBEDDING_EXTRACTION_ADAPTER,
     PRESET_PREPARE_ADAPTER,
     INFER_ADAPTER,
-    EVALUATE_ADAPTER,
     FINETUNE_ADAPTER,
     HPARAM_TUNE_ADAPTER,
 )

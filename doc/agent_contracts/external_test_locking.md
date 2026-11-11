@@ -15,7 +15,7 @@ authorize final evaluation.
 | --- | --- | --- | --- |
 | Validation-selected tuning without post-fit test | `selection_split: val` | `test_after_fit: false` | Test may remain locked. |
 | Validation-selected tuning with post-fit test | `selection_split: val` | `test_after_fit: true` | `external_test_locked: false`; results do not change the selection split. |
-| Direct `infer` / `evaluate` on test | `eval_split: test` | Not a post-fit operation | Both `external_test_locked: false` and `final_test_unlocked: true`. |
+| Direct `infer` on test | `eval_split: test` | Not a post-fit operation | Both `external_test_locked: false` and `final_test_unlocked: true`. |
 
 For finetune and hparam recipes, omitted `test_after_fit` is materialized as
 `evaluation_policy.test_after_fit=true` before consultation, with a

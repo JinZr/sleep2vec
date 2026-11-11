@@ -34,7 +34,7 @@ def test_experiment_finalize_rejects_unmaterialized_step(tmp_path):
             {
                 "step": {"id": "evaluate", "phase": "evaluate", "purpose": "Run external evaluation."},
                 "experiment_id": "status-unit",
-                "plan_controller": "unassigned",
+                "plan_controller": "ordinary",
                 "recipe_path": "",
                 "plans": [],
             },

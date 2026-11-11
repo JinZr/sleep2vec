@@ -1,8 +1,8 @@
-"""Projections, status advice, and ranking validation over acquired evidence.
+"""Projections, status advice, and hparam ranking validation over recorded evidence.
 
-Layer 0 leaf. Consumes ``experiment_sources`` observations plus the run
-manifest and produces the experiment status snapshot, monitor results, the
-hparam-selection lifecycle view, and candidate ranking.
+Layer 0 leaf. Consumes the run manifest plus ``experiment_sources`` checkpoint
+evidence checks and produces the experiment status snapshot, monitor results,
+and the hparam-selection lifecycle view.
 
 Recipe fields are consistency guards here; ``run_manifest.tsv`` remains the
 lifecycle owner, so nothing in this module advances a run's status.
@@ -12,51 +12,29 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from contextlib import nullcontext
 import csv
 import io
 import json
-import math
 from pathlib import Path
 import re
 import shlex
-import stat
 from typing import Any, TypedDict
 
-from . import (
-    experiment_io as exp_io,
-    experiment_sources,
-    experiment_workspace,
-    managed_scheduler,
-    run_artifacts as artifacts,
-    run_evidence as evidence,
-)
+from . import experiment_sources, managed_scheduler, run_artifacts as artifacts, run_evidence as evidence
 from .experiment_workspace import (
     SUCCESS_STATUSES,
     TERMINAL_STATUSES,
     managed_run_key,
     managed_run_parameters,
-    merge_run_row,
-    read_managed_yaml_mapping,
-    read_run_manifest,
-    resolve_external_run_row,
     resolve_run_row,
     scheduler_direct_controller,
     scheduler_type,
     stopped_runs_without_reason,
-    validate_checkpoint_ownership,
-    validate_frozen_run_update,
-    validate_managed_run_rows,
     validate_scheduler_run_identity,
     validated_run_key,
 )
 from .manifests import utc_now
 from .models import JsonValue
-
-
-class CheckpointMetric(TypedDict):
-    metric: str
-    value: str
 
 
 class HparamSelectionReportSnapshot(TypedDict):
@@ -208,27 +186,9 @@ class ExperimentStatusSnapshot(TypedDict):
     decision: ExperimentStatusDecision
 
 
-_local_checkpoint_rows = experiment_sources._local_checkpoint_rows
-_metric_scope = experiment_sources._metric_scope
-_metric_split = experiment_sources._metric_split
-_remote_checkpoint_rows = experiment_sources._remote_checkpoint_rows
 checkpoint_evidence_host = experiment_sources.checkpoint_evidence_host
-subprocess = experiment_sources.subprocess
 validate_checkpoint_evidence_rows = experiment_sources.validate_checkpoint_evidence_rows
-wandb_run_payload = experiment_sources.wandb_run_payload
-wandb_runs = experiment_sources.wandb_runs
 
-WANDB_RUN_FIELDS = {
-    "status",
-    "state",
-    "wandb_run_id",
-    "wandb_url",
-    "wandb_entity",
-    "wandb_project",
-    "wandb_group",
-    "created_at",
-    "updated_at",
-}
 HPARAM_SELECTION_METADATA_FIELDS = {
     "selection_task",
     "selection_mode",
@@ -256,208 +216,6 @@ _HPARAM_RANKING_BASE_FIELDS = (
     "checkpoint_sha256",
 )
 _HPARAM_RANKING_OPTIONAL_FIELDS = ("epoch", "run_manifest", "source", "status")
-
-
-def update_experiment_wandb(root: Path, *, entity: str, project: str, group: str, remote: str | None = None) -> None:
-    path = root / "experiment_manifest.tsv"
-    rows = exp_io.read_rows_at(path, remote=remote)
-    if not rows:
-        experiment_path = root / "experiment.yaml"
-        manifest = read_managed_yaml_mapping(
-            exp_io.read_text_at(experiment_path, remote=remote),
-            source=f"Managed experiment manifest {experiment_path}",
-        )
-        experiment: Any = manifest.get("experiment") if isinstance(manifest, dict) else {}
-        rows = [
-            {
-                "experiment_id": experiment["id"],
-                "experiment_root": str(root),
-                "remote_host": "",
-                "task": "",
-                "selection_metric": "",
-                "selection_mode": "",
-                "created_at": utc_now(),
-            }
-        ]
-    rows[0].update(
-        {
-            "wandb_entity": entity,
-            "wandb_project": project,
-            "wandb_group": group,
-            "updated_at": utc_now(),
-        }
-    )
-    exp_io.write_rows_at(path, rows, remote=remote)
-
-
-def wandb_run_observations(
-    run_rows: Sequence[Mapping[str, str]], wandb_rows: Sequence[Mapping[str, Any]]
-) -> list[dict[str, JsonValue]]:
-    validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
-    observations: dict[tuple[str, str], dict[str, JsonValue]] = {}
-    wandb_run_ids: dict[tuple[str, str], str] = {}
-    for row in wandb_rows:
-        if "trial_id" in row:
-            raise ValueError("Historical trial_id W&B evidence is unsupported.")
-        existing = resolve_external_run_row(run_rows, row)
-        if existing is None:
-            continue
-        key = validated_run_key(existing)
-        incoming_wandb_run_id = str(row.get("wandb_run_id") or "")
-        known_wandb_run_id = wandb_run_ids.get(key) or str(existing.get("wandb_run_id") or "")
-        if incoming_wandb_run_id and known_wandb_run_id and incoming_wandb_run_id != known_wandb_run_id:
-            raise ValueError(
-                f"Ambiguous W&B runs for managed run {key[0]} / {key[1]}: "
-                f"{known_wandb_run_id} and {incoming_wandb_run_id}"
-            )
-        if incoming_wandb_run_id:
-            wandb_run_ids[key] = incoming_wandb_run_id
-        fields = WANDB_RUN_FIELDS
-        if scheduler_type(existing) == "slurm" or existing.get("terminal_status_owner") == "scheduler_sidecar":
-            fields = fields - {"status"}
-        update = {
-            "step_id": key[0],
-            "run_id": key[1],
-            **{field: row[field] for field in fields if field in row},
-        }
-        observations[key] = merge_run_row(observations.get(key, {}), update)
-    rows = list(observations.values())
-    validate_managed_run_rows(rows, source="W&B run observations", cardinality="one_per_run")
-    return rows
-
-
-def experiment_run_rows(root: Path, *, remote: str | None = None) -> list[dict[str, str]]:
-    # SSH reads use the remote workspace, whose run lock this process cannot take.
-    with nullcontext() if remote else experiment_workspace.managed_run_lock(root):
-        return read_run_manifest(root, remote=remote)
-
-
-def managed_metric_rows(
-    run_rows: Sequence[Mapping[str, str]], metric_rows: Sequence[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
-    validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
-    rows = []
-    wandb_run_ids: dict[tuple[str, str], str] = {}
-    for metric_row in metric_rows:
-        if "trial_id" in metric_row:
-            raise ValueError("Historical trial_id metric evidence is unsupported.")
-        run_row = resolve_external_run_row(run_rows, metric_row)
-        if run_row is None:
-            continue
-        key = validated_run_key(run_row)
-        incoming_wandb_run_id = str(metric_row.get("wandb_run_id") or "")
-        known_wandb_run_id = wandb_run_ids.get(key) or str(run_row.get("wandb_run_id") or "")
-        if incoming_wandb_run_id and known_wandb_run_id and incoming_wandb_run_id != known_wandb_run_id:
-            raise ValueError(
-                f"Ambiguous W&B runs for managed run {key[0]} / {key[1]}: "
-                f"{known_wandb_run_id} and {incoming_wandb_run_id}"
-            )
-        if incoming_wandb_run_id:
-            wandb_run_ids[key] = incoming_wandb_run_id
-        row = dict(metric_row)
-        row.update(
-            {
-                field: run_row[field]
-                for field in ("experiment_id", "step_id", "run_id", "run_name", "parameter_summary", "version")
-                if run_row.get(field) not in (None, "")
-            }
-        )
-        rows.append(row)
-    validate_managed_run_rows(rows, source="managed metrics", cardinality="many_per_run")
-    return rows
-
-
-def checkpoint_rows(root: Path, *, remote: str | None = None) -> list[experiment_sources.CheckpointObservation]:
-    previous_rows = exp_io.read_rows_at(root / "checkpoint_manifest.tsv", remote=remote, require_managed_identity=True)
-    validate_managed_run_rows(previous_rows, source="checkpoint_manifest.tsv", cardinality="many_per_run")
-    with nullcontext() if remote else experiment_workspace.managed_run_lock(root):
-        runs = read_run_manifest(root, remote=remote)
-    eligible_runs = []
-    for run in runs:
-        if "runtime_dir" not in run or "checkpoint_dir" not in run:
-            raise ValueError(f"Managed run is missing frozen artifact paths: {run['step_id']} / {run['run_id']}")
-        if bool(run["runtime_dir"]) != bool(run["checkpoint_dir"]):
-            raise ValueError(f"Managed run has partial frozen artifact paths: {run['step_id']} / {run['run_id']}")
-        if run["runtime_dir"]:
-            eligible_runs.append(run)
-    eligible_keys = {managed_run_key(run) for run in eligible_runs}
-    runs_by_key = {managed_run_key(run): run for run in runs}
-    for row in previous_rows:
-        owner_run = runs_by_key.get(managed_run_key(row))
-        if owner_run is None:
-            raise ValueError(
-                f"Checkpoint manifest row does not belong to an eligible managed run: "
-                f"{row['step_id']} / {row['run_id']}"
-            )
-        if managed_run_key(owner_run) not in eligible_keys:
-            raise ValueError(
-                f"Checkpoint manifest row does not belong to an eligible managed run: "
-                f"{row['step_id']} / {row['run_id']}"
-            )
-        evidence_host = checkpoint_evidence_host(owner_run, remote)
-        validate_frozen_run_update(owner_run, row, require_checkpoint_ownership=evidence_host is None)
-        if evidence_host:
-            validate_checkpoint_ownership(owner_run, row)
-    previous_checkpoint_keys = {
-        managed_run_key(row) for row in previous_rows if row.get("checkpoint_path") not in (None, "")
-    }
-    for run in eligible_runs:
-        if managed_run_key(run) not in previous_checkpoint_keys:
-            continue
-        evidence_host = checkpoint_evidence_host(run, remote)
-        if evidence_host:
-            try:
-                runtime_exists = exp_io.path_exists_at(run["runtime_dir"], remote=evidence_host)
-                checkpoint_exists = exp_io.path_exists_at(run["checkpoint_dir"], remote=evidence_host)
-            except RuntimeError as exc:
-                raise RuntimeError(f"SSH checkpoint scan failed on {evidence_host}: {exc}") from exc
-            if not runtime_exists or not checkpoint_exists:
-                raise RuntimeError(
-                    f"SSH checkpoint scan found a missing frozen artifact directory with existing inventory on "
-                    f"{evidence_host}: {run['step_id']} / {run['run_id']}"
-                )
-        else:
-            for field in ("runtime_dir", "checkpoint_dir"):
-                try:
-                    info = Path(str(run[field])).lstat()
-                except FileNotFoundError as exc:
-                    raise ValueError(
-                        f"Managed {field} is missing for a run with existing checkpoint inventory: "
-                        f"{run['step_id']} / {run['run_id']} / {run[field]}"
-                    ) from exc
-                if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                    raise ValueError(
-                        f"Managed {field} is not a directory: " f"{run['step_id']} / {run['run_id']} / {run[field]}"
-                    )
-    validate_checkpoint_evidence_rows(runs, previous_rows, remote=remote)
-    if not eligible_runs:
-        return []
-    rows: list[experiment_sources.CheckpointObservation] = []
-    for run in eligible_runs:
-        evidence_host = checkpoint_evidence_host(run, remote)
-        if evidence_host:
-            rows.extend(_remote_checkpoint_rows([run], evidence_host))
-        else:
-            rows.extend(_local_checkpoint_rows([run]))
-    validate_managed_run_rows(rows, source="checkpoint scan", cardinality="many_per_run")
-    return rows
-
-
-def best_metric_for_checkpoint(row: Mapping[str, Any], metrics: list[dict[str, str]]) -> CheckpointMetric:
-    epoch = artifacts.epoch_number(row.get("epoch"))
-    key = managed_run_key(row)
-    same_run = [item for item in metrics if managed_run_key(item) == key]
-    for item in same_run:
-        validate_frozen_run_update(row, item)
-    matches = [
-        item
-        for item in same_run
-        if artifacts.epoch_number(item.get("epoch")) == epoch and item.get("metric_scope") == "validation"
-    ]
-    if not matches:
-        return {"metric": "", "value": ""}
-    chosen = matches[0]
-    return {"metric": chosen.get("metric", ""), "value": chosen.get("value", "")}
 
 
 def monitor_run_row(
@@ -566,95 +324,6 @@ def monitor_run_row(
         observation.pop("target", None)
         observation.pop("host", None)
     return observation
-
-
-def candidate_rows(
-    run_rows: Sequence[Mapping[str, str]], metric_rows: Sequence[Mapping[str, str]], metric: str
-) -> list[dict[str, JsonValue]]:
-    validate_managed_run_rows(run_rows, source="run_manifest.tsv", cardinality="one_per_run")
-    validate_managed_run_rows(metric_rows, source="metrics_manifest.tsv", cardinality="many_per_run")
-    runs_by_key = {managed_run_key(run): run for run in run_rows}
-    owned_metrics = []
-    for metric_row in metric_rows:
-        run_row = runs_by_key.get(managed_run_key(metric_row))
-        if run_row is None:
-            raise ValueError(
-                f"Metric row is not managed by run_manifest.tsv: "
-                f"{metric_row.get('step_id', '')} / {metric_row.get('run_id', '')}"
-            )
-        validate_frozen_run_update(run_row, metric_row)
-        owned_metrics.append((metric_row, run_row))
-    rows: list[dict[str, JsonValue]] = []
-    for metric_row, run_row in owned_metrics:
-        if metric_row.get("metric") != metric:
-            continue
-        score = artifacts.float_or_none(metric_row.get("value"))
-        if score is None:
-            continue
-        rows.append(
-            {
-                "experiment_id": run_row.get("experiment_id", ""),
-                "step_id": run_row["step_id"],
-                "run_id": run_row["run_id"],
-                "run_name": run_row.get("run_name", ""),
-                "parameter_summary": run_row.get("parameter_summary", ""),
-                "version": run_row.get("version", ""),
-                "epoch": metric_row.get("epoch", ""),
-                "metric": metric,
-                "score": score,
-                "metric_scope": metric_row.get("metric_scope") or _metric_scope(metric),
-                "source": metric_row.get("source", ""),
-                "wandb_run_id": metric_row.get("wandb_run_id", ""),
-            }
-        )
-    validate_managed_run_rows(rows, source="candidate metrics", cardinality="many_per_run")
-    return rows
-
-
-def rank_candidates(
-    rows: list[dict[str, JsonValue]], checkpoints: Sequence[Mapping[str, str]], *, mode: str
-) -> list[dict[str, JsonValue]]:
-    validate_managed_run_rows(rows, source="candidate metrics", cardinality="many_per_run")
-    validate_managed_run_rows(checkpoints, source="checkpoint_manifest.tsv", cardinality="many_per_run")
-    for checkpoint in checkpoints:
-        run = resolve_run_row(rows, checkpoint)
-        if run is not None:
-            validate_frozen_run_update(run, checkpoint)
-    reverse = mode == "max"
-    ranked = _best_rows(rows, mode=mode)
-    for row in ranked:
-        row["checkpoint_path"] = _checkpoint_for_metric_row(row, checkpoints)
-    ranked = artifacts.assign_ranks(ranked, key="score", reverse=reverse)
-    validate_managed_run_rows(ranked, source="experiment ranking", cardinality="one_per_run")
-    return ranked
-
-
-def write_history_csv(path: Path, rows: Sequence[Mapping[str, Any]], *, remote: str | None = None) -> None:
-    if not rows:
-        exp_io.write_rows_at(path, [], remote=remote)
-        return
-    fieldnames = sorted({key for row in rows for key in row})
-    buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows)
-    exp_io.write_text_at(path, buffer.getvalue(), remote=remote)
-
-
-def merge_rows(existing: list[dict[str, str]], new_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    validate_managed_run_rows(existing, source="metrics_manifest.tsv", cardinality="many_per_run")
-    validate_managed_run_rows(new_rows, source="incoming metrics", cardinality="many_per_run")
-    order = []
-    by_key = {}
-    for row in [*existing, *new_rows]:
-        key = tuple(
-            str(row.get(field, ""))
-            for field in ("step_id", "run_id", "version", "epoch", "metric", "source", "wandb_run_id")
-        )
-        if key not in by_key:
-            order.append(key)
-        by_key[key] = row
-    return [by_key[key] for key in order]
 
 
 def monitor_report(rows: Sequence[Mapping[str, Any]]) -> str:
@@ -1448,7 +1117,7 @@ def _plan_advice(
                 ]
                 action_id = "hparam-run-queue"
                 control_host = remote
-            elif plan["task"] in {"infer", "evaluate"} and all(scheduler_type(row) == "slurm" for row in plan_rows):
+            elif plan["task"] == "infer" and all(scheduler_type(row) == "slurm" for row in plan_rows):
                 argv = ["python", "-m", "agent_tools", "infer-launch", "--plan-dir", plan["path"], "--execute"]
                 action_id = "infer-launch"
                 control_host = remote
@@ -1578,69 +1247,3 @@ def _optional_text(value: Any) -> str | None:
 
 def _table_text(value: Any) -> str:
     return "" if value is None else str(value).replace("|", "/")
-
-
-def write_wandb_report(root: Path, rows: Sequence[Mapping[str, Any]], *, remote: str | None = None) -> None:
-    lines = ["# W&B Sync", "", f"Synced runs: {len(rows)}", ""]
-    for row in rows[:20]:
-        lines.append(f"- `{row.get('version')}`: {row.get('state', '')} {row.get('wandb_url', '')}")
-    exp_io.write_text_at(root / "reports" / "wandb.md", "\n".join(lines) + "\n", remote=remote)
-
-
-def write_rank_report(
-    root: Path, metric: str, mode: str, rows: Sequence[Mapping[str, JsonValue]], *, remote: str | None = None
-) -> None:
-    lines = ["# Candidate Ranking", "", f"Metric: `{metric}` ({mode})", ""]
-    if rows:
-        lines.append("| rank | run | setting | score | epoch | scope | checkpoint |")
-        lines.append("|---:|---|---|---:|---:|---|---|")
-        for row in rows:
-            run_label = f"{row.get('step_id', '')} / {row.get('run_id')} — {row.get('run_name', '')}".strip(" /—")
-            lines.append(
-                f"| {row.get('rank')} | {run_label} | "
-                f"{str(row.get('parameter_summary', '')).replace('|', '/')} | {row.get('score')} | "
-                f"{row.get('epoch', '')} | {row.get('metric_scope', '')} | `{row.get('checkpoint_path', '')}` |"
-            )
-    else:
-        lines.append("No metric rows matched.")
-    exp_io.write_text_at(root / "reports" / "experiment_ranking.md", "\n".join(lines) + "\n", remote=remote)
-
-
-def _checkpoint_for_metric_row(row: Mapping[str, JsonValue], checkpoints: Sequence[Mapping[str, str]]) -> str:
-    raw_epoch = row.get("epoch")
-    key = managed_run_key(row)
-    same_run = [item for item in checkpoints if managed_run_key(item) == key]
-    if raw_epoch not in (None, ""):
-        try:
-            numeric_epoch = float(str(raw_epoch))
-        except ValueError:
-            return ""
-        if not math.isfinite(numeric_epoch) or not numeric_epoch.is_integer():
-            return ""
-        epoch = int(numeric_epoch)
-        for item in same_run:
-            if artifacts.epoch_number(item.get("epoch")) == epoch:
-                return item.get("checkpoint_path", "")
-        return ""
-    best = [item for item in same_run if item.get("is_best_by_val") == "true"]
-    if best:
-        return best[0].get("checkpoint_path", "")
-    last = [item for item in same_run if item.get("is_last") == "true"]
-    return last[0].get("checkpoint_path", "") if last else ""
-
-
-def _best_rows(rows: list[dict[str, JsonValue]], *, mode: str) -> list[dict[str, JsonValue]]:
-    reverse = mode == "max"
-    best: dict[tuple[str, ...], dict[str, JsonValue]] = {}
-    for row in rows:
-        key = managed_run_key(row)
-        if key is None:
-            continue
-        if key not in best:
-            best[key] = row
-            continue
-        current = artifacts.sortable_score(row.get("score"), reverse)
-        previous = artifacts.sortable_score(best[key].get("score"), reverse)
-        if (reverse and current > previous) or (not reverse and current < previous):
-            best[key] = row
-    return list(best.values())

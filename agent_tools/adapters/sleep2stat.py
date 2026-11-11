@@ -436,53 +436,6 @@ class Sleep2statAdapter(TaskAdapter):
         }
         return self.commands(recipe, summary)
 
-    def validation_commands(self, recipe: dict[str, Any]) -> list[str] | None:
-        inputs_value = recipe.get("inputs")
-        inputs = inputs_value if isinstance(inputs_value, dict) else {}
-        commands = []
-        if inputs.get("config"):
-            commands.append(
-                render_command(["python", "-m", "sleep2stat", "validate-config", "--config", inputs["config"]])
-            )
-            commands.append(render_command(["python", "utils/check_configs.py", inputs["config"]]))
-        commands.append(render_command(["python", "-m", "agent_tools", "skills", "--validate"]))
-        return commands
-
-    def expected_artifacts(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
-    ) -> list[dict[str, str]]:
-        cfg = config_summary
-        run_dir = _sleep2stat_config_run_dir(cfg)
-        if not run_dir:
-            return []
-        sleep2stat: Any = cfg.get("sleep2stat") if cfg else {}
-        outputs = (sleep2stat or {}).get("outputs") or {}
-        compression = outputs.get("compression", "gzip")
-        global_tables = outputs.get("global_tables") or {}
-        event_suffix = ".csv.gz" if compression == "gzip" else ".csv"
-        expected = [
-            {"name": "sleep2stat config snapshot", "path": f"{run_dir}/config.yaml"},
-            {"name": "sleep2stat CLI args", "path": f"{run_dir}/cli_args.yaml"},
-            {"name": "sleep2stat run manifest", "path": f"{run_dir}/run_manifest.json"},
-            {"name": "sleep2stat record manifest", "path": f"{run_dir}/record_manifest.csv"},
-            {"name": "sleep2stat progress", "path": f"{run_dir}/status/progress.json"},
-            {"name": "sleep2stat model summary", "path": f"{run_dir}/tables/model_summary.csv"},
-            {"name": "sleep2stat analyzer summary", "path": f"{run_dir}/tables/analyzer_summary.csv"},
-            {"name": "sleep2stat per-record events", "path": f"{run_dir}/per_record/<record_id>/events{event_suffix}"},
-            {"name": "sleep2stat per-record night stats", "path": f"{run_dir}/per_record/<record_id>/night_stats.json"},
-            {
-                "name": "sleep2stat per-record result manifest",
-                "path": f"{run_dir}/per_record/<record_id>/result_manifest.csv",
-            },
-            {"name": "sleep2stat optional per-record arrays", "path": f"{run_dir}/per_record/<record_id>/arrays.npz"},
-        ]
-        if global_tables.get("night_stats", True):
-            expected.append({"name": "sleep2stat night stats", "path": f"{run_dir}/tables/night_stats.csv"})
-        for table in ("epoch_alignment", "second_alignment", "event_alignment"):
-            if global_tables.get(table, False):
-                expected.append({"name": f"sleep2stat {table}", "path": f"{run_dir}/tables/{table}{event_suffix}"})
-        return expected
-
     def index_summary_inputs_override(
         self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> tuple[list[Any], Any, list[Any]] | None:

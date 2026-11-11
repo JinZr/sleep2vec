@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_tools import configs, plan_context
+from agent_tools import configs
 from agent_tools.domain import sidecar_summaries
 
 
@@ -71,20 +71,3 @@ def test_config_dispatch_preserves_summary_identity_and_original_path(tmp_path: 
     assert path.read_bytes() == b"authored: original\n"
     assert len(seen_paths) == 1
     assert not seen_paths[0].exists()
-
-
-def test_context_skill_keeps_raw_discovery_values(monkeypatch):
-    owners = {"raw": "owners"}
-    relevant = {"raw": "references"}
-    monkeypatch.setattr(
-        plan_context,
-        "list_skills",
-        lambda: [
-            {"name": 7, "path": None, "task_types": ["finetune"], "owners": owners, "relevant_index": relevant},
-        ],
-    )
-    skill, documents = plan_context.skill_context("finetune")
-    assert skill == {"name": 7, "path": None, "owners": owners}
-    assert skill["owners"] is owners
-    assert documents is relevant
-    assert plan_context.skill_context("unmatched") == ({"name": None, "path": None, "owners": []}, [])

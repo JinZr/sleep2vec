@@ -293,7 +293,7 @@ def test_remote_writes_do_not_retry_after_losing_actual_success(tmp_path, monkey
         assert len((tmp_path / "events.jsonl").read_text().splitlines()) == 1
     elif operation == "mkdir":
         assert (tmp_path / "reports").is_dir()
-        assert (tmp_path / "wandb" / "history").is_dir()
+        assert not (tmp_path / "wandb").exists()
     else:
         assert target.read_bytes() == b"new\r\n"
 

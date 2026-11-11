@@ -299,30 +299,25 @@ def test_sex_age_config_family_blocks_root_finetune_variant(tmp_path: Path):
     )
 
 
-def test_sex_age_config_family_blocks_root_infer_and_evaluate_variants(tmp_path: Path):
+def test_sex_age_config_family_blocks_root_infer_variant(tmp_path: Path):
     config = _write_survival_config(tmp_path)
     ckpt = tmp_path / "model.ckpt"
     ckpt.write_text("checkpoint")
-    for task in ("infer", "evaluate"):
-        case = tmp_path / task
-        case.mkdir()
-        recipe = _infer_recipe(case, config, ckpt)
-        payload = yaml.safe_load(recipe.read_text())
-        payload["task"] = task
-        payload["variant"] = "sleep2vec"
-        payload["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
-        _write_yaml(recipe, payload)
+    recipe = _infer_recipe(tmp_path, config, ckpt)
+    payload = yaml.safe_load(recipe.read_text())
+    payload["variant"] = "sleep2vec"
+    _write_yaml(recipe, payload)
 
-        _recipe, _cfg, report = evaluate_recipe(recipe)
+    _recipe, _cfg, report = evaluate_recipe(recipe)
 
-        assert report.exit_code == 1
-        assert any(
-            issue.field == "variant" and "requires variant=sex_age_baseline" in issue.message for issue in report.issues
-        )
+    assert report.exit_code == 1
+    assert any(
+        issue.field == "variant" and "requires variant=sex_age_baseline" in issue.message for issue in report.issues
+    )
 
 
 @pytest.mark.parametrize("variant", [None, "", "ASK_USER"], ids=["missing", "blank", "ask-user"])
-@pytest.mark.parametrize("task", ["finetune", "infer", "evaluate"])
+@pytest.mark.parametrize("task", ["finetune", "infer"])
 def test_sex_age_config_family_leaves_unresolved_variant_to_consultation(
     tmp_path: Path,
     task: str,

@@ -19,7 +19,6 @@ SUBCOMMAND_GROUPS = {
     "Kernel": {
         "repo-summary",
         "runtime-sync",
-        "collect-runs",
         "hparam-launch",
         "infer-launch",
         "infer-stop",
@@ -30,13 +29,9 @@ SUBCOMMAND_GROUPS = {
         "progress",
         "experiment-init",
         "experiment-note",
-        "experiment-register-step",
         "experiment-finalize",
-        "experiment-wandb-sync",
-        "experiment-index-checkpoints",
         "experiment-monitor",
         "experiment-status",
-        "experiment-rank",
         "hparam-stop",
         "hparam-select",
     },
@@ -45,7 +40,7 @@ SUBCOMMAND_GROUPS = {
         "index-summary",
         "preset-summary",
     },
-    "Mixed": {"skills", "doctor", "context", "plan"},
+    "Mixed": {"skills", "doctor", "plan"},
 }
 
 RUNNABLE_TASK_VARIANT_MATRIX = [
@@ -55,14 +50,14 @@ RUNNABLE_TASK_VARIANT_MATRIX = [
     ("preset_prepare", "sleep2expert", "sleep2expert/preprocess/save_dataset_presets.py"),
     *[
         (task, variant, f"{variant}.{'finetune' if task in {'finetune', 'hparam_tune'} else 'infer'}")
-        for task in ("finetune", "hparam_tune", "infer", "evaluate")
+        for task in ("finetune", "hparam_tune", "infer")
         for variant in models.SUPPORTED_VARIANTS
     ],
 ]
 
 REJECTED_TASK_VARIANT_MATRIX = [
-    *[(task, None) for task in ("preset_prepare", "finetune", "hparam_tune", "infer", "evaluate")],
-    *[(task, "unsupported") for task in ("preset_prepare", "finetune", "hparam_tune", "infer", "evaluate")],
+    *[(task, None) for task in ("preset_prepare", "finetune", "hparam_tune", "infer")],
+    *[(task, "unsupported") for task in ("preset_prepare", "finetune", "hparam_tune", "infer")],
     *[("sleep2stat", variant) for variant in models.SUPPORTED_VARIANTS],
     ("preset_prepare", "sex_age_baseline"),
 ]
@@ -84,11 +79,11 @@ def _subcommand_help(parser: argparse.ArgumentParser, name: str) -> str | None:
     return next((choice.help for choice in subparsers._choices_actions if choice.dest == name), None)
 
 
-def test_cli_has_exactly_29_subcommands():
+def test_cli_has_exactly_23_subcommands():
     _parser, subcommands = _parser_contract()
 
     assert set(subcommands) == set.union(*SUBCOMMAND_GROUPS.values())
-    assert len(subcommands) == 29
+    assert len(subcommands) == 23
 
 
 def test_every_subcommand_documents_itself():
@@ -172,14 +167,14 @@ def test_architecture_cli_triage_matches_parser_and_ownership():
 @pytest.mark.parametrize(
     ("original", "replacement"),
     [
-        ("29 subcommands", "27 subcommands"),
-        ("Kernel (22)", "Kernel (20)"),
+        ("23 subcommands", "21 subcommands"),
+        ("Kernel (17)", "Kernel (15)"),
         ("infer-launch, ", ""),
         ("infer-launch, ", "unknown-command, "),
         ("infer-launch, infer-stop", "infer-launch, infer-launch"),
         ("**Domain (3)**", "**Kernel (3)**"),
-        ("**Mixed (4)**", "**Other (4)**"),
-        ("skills, doctor, context, plan", "skills, doctor, context, infer-stop"),
+        ("**Mixed (3)**", "**Other (3)**"),
+        ("skills, doctor, plan", "skills, doctor, infer-stop"),
     ],
 )
 def test_architecture_cli_triage_guard_rejects_drift(original: str, replacement: str):
@@ -192,7 +187,7 @@ def test_architecture_cli_triage_guard_rejects_drift(original: str, replacement:
 
 def test_architecture_cli_triage_guard_rejects_omission_with_matching_counts():
     document = (Path(cli.__file__).parent / "ARCHITECTURE.md").read_text(encoding="utf-8")
-    document = document.replace("29 subcommands", "28 subcommands").replace("Kernel (22)", "Kernel (21)")
+    document = document.replace("23 subcommands", "22 subcommands").replace("Kernel (17)", "Kernel (16)")
     document = document.replace("infer-launch, ", "", 1)
 
     with pytest.raises(AssertionError):
@@ -495,15 +490,6 @@ def test_doctor_runtime_card_does_not_echo_failed_probe_output(monkeypatch):
     assert "/secret/path" not in card
 
 
-def test_collect_runs_cli_contract():
-    parser, subcommands = _parser_contract()
-    actions = _actions(subcommands["collect-runs"])
-    args = parser.parse_args(["collect-runs", "--root", "workspace", "--output", "runs.csv"])
-
-    assert {name for name, action in actions.items() if action.required} == {"root", "output"}
-    assert args.root == "workspace"
-
-
 def test_hparam_launch_cli_contract():
     parser, subcommands = _parser_contract()
     actions = _actions(subcommands["hparam-launch"])
@@ -646,16 +632,6 @@ def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeyp
         "  rank 2: CUDA out of memory",
         f"Wrote {status}",
     ]
-
-
-def test_experiment_rank_cli_contract():
-    parser, subcommands = _parser_contract()
-    actions = _actions(subcommands["experiment-rank"])
-    args = parser.parse_args(["experiment-rank", "--run-dir", "run-dir", "--metric", "val_auroc", "--mode", "max"])
-
-    assert {name for name, action in actions.items() if action.required} == {"run_dir", "metric", "mode"}
-    assert actions["mode"].choices == ["max", "min"]
-    assert args.remote is None
 
 
 @pytest.mark.parametrize("command", ["preset-launch", "preset-stop"])

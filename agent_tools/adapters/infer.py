@@ -1,12 +1,8 @@
-"""The ``infer`` and ``evaluate`` task adapters.
+"""The ``infer`` task adapter.
 
-Layer 1, domain. Two registered adapters over one class: they differ in task
-name and in how the final-unlock decision is sourced -- ``infer`` registers
-``final_eval_unlock`` explicitly while ``evaluate`` receives it from the shared
-consultation policy -- not in how a checkpoint is validated or how inference
-argv is rendered. Both enforce the final unlock for test evaluation.
-
-Both name their evaluation split in the recipe rather than loading the finetune
+Layer 1, domain. Validates a downstream checkpoint evaluation recipe, enforces
+the final unlock for test evaluation, and renders the variant's inference argv.
+It names its evaluation split in the recipe rather than loading the finetune
 split set.
 """
 
@@ -31,10 +27,9 @@ from ..plan_rendering import (
 )
 from .base import TaskAdapter, config_summary_issues, recipe_inputs
 
-_INFER_EVALUATE_TASKS = frozenset({"infer", "evaluate"})
 # Byte-compat guard for the sidecar helpers' finetune-config membership, keyed
 # on the recipe's own task string like the pre-adapter kernel sets were.
-_FINETUNE_CONFIG_GUARD_TASKS = frozenset({"finetune", "hparam_tune", "infer", "evaluate"})
+_FINETUNE_CONFIG_GUARD_TASKS = frozenset({"finetune", "hparam_tune", "infer"})
 
 _INPUT_FIELDS = frozenset(
     {
@@ -54,10 +49,14 @@ _EVALUATION_FIELDS = frozenset({"external_test_locked", "final_test_unlocked"})
 def _recipe_preset_field(recipe: dict[str, Any]) -> str | None:
     # Byte-compat with the pre-adapter kernel: these helpers were keyed on the
     # recipe's own task string, not the dispatch task.
-    return "inference_preset_path" if str(recipe.get("task")) in _INFER_EVALUATE_TASKS else None
+    return "inference_preset_path" if str(recipe.get("task")) == "infer" else None
 
 
-class InferEvaluateAdapter(TaskAdapter):
+class InferAdapter(TaskAdapter):
+    task = "infer"
+    extra_decision_fields = frozenset(
+        {"config", "external_test_locked", "final_eval_unlock", "pretrained_backbone_path"}
+    )
     recipe_extra_fields = frozenset({"artifacts", "evaluation_policy", "execution", "inputs", "runtime"})
     artifact_fields = frozenset({"overwrite"})
     contract_sections = {"inputs": _INPUT_FIELDS, "evaluation_policy": _EVALUATION_FIELDS}
@@ -66,10 +65,6 @@ class InferEvaluateAdapter(TaskAdapter):
     uses_finetune_config = True
     supports_runtime_identity = True
     slurm_launch_subcommand = "infer-launch"
-
-    def __init__(self, task: str, extra_decision_fields: frozenset[str]) -> None:
-        self.task = task
-        self.extra_decision_fields = extra_decision_fields
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:
         return INFER_RUNTIME_FIELDS
@@ -207,14 +202,9 @@ class InferEvaluateAdapter(TaskAdapter):
         ]
 
     def index_summary_split_values(self, recipe: dict[str, Any]) -> list[Any]:
-        # infer/evaluate name their split in the recipe rather than loading the
-        # finetune split set.
+        # infer names its split in the recipe rather than loading the finetune
+        # split set.
         return coerce_list(recipe_inputs(recipe).get("eval_split"))
 
 
-INFER_ADAPTER = InferEvaluateAdapter(
-    "infer", frozenset({"config", "external_test_locked", "final_eval_unlock", "pretrained_backbone_path"})
-)
-EVALUATE_ADAPTER = InferEvaluateAdapter(
-    "evaluate", frozenset({"config", "external_test_locked", "pretrained_backbone_path"})
-)
+INFER_ADAPTER = InferAdapter()

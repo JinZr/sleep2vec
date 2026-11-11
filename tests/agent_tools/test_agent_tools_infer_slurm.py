@@ -239,11 +239,10 @@ def test_generic_registration_preserves_existing_frozen_parameter_summary(summar
 
 
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert", "sex_age_baseline"])
-@pytest.mark.parametrize("task", ["infer", "evaluate"])
 def test_infer_slurm_round_trip_preserves_unsubmitted_identity(
-    tmp_path: Path, variant: str, task: str, _runtime_commit, _runtime_probe
+    tmp_path: Path, variant: str, _runtime_commit, _runtime_probe
 ):
-    recipe_path = _infer_slurm_recipe(tmp_path, variant=variant, task=task, runtime_commit=_runtime_commit)
+    recipe_path = _infer_slurm_recipe(tmp_path, variant=variant, task="infer", runtime_commit=_runtime_commit)
     workspace = recipe_path.parent
     plan_dir = workspace / "plan"
 
@@ -281,7 +280,7 @@ def test_infer_slurm_round_trip_preserves_unsubmitted_identity(
     assert validated["runs"] == plan["runs"]
     frozen_recipe = validated["recipe"]
     assert frozen_recipe["runtime"]["devices"] == [0]
-    adapter = get_adapter(task)
+    adapter = get_adapter("infer")
     assert adapter is not None
     contract = adapter.compile_plan_contract(
         frozen_recipe, plan_dir, run_index_offset=0, config_bytes=Path(run["config"]).read_bytes()
@@ -388,7 +387,7 @@ def test_infer_slurm_reader_rejects_changed_script(tmp_path: Path, artifact: str
 
 
 def test_infer_slurm_reader_recompiles_coherently_edited_scheduler(tmp_path: Path, _runtime_commit, _runtime_probe):
-    recipe_path = _infer_slurm_recipe(tmp_path, variant="sleep2vec", task="evaluate", runtime_commit=_runtime_commit)
+    recipe_path = _infer_slurm_recipe(tmp_path, variant="sleep2vec", task="infer", runtime_commit=_runtime_commit)
     plan_dir = recipe_path.parent / "plan"
     assert plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir).exit_code == 0
     plan_path = plan_dir / "plan.json"

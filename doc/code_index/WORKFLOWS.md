@@ -233,7 +233,6 @@ carry those choices into launch and recovery.
    [consultation and diagnostics](../agent_contracts/task_recipe.md#consultation-and-diagnostics);
    stop on `NEEDS_USER_INPUT` and use the
    [decision input](../agent_contracts/user_decisions.md#generated-decision-templates).
-   [`context`](../agent_contracts/context_bundle.md) is diagnostic, not execution authority.
 2. Freeze ordinary plans with `plan` through
    [plan registration](../agent_contracts/experiment_workspace.md#publication-and-registration).
    Hparam [registration preflight](../agent_contracts/hparam_workflow.md#registration-preflight)

@@ -102,14 +102,13 @@ Compare every completed round of the step with the incumbent and revisit earlier
 rationale and `RESEARCH_LOG.md`; the previous round's winner is not automatically
 the best result. Inspect `stop_reason` when present.
 
-Use already-synced W&B history when present to compare the logged training loss
-and validation trajectory, not just each run's best score. Sparse or sampled
-points do not locate the actual training endpoint. `_step` is a W&B log index;
-only an explicit `trainer/global_step` is trainer-step evidence. Learning-rate
-extrema are not schedule order. Do not infer an early-stopping cause. If an absent
-curve would change the next decision, `experiment-wandb-sync` can refresh
-authorized workspace evidence. Missing optional history does not itself block a
-round; explain what can and cannot be concluded from the available evidence.
+Use available W&B history to compare the logged training loss and validation
+trajectory, not just each run's best score. Sparse or sampled points do not
+locate the actual training endpoint. `_step` is a W&B log index; only an
+explicit `trainer/global_step` is trainer-step evidence. Learning-rate extrema
+are not schedule order. Do not infer an early-stopping cause. Missing optional
+history does not itself block a round; explain what can and cannot be concluded
+from the available evidence.
 
 Before planning the next round, append an `experiment-note` that cites the prior
 results it relies on and gives this reasoning:

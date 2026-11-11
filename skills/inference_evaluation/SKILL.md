@@ -1,7 +1,7 @@
 # Skill: inference_evaluation
 
 ## When to use
-Use for `infer` or `evaluate` tasks that evaluate a downstream checkpoint.
+Use for `infer` tasks that evaluate a downstream checkpoint.
 
 ## Required inputs
 Requires config YAML, label name, checkpoint path, eval split, backend inputs, and final external-test unlock state.

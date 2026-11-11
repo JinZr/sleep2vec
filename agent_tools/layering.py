@@ -78,7 +78,7 @@ DOMAIN_MODULES: frozenset[str] = frozenset(
         "adapters.sleep2stat",
         "adapters.preset_prepare",
         "adapters.finetune",
-        "adapters.infer_evaluate",
+        "adapters.infer",
         "adapters.hparam_tune",
     }
 )
@@ -117,7 +117,6 @@ L2_MODULES: frozenset[str] = frozenset(
 KNOWN_DOMAIN_IMPORT_EXEMPTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("configs", "domain.finetune_summary"),
-        ("plan_context", "domain.presets"),
         ("plan_context", "domain.index_csv"),
         ("cli", "domain.presets"),
         ("cli", "domain.index_csv"),

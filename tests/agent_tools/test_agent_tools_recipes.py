@@ -404,7 +404,6 @@ def test_checked_in_recipe(
             for module, name in (
                 (configs, "load_config_summary_for_recipe"),
                 (plan_context, "context_index_summary"),
-                (plan_context, "context_preset_summary"),
             ):
                 guarded.setattr(
                     module,

@@ -40,48 +40,6 @@ from agent_tools import (
 from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256, merge_run_manifest, merge_run_row
 
 
-def test_registered_step_remains_canonical_through_plan_and_dry_run_launch(tmp_path: Path):
-    source = tmp_path / "source"
-    recipe = _hparam_recipe(source)
-    payload = yaml.safe_load(recipe.read_text())
-    workspace = tmp_path / "workspace"
-    payload["experiment"]["root"] = str(workspace)
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    experiment_spec = tmp_path / "experiment.yaml"
-    experiment_spec.write_text(yaml.safe_dump(payload["experiment"], sort_keys=False))
-    step_spec = tmp_path / "step.yaml"
-    step_spec.write_text(
-        yaml.safe_dump(
-            {
-                **payload["step"],
-                "inputs": ["reports/ranking.csv"],
-                "outputs": ["reports/final.md"],
-            },
-            sort_keys=False,
-        )
-    )
-    plan_dir = workspace / "plans" / "hparam"
-
-    initialized = run_cli("experiment-init", "--run-dir", str(workspace), "--spec", str(experiment_spec))
-    registered = run_cli("experiment-register-step", "--run-dir", str(workspace), "--spec", str(step_spec))
-    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    launched = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
-
-    assert initialized.returncode == 0, initialized.stderr
-    assert registered.returncode == 0, registered.stderr
-    assert planned.returncode == 0, planned.stderr
-    assert launched.returncode == 0, launched.stderr
-    step_manifest = yaml.safe_load((workspace / "steps" / payload["step"]["id"] / "step.yaml").read_text())
-    assert step_manifest["step"]["inputs"] == ["reports/ranking.csv"]
-    assert step_manifest["step"]["outputs"] == ["reports/final.md"]
-    assert step_manifest["experiment_id"] == payload["experiment"]["id"]
-    assert step_manifest["plan_controller"] == "ordinary"
-    assert step_manifest["recipe_path"] == str(recipe)
-    assert step_manifest["plans"] == [str(plan_dir)]
-    events = [json.loads(line) for line in (workspace / "events.jsonl").read_text().splitlines()]
-    assert [event["event_type"] for event in events].count("step_registered") == 1
-
-
 def test_hparam_launch_rejects_unregistered_plan_copy_before_start(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"

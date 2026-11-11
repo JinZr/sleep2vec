@@ -348,18 +348,6 @@ def script_lines(
     ]
 
 
-def blocked_script() -> str:
-    return "\n".join(
-        [
-            "#!/usr/bin/env bash",
-            'echo "This command plan is blocked because user input is required."',
-            'echo "See questions.md."',
-            "exit 2",
-            "",
-        ]
-    )
-
-
 def hparam_script_lines(
     commands: list[str],
     *,

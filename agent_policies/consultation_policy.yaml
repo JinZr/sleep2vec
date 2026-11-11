@@ -19,19 +19,19 @@ hparam_search_defaults:
 
 high_impact_fields:
   - id: task
-    required_for_tasks: ["preset_prepare", "finetune", "infer", "evaluate", "hparam_tune", "sleep2stat", "embedding_extraction"]
-    question: "Which task should be performed: preset_prepare, finetune, infer, evaluate, hparam_tune, sleep2stat, or embedding_extraction?"
+    required_for_tasks: ["preset_prepare", "finetune", "infer", "hparam_tune", "sleep2stat", "embedding_extraction"]
+    question: "Which task should be performed: preset_prepare, finetune, infer, hparam_tune, sleep2stat, or embedding_extraction?"
 
   - id: config
-    required_for_tasks: ["finetune", "infer", "evaluate", "embedding_extraction"]
+    required_for_tasks: ["finetune", "infer", "embedding_extraction"]
     question: "Which model config should this task use?"
 
   - id: label_name
-    required_for_tasks: ["finetune", "infer", "evaluate", "hparam_tune"]
+    required_for_tasks: ["finetune", "infer", "hparam_tune"]
     question: "Which label should this task use, for example ahi, age, sex, stage5, or a custom metadata label?"
 
   - id: data_backend
-    required_for_tasks: ["finetune", "infer", "evaluate"]
+    required_for_tasks: ["finetune", "infer"]
     question: "Should this run use npz/preset data or Kaldi manifest data?"
 
   - id: train_val_test_policy
@@ -57,11 +57,11 @@ high_impact_fields:
     question: "Should this run initialize from a pretrained backbone checkpoint? If yes, which path should be used?"
 
   - id: ckpt_path
-    required_for_tasks: ["infer", "evaluate", "embedding_extraction"]
+    required_for_tasks: ["infer", "embedding_extraction"]
     question: "Which checkpoint path should be used for inference/evaluation?"
 
   - id: eval_split
-    required_for_tasks: ["infer", "evaluate", "embedding_extraction"]
+    required_for_tasks: ["infer", "embedding_extraction"]
     allowed_values: ["train", "val", "test"]
     question: "Which split should be evaluated: train, val, or test?"
 
@@ -70,7 +70,7 @@ high_impact_fields:
     question: "Should existing preset files be reused or regenerated?"
 
   - id: overwrite_policy
-    required_for_tasks: ["preset_prepare", "finetune", "hparam_tune", "infer", "evaluate", "sleep2stat", "embedding_extraction"]
+    required_for_tasks: ["preset_prepare", "finetune", "hparam_tune", "infer", "sleep2stat", "embedding_extraction"]
     question: "Is overwriting existing output files allowed for this task?"
 
   - id: sleep2stat_split_policy
@@ -122,5 +122,5 @@ high_impact_fields:
     question: "What is the maximum number of runs or compute budget for this search?"
 
   - id: final_eval_unlock
-    required_for_tasks: ["hparam_tune", "evaluate"]
+    required_for_tasks: ["hparam_tune"]
     question: "Should the selected model now be evaluated on the external test set?"

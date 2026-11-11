@@ -56,7 +56,6 @@ from agent_tools.experiment_workspace import (
     parameter_summary,
     read_run_manifest,
     read_step_manifest,
-    resolve_external_run_row,
     resolve_run_row,
     run_identity,
     semantic_run_name,
@@ -156,46 +155,6 @@ def test_new_plan_owned_workspace_initializes_research_log(tmp_path: Path):
 
     assert (root / "RESEARCH_LOG.md").read_text().startswith("# Research Log\n")
     assert "`RESEARCH_LOG.md`" in (root / "README.md").read_text()
-
-
-def test_registered_step_is_extended_by_plan_and_allows_dry_run_launch(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
-    recipe_payload = yaml.safe_load(recipe.read_text())
-    experiment_spec = tmp_path / "experiment-spec.yaml"
-    experiment_spec.write_text(yaml.safe_dump({"experiment": recipe_payload["experiment"]}, sort_keys=False))
-    step_spec = tmp_path / "step-spec.yaml"
-    step_spec.write_text(
-        yaml.safe_dump(
-            {
-                **recipe_payload["step"],
-                "inputs": ["config.yaml"],
-                "outputs": ["reports/ranking.csv"],
-            },
-            sort_keys=False,
-        )
-    )
-
-    assert run_cli("experiment-init", "--run-dir", str(tmp_path), "--spec", str(experiment_spec)).returncode == 0
-    registered = run_cli("experiment-register-step", "--run-dir", str(tmp_path), "--spec", str(step_spec))
-    assert registered.returncode == 0, registered.stderr
-    registered_manifest = yaml.safe_load((tmp_path / "steps" / recipe_payload["step"]["id"] / "step.yaml").read_text())
-    assert registered_manifest["plan_controller"] == "unassigned"
-    plan_dir = tmp_path / "plans" / "registered"
-    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
-    assert planned.returncode == 0, planned.stderr
-    launched = run_cli("hparam-launch", "--plan-dir", str(plan_dir))
-    assert launched.returncode == 0, launched.stderr
-
-    step_manifest = yaml.safe_load((tmp_path / "steps" / recipe_payload["step"]["id"] / "step.yaml").read_text())
-    assert set(step_manifest) == {"step", "experiment_id", "plan_controller", "recipe_path", "plans"}
-    assert step_manifest["step"]["inputs"] == ["config.yaml"]
-    assert step_manifest["step"]["outputs"] == ["reports/ranking.csv"]
-    assert step_manifest["experiment_id"] == recipe_payload["experiment"]["id"]
-    assert step_manifest["plan_controller"] == "ordinary"
-    assert step_manifest["recipe_path"]
-    assert step_manifest["plans"] == [str(plan_dir.resolve())]
-    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
-    assert sum(event["event_type"] == "step_registered" for event in events) == 1
 
 
 def test_ordinary_step_rejects_new_primary_recipe_after_blocked_attempt(tmp_path: Path):
@@ -576,23 +535,6 @@ def test_resolve_run_row_rejects_ambiguous_version():
 
     with pytest.raises(ValueError, match="Ambiguous runtime version"):
         resolve_run_row(rows, {"version": "shared"})
-
-
-def test_external_evidence_requires_the_managed_row_to_declare_the_same_experiment():
-    rows = [{"step_id": "train", "run_id": "run-000", "version": "managed-v1"}]
-
-    assert (
-        resolve_external_run_row(
-            rows,
-            {
-                "experiment_id": "foreign",
-                "step_id": "train",
-                "run_id": "run-000",
-                "version": "managed-v1",
-            },
-        )
-        is None
-    )
 
 
 def test_managed_rows_reject_historical_identity():
@@ -1428,7 +1370,8 @@ def test_read_run_manifest_rejects_aliased_canonical_table(tmp_path: Path, alias
 @pytest.mark.parametrize(
     ("phase", "controller", "match"),
     [
-        ("invalid", "unassigned", "step.phase"),
+        ("invalid", "ordinary", "step.phase"),
+        ("train", "unassigned", "invalid plan_controller: unassigned"),
         ("train", "pipeline", "invalid plan_controller: pipeline"),
         ("train", "adaptive", "invalid plan_controller: adaptive"),
     ],
@@ -2099,7 +2042,6 @@ def test_step_manifest_writes_use_one_compare_and_swap_owner():
         "experiment_workspace.py", "commit_step_manifest"
     )
     assert "commit_step_manifest" in function_calls("experiment_workspace.py", "ensure_experiment_workspace")
-    assert "commit_step_manifest" in function_calls("experiments.py", "register_experiment_step")
 
 
 def test_canonical_local_experiment_root_resolves_aliases(tmp_path: Path):
@@ -3084,51 +3026,13 @@ def test_step_manifest_merge_rejects_metadata_drift():
     existing = {
         "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
         "experiment_id": "experiment",
-        "plan_controller": "unassigned",
+        "plan_controller": "ordinary",
         "recipe_path": "",
         "plans": [],
     }
 
     with pytest.raises(ValueError, match="phase"):
         merge_step_manifest(existing, {"step": {"phase": "analyze"}})
-
-
-def test_step_manifest_plan_controller_binds_once():
-    existing = {
-        "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
-        "experiment_id": "experiment",
-        "plan_controller": "unassigned",
-        "recipe_path": "",
-        "plans": [],
-    }
-    incoming = {
-        "step": existing["step"],
-        "experiment_id": "experiment",
-        "plan_controller": "ordinary",
-        "recipe_path": "/workspace/recipe.yaml",
-        "plans": ["/workspace/plan"],
-    }
-
-    bound = merge_step_manifest(existing, incoming)
-
-    assert bound["plan_controller"] == "ordinary"
-    with pytest.raises(ValueError, match="plan_controller differs"):
-        merge_step_manifest(bound, {**incoming, "plan_controller": "unassigned"})
-
-
-@pytest.mark.parametrize("field", ["recipe_path", "plans"])
-def test_unassigned_step_manifest_rejects_registered_plan_artifacts(field: str):
-    payload = {
-        "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
-        "experiment_id": "experiment",
-        "plan_controller": "unassigned",
-        "recipe_path": "",
-        "plans": [],
-    }
-    payload[field] = "/workspace/recipe.yaml" if field == "recipe_path" else ["/workspace/plan"]
-
-    with pytest.raises(ValueError, match="Unassigned step manifests"):
-        merge_step_manifest({}, payload)
 
 
 def test_step_manifest_commit_rejects_missing_controller_without_writing(tmp_path: Path):

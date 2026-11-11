@@ -1,4 +1,4 @@
-"""The ``agent_tools`` command-line surface: 29 subcommands over the kernel.
+"""The ``agent_tools`` command-line surface: 23 subcommands over the kernel.
 
 Mixed bridge -- it forwards the domain commands (``config-summary``,
 ``index-summary``, ``preset-summary``) while the rest stay task-agnostic.
@@ -32,16 +32,12 @@ from .experiments import (
     append_experiment_note,
     experiment_status,
     finalize_experiment,
-    index_checkpoints,
     init_experiment,
     launch_infer_run,
     launch_preset_run,
     monitor_experiment,
-    rank_experiment_candidates,
-    register_experiment_step,
     stop_infer_run,
     stop_preset_run,
-    sync_wandb_runs,
 )
 from .hparam_runtime import launch_hparam_runs, monitor_hparam_runs, run_hparam_queue, stop_hparam_run
 from .hparam_selection import select_hparam_candidates
@@ -49,9 +45,7 @@ from .manifests import read_rows
 from .markdown import report_text
 from .models import json_ready
 from .plans import (
-    build_context,
     build_plan,
-    collect_runs,
     doctor_runtime_card,
     doctor_runtime_diagnostics_supported,
     evaluate_recipe,
@@ -209,7 +203,7 @@ def _add_inspection_commands(sub: argparse._SubParsersAction) -> None:
 
 
 def _add_consultation_commands(sub: argparse._SubParsersAction) -> None:
-    """Register the consultation, planning, and run-collection commands."""
+    """Register the consultation and planning commands."""
     doctor = _command(
         sub,
         "doctor",
@@ -226,23 +220,6 @@ def _add_consultation_commands(sub: argparse._SubParsersAction) -> None:
         help="Directory to publish the doctor report and a decisions.yaml template into.",
     )
     doctor.set_defaults(func=_cmd_doctor)
-
-    context = _command(
-        sub,
-        "context",
-        "Build a diagnostic-only context bundle for a task. Does not authorize runnable commands.",
-    )
-    context.add_argument(
-        "--task",
-        required=True,
-        help="Task to build context for (sleep2stat, preset_prepare, finetune, hparam_tune, infer, evaluate).",
-    )
-    context.add_argument("--config", help="Config to summarize into the bundle.")
-    context.add_argument("--label-name", help="Label column the bundle reports on.")
-    context.add_argument("--variant", help="Model variant (sleep2vec, sleep2vec2, sleep2expert, sex_age_baseline).")
-    context.add_argument("--user-decisions", help="User decisions YAML to fold into the bundle.")
-    context.add_argument("--output-dir", required=True, help="Directory to write the context bundle into.")
-    context.set_defaults(func=_cmd_context)
 
     plan = _command(
         sub,
@@ -275,12 +252,6 @@ def _add_consultation_commands(sub: argparse._SubParsersAction) -> None:
         help="Validate the recipe and report without publishing plan artifacts.",
     )
     plan.set_defaults(func=_cmd_plan)
-
-    collect = _command(sub, "collect-runs", "Collect finished run metrics under a root directory into one CSV.")
-    collect.add_argument("--root", required=True, help="Directory tree to scan for run manifests.")
-    collect.add_argument("--metric", help="Metric to collect; omit to collect every reported metric.")
-    collect.add_argument("--output", required=True, help="CSV path to write the collected runs to.")
-    collect.set_defaults(func=_cmd_collect_runs)
 
 
 def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
@@ -384,20 +355,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     _add_workspace_remote(experiment_note)
     experiment_note.set_defaults(func=_cmd_experiment_note)
 
-    experiment_step = _command(
-        sub,
-        "experiment-register-step",
-        "Register an experiment step and its plans in the experiment workspace.",
-    )
-    experiment_step.add_argument("--run-dir", required=True, help="Experiment workspace root to register into.")
-    experiment_step.add_argument(
-        "--spec",
-        required=True,
-        help="YAML spec declaring the step id, phase, purpose, and the plans it owns.",
-    )
-    _add_workspace_remote(experiment_step)
-    experiment_step.set_defaults(func=_cmd_experiment_register_step)
-
     experiment_finalize = _command(
         sub,
         "experiment-finalize",
@@ -411,23 +368,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     )
     _add_workspace_remote(experiment_finalize)
     experiment_finalize.set_defaults(func=_cmd_experiment_finalize)
-
-    experiment_wandb = _command(sub, "experiment-wandb-sync", "Sync W&B run history into the experiment workspace.")
-    experiment_wandb.add_argument("--run-dir", required=True, help="Experiment workspace root to sync into.")
-    experiment_wandb.add_argument("--entity", required=True, help="W&B entity that owns the runs.")
-    experiment_wandb.add_argument("--project", required=True, help="W&B project to sync runs from.")
-    experiment_wandb.add_argument("--group", help="Restrict the sync to one W&B group.")
-    _add_workspace_remote(experiment_wandb)
-    experiment_wandb.set_defaults(func=_cmd_experiment_wandb_sync)
-
-    experiment_checkpoints = _command(
-        sub,
-        "experiment-index-checkpoints",
-        "Index the checkpoints reachable from an experiment workspace.",
-    )
-    experiment_checkpoints.add_argument("--run-dir", required=True, help="Experiment workspace root to index.")
-    _add_workspace_remote(experiment_checkpoints)
-    experiment_checkpoints.set_defaults(func=_cmd_experiment_index_checkpoints)
 
     experiment_monitor = _command(
         sub,
@@ -452,22 +392,6 @@ def _add_experiment_commands(sub: argparse._SubParsersAction) -> None:
     _add_workspace_remote(experiment_status_parser)
     _add_json(experiment_status_parser)
     experiment_status_parser.set_defaults(func=_cmd_experiment_status)
-
-    experiment_rank = _command(
-        sub,
-        "experiment-rank",
-        "Rank an experiment's candidates by a metric and publish the ranking.",
-    )
-    experiment_rank.add_argument("--run-dir", required=True, help="Experiment workspace root to rank.")
-    experiment_rank.add_argument("--metric", required=True, help="Metric to rank candidates by.")
-    experiment_rank.add_argument(
-        "--mode",
-        choices=["max", "min"],
-        required=True,
-        help="Ranking direction: max ranks the highest metric first, min the lowest.",
-    )
-    _add_workspace_remote(experiment_rank)
-    experiment_rank.set_defaults(func=_cmd_experiment_rank)
 
 
 def _add_selection_commands(sub: argparse._SubParsersAction) -> None:
@@ -580,19 +504,6 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return report.exit_code
 
 
-def _cmd_context(args: argparse.Namespace) -> int:
-    report = build_context(
-        task=args.task,
-        config=args.config,
-        output_dir=args.output_dir,
-        label_name=args.label_name,
-        variant=args.variant,
-        user_decisions_path=args.user_decisions,
-    )
-    print(report_text(report))
-    return report.exit_code
-
-
 def _cmd_plan(args: argparse.Namespace) -> int:
     report = build_plan(
         recipe_path=args.recipe,
@@ -609,11 +520,6 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         print(f"Fill it and rerun with --user-decisions {decisions_path}.")
         print("The retry must use a fresh --output-dir.")
     return report.exit_code
-
-
-def _cmd_collect_runs(args: argparse.Namespace) -> int:
-    collect_runs(args.root, args.metric, args.output)
-    return 0
 
 
 def _cmd_hparam_launch(args: argparse.Namespace) -> int:
@@ -740,33 +646,9 @@ def _cmd_experiment_note(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_experiment_register_step(args: argparse.Namespace) -> int:
-    path = register_experiment_step(args.run_dir, args.spec, remote=args.remote)
-    print(f"Wrote {path}")
-    return 0
-
-
 def _cmd_experiment_finalize(args: argparse.Namespace) -> int:
     path = finalize_experiment(args.run_dir, args.report, remote=args.remote)
     print(f"Wrote {path}")
-    return 0
-
-
-def _cmd_experiment_wandb_sync(args: argparse.Namespace) -> int:
-    output = sync_wandb_runs(
-        args.run_dir,
-        entity=args.entity,
-        project=args.project,
-        group=args.group,
-        remote=args.remote,
-    )
-    print(f"Wrote {output}")
-    return 0
-
-
-def _cmd_experiment_index_checkpoints(args: argparse.Namespace) -> int:
-    manifest = index_checkpoints(args.run_dir, remote=args.remote)
-    print(f"Wrote {manifest}")
     return 0
 
 
@@ -785,12 +667,6 @@ def _cmd_experiment_status(args: argparse.Namespace) -> int:
         _emit(snapshot, as_json=True)
     else:
         print(format_experiment_status(snapshot), end="")
-    return 0
-
-
-def _cmd_experiment_rank(args: argparse.Namespace) -> int:
-    ranking = rank_experiment_candidates(args.run_dir, metric=args.metric, mode=args.mode, remote=args.remote)
-    print(f"Wrote {ranking}")
     return 0
 
 

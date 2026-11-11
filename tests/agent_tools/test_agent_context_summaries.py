@@ -2,8 +2,6 @@ from pathlib import Path
 import pickle
 from types import SimpleNamespace
 
-import pytest
-
 from agent_tools import plan_context
 from agent_tools.domain.presets import preset_summary
 
@@ -46,21 +44,14 @@ def test_preset_keeps_dynamic_values_and_manifest(tmp_path: Path):
     assert result["blocking_issues"] == []
 
 
-@pytest.mark.parametrize("kind", ["index", "preset"])
-def test_context_summary_distinguishes_absence_from_error(kind, monkeypatch):
-    if kind == "index":
-        summarize = plan_context.context_index_summary
-        recipe = {"inputs": {"index": ["index.csv"]}}
-        assert summarize({}, None) is None
-    else:
-        summarize = plan_context.context_preset_summary
-        recipe = {}
-        monkeypatch.setattr(plan_context, "effective_preset_path", lambda *args: None)
-        assert summarize(recipe, None) is None
-        monkeypatch.setattr(plan_context, "effective_preset_path", lambda *args: "preset.pkl")
+def test_context_index_summary_distinguishes_absence_from_error(monkeypatch):
+    recipe = {"inputs": {"index": ["index.csv"]}}
+    assert plan_context.context_index_summary({}, None) is None
 
     def fail(*args, **kwargs):
         raise ValueError("unreadable input")
 
-    monkeypatch.setattr(plan_context, f"{kind}_summary", fail)
-    assert summarize(recipe, None) == {"blocking_issues": [f"Failed to summarize {kind}: unreadable input"]}
+    monkeypatch.setattr(plan_context, "index_summary", fail)
+    assert plan_context.context_index_summary(recipe, None) == {
+        "blocking_issues": ["Failed to summarize index: unreadable input"]
+    }

@@ -64,7 +64,6 @@ second lifecycle or authorization source.
 | Explicit decision format, materialization, and precedence | [user_decisions.md](user_decisions.md) |
 | Workspace ownership, publication, takeover, status, finalization and research log | [experiment_workspace.md](experiment_workspace.md) |
 | Managed run identity, canonical state, reducer, commit, projections, and evidence | [run_manifest.md](run_manifest.md) |
-| Diagnostic context bundles | [context_bundle.md](context_bundle.md) |
 | Final and external-test gates | [external_test_locking.md](external_test_locking.md) |
 
 New runnable plans must follow the recipe and workspace contracts. Run-state consumers must follow the run-manifest contract rather than recovering state from derived artifacts.

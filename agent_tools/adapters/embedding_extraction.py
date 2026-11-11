@@ -448,14 +448,6 @@ class EmbeddingExtractionAdapter(TaskAdapter):
             )
         ]
 
-    def expected_artifacts(
-        self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
-    ) -> list[dict[str, str]]:
-        embedding_dir = _mapping(recipe, "artifacts").get("embedding_dir")
-        if embedding_dir in (None, "", "ASK_USER"):
-            return []
-        return [{"name": "embedding_manifest", "path": str(Path(str(embedding_dir)) / "manifest.json")}]
-
     def index_summary_inputs_override(
         self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None
     ) -> tuple[list[Any], Any, list[Any]] | None:

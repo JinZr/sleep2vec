@@ -1107,28 +1107,6 @@ def test_hparam_select_rejects_hardlinked_checkpoint_evidence(tmp_path: Path):
     assert not _ranking_path(plan_dir).exists()
 
 
-def test_fixed_checkpoint_does_not_escape_frozen_checkpoint_dir(tmp_path: Path):
-    checkpoint_dir = tmp_path / "managed" / "checkpoints"
-    checkpoint_dir.mkdir(parents=True)
-    unmanaged = tmp_path / "unmanaged" / "epoch=07.ckpt"
-    unmanaged.parent.mkdir()
-    unmanaged.write_text("unmanaged")
-
-    path = run_artifacts.fixed_checkpoint_path({"best_model_path": str(unmanaged), "epoch": 7}, checkpoint_dir)
-
-    assert path == ""
-
-
-def test_fixed_checkpoint_requires_the_manifest_epoch_locally(tmp_path: Path):
-    checkpoint_dir = tmp_path / "managed" / "checkpoints"
-    checkpoint_dir.mkdir(parents=True)
-    (checkpoint_dir / "epoch=2.ckpt").write_text("wrong epoch")
-
-    path = run_artifacts.fixed_checkpoint_path({"epoch": 1}, checkpoint_dir)
-
-    assert path == ""
-
-
 def test_fixed_checkpoint_requires_the_manifest_epoch_from_remote_names(tmp_path: Path):
     checkpoint_dir = tmp_path / "remote" / "checkpoints"
 
@@ -1148,7 +1126,6 @@ def test_fixed_checkpoint_rejects_unbound_local_and_remote_epochs(tmp_path: Path
         (checkpoint_dir / f"epoch={epoch}.ckpt").write_text("checkpoint")
     names = ["epoch=1.ckpt", "epoch=2.ckpt", "last.ckpt"]
 
-    assert run_artifacts.fixed_checkpoint_path({}, checkpoint_dir) == ""
     assert run_artifacts.fixed_checkpoint_path_from_names({}, checkpoint_dir, names) == ""
 
 
@@ -1159,7 +1136,6 @@ def test_fixed_checkpoint_accepts_same_epoch_best_only_locally_and_remotely(tmp_
     checkpoint.write_text("checkpoint")
     manifest = {"best_model_path": str(checkpoint), "epoch": 3}
 
-    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == str(checkpoint)
     assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [checkpoint.name]) == str(
         checkpoint
     )
@@ -1177,26 +1153,12 @@ def test_fixed_checkpoint_binds_best_only_alias_from_successful_training_manifes
     manifest = {"status": status, "best_model_path": str(checkpoint), "best_model_score": 8.8}
     expected = str(checkpoint) if status in {"completed", "skipped_test"} else ""
 
-    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == expected
     assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, names) == expected
     assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, ["last.ckpt"]) == ""
 
     fixed = checkpoint_dir / "epoch=45.ckpt"
     fixed.write_text("fixed")
-    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == str(fixed)
     assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [*names, fixed.name]) == str(fixed)
-
-
-def test_fixed_checkpoint_rejects_best_only_symlink(tmp_path: Path):
-    foreign = tmp_path / "foreign" / "best-epoch=03.ckpt"
-    foreign.parent.mkdir()
-    foreign.write_text("foreign")
-    checkpoint_dir = tmp_path / "managed" / "checkpoints"
-    checkpoint_dir.mkdir(parents=True)
-    checkpoint = checkpoint_dir / foreign.name
-    checkpoint.symlink_to(foreign)
-
-    assert run_artifacts.fixed_checkpoint_path({"best_model_path": str(checkpoint), "epoch": 3}, checkpoint_dir) == ""
 
 
 def test_fixed_checkpoint_rejects_fractional_manifest_epoch_locally_and_remotely(tmp_path: Path):
@@ -1206,7 +1168,6 @@ def test_fixed_checkpoint_rejects_fractional_manifest_epoch_locally_and_remotely
     checkpoint.write_text("checkpoint")
     manifest = {"epoch": 2.5}
 
-    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == ""
     assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [checkpoint.name]) == ""
 
 
@@ -1218,28 +1179,6 @@ def test_epoch_number_accepts_integer_values(value):
 @pytest.mark.parametrize("value", [2.5, "2.5", float("nan"), float("inf"), True, "not-a-number"])
 def test_epoch_number_rejects_non_integer_values(value):
     assert run_artifacts.epoch_number(value) is None
-
-
-@pytest.mark.parametrize("alias_kind", ["checkpoint", "checkpoint_dir"])
-def test_fixed_checkpoint_rejects_filesystem_aliases(tmp_path: Path, alias_kind: str):
-    foreign_dir = tmp_path / "foreign"
-    foreign_dir.mkdir()
-    foreign = foreign_dir / "epoch=07.ckpt"
-    foreign.write_text("foreign")
-    checkpoint_dir = tmp_path / "managed" / "checkpoints"
-    checkpoint_dir.parent.mkdir()
-    if alias_kind == "checkpoint_dir":
-        checkpoint_dir.symlink_to(foreign_dir, target_is_directory=True)
-    else:
-        checkpoint_dir.mkdir()
-        (checkpoint_dir / foreign.name).symlink_to(foreign)
-
-    path = run_artifacts.fixed_checkpoint_path(
-        {"best_model_path": str(checkpoint_dir / foreign.name), "epoch": 7},
-        checkpoint_dir,
-    )
-
-    assert path == ""
 
 
 def test_hparam_select_rejects_legacy_plan_without_rewriting_outputs(tmp_path: Path):
@@ -2082,14 +2021,8 @@ def test_fixed_best_checkpoint_requires_successful_manifest(tmp_path: Path, stat
     checkpoint.write_text("selected weights")
     manifest = {"status": status, "best_model_path": str(checkpoint)}
     expected = str(checkpoint) if status in {"completed", "skipped_test"} else ""
-    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == expected
     assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, [checkpoint.name]) == expected
     assert run_artifacts.fixed_checkpoint_path_from_names(manifest, checkpoint_dir, []) == ""
-    checkpoint.unlink()
-    foreign = tmp_path / "foreign.ckpt"
-    foreign.write_text("foreign weights")
-    checkpoint.symlink_to(foreign)
-    assert run_artifacts.fixed_checkpoint_path(manifest, checkpoint_dir) == ""
 
 
 def test_hparam_select_binds_terminal_best_checkpoint_and_monitor_score(tmp_path: Path):

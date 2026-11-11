@@ -11,7 +11,7 @@ import yaml
 
 from agent_tools.adapters.sleep2stat import SLEEP2STAT_ADAPTER, sleep2stat_config_summary
 from agent_tools.models import REPO_ROOT
-from agent_tools.plans import build_context, build_plan, evaluate_recipe
+from agent_tools.plans import build_plan, evaluate_recipe
 from agent_tools.skills import validate_skills
 
 TINY_RECIPE = REPO_ROOT / "recipes/examples/tiny_fixture_sleep2stat.yaml"
@@ -39,23 +39,6 @@ def _write_tiny_recipe_with_run_dir(tmp_path: Path, run_dir: Path, *, overwrite_
     payload["artifacts"]["overwrite"] = overwrite_policy
     payload["decisions"]["overwrite_policy"]["value"] = overwrite_policy
     return _write_tiny_recipe(tmp_path, payload)
-
-
-def _write_context_decisions(tmp_path: Path) -> Path:
-    return write_yaml(
-        tmp_path / "decisions.yaml",
-        {
-            "decisions": {
-                "external_test_locked": {"value": True, "source": "explicit_user"},
-                "sleep2stat_split_policy": {"value": "descriptive test split only", "source": "explicit_user"},
-                "sleep2stat_metric_use_policy": {
-                    "value": "signal-derived proxy metrics only",
-                    "source": "explicit_user",
-                },
-                "overwrite_policy": {"value": False, "source": "explicit_user"},
-            },
-        },
-    )
 
 
 def test_sleep2stat_omitted_variant_passes_consultation_gates():
@@ -545,29 +528,6 @@ def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: 
 
     assert report.exit_code == 2
     assert any(issue.field == "sleep2stat_config" and "ckpt_path" in issue.message for issue in report.issues)
-
-
-def test_sleep2stat_direct_context_honors_user_decisions_and_summarizes_index(tmp_path: Path):
-    decisions = _write_context_decisions(tmp_path)
-    output_dir = tmp_path / "context"
-
-    report = build_context(
-        task="sleep2stat",
-        config=REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml",
-        output_dir=output_dir,
-        user_decisions_path=decisions,
-    )
-
-    assert report.exit_code == 2
-    context = json.loads((output_dir / "context.json").read_text())
-    assert context["index_summary"]["rows"] == 1
-    assert context["index_summary"]["blocking_issues"] == []
-    assert context["can_generate_commands"] is False
-    assert context["recommended_commands"] == []
-    assert any("experiment" in issue for issue in context["blocking_issues"])
-    assert (output_dir / "commands.blocked.sh").exists()
-    assert not (output_dir / "commands.sh").exists()
-    assert not (output_dir / "validation.sh").exists()
 
 
 def test_sleep2stat_skill_examples_validate_without_variant():
