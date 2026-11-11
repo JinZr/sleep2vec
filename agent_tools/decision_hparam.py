@@ -44,7 +44,6 @@ _HPARAM_SCHEDULER_FIELDS = {
     "walltime",
     "nice",
     "nodelist",
-    "direct_controller",
 }
 _HPARAM_EVALUATION_FIELDS = {
     "selection_metric",

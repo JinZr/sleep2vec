@@ -14,7 +14,6 @@ the same contract that created it.
 from __future__ import annotations
 
 import copy
-import json
 from pathlib import Path
 import re
 import sys
@@ -22,7 +21,7 @@ from typing import Any, Literal, Mapping, Sequence, TypedDict
 
 from typing_extensions import Never, NotRequired
 
-from . import plan_rendering as rendering, python_programs, slurm
+from . import plan_rendering as rendering, slurm
 from .decision_models import USER_DECISIONS_FILENAME
 from .experiment_workspace import RunIdentity, run_identity, safe_artifact_name
 from .models import REPO_ROOT, JsonValue, recipe_name
@@ -84,17 +83,13 @@ class _GenericRunCore(RunIdentity):
 
 class GenericRunContract(_GenericRunCore, total=False):
     scheduler_type: Literal["direct", "slurm"]
-    terminal_status_owner: Literal["script", "scheduler_sidecar"]
-    scheduler_direct_controller: str
+    terminal_status_owner: Literal["script", "monitor"]
     scheduler_script: str
-    scheduler_result_path: str
-    allocation_identity_path: str
     log_path: str
     config_sha256: str
     script_sha256: str
     input_snapshots: list[FrozenInputSnapshot]
     command: str
-    scheduler_submit_token: str
     scheduler_script_sha256: str
     status: str
 
@@ -290,16 +285,12 @@ def generic_run_contract(
     if adapter.direct_launch_subcommand and (execution.get("scheduler") or {}).get("type") == "direct":
         run.update({"scheduler_type": "direct", "terminal_status_owner": "script"})
     if adapter.slurm_launch_subcommand and (execution.get("scheduler") or {}).get("type") == "slurm":
-        resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
         run.update(
             {
                 "scheduler_type": "slurm",
-                "scheduler_direct_controller": str(resources["direct_controller"]).lower(),
                 "scheduler_script": str(run_dir / "job.sbatch"),
-                "scheduler_result_path": str(run_dir / "slurm_terminal.json"),
-                "allocation_identity_path": str(run_dir / "allocation_identity.json"),
                 "log_path": str(run_dir / "slurm.log"),
-                "terminal_status_owner": "scheduler_sidecar",
+                "terminal_status_owner": "monitor",
             }
         )
     return run
@@ -337,33 +328,6 @@ def generic_script_text(
         else {}
     )
     experiment = recipe["experiment"] if isinstance(recipe.get("experiment"), dict) else {}
-    allocation_guard = None
-    if run.get("scheduler_type") == "slurm":
-        expected_run = {
-            field: run[field]
-            for field in (
-                "experiment_id",
-                "step_id",
-                "run_id",
-                "run_dir",
-                "script",
-                "config",
-                "config_sha256",
-                "allocation_identity_path",
-            )
-        }
-        resources = slurm.normalize_resources(execution["scheduler"], execution.get("gpus_per_run", 1))
-        allocation_guard = rendering.render_command(
-            [
-                execution["python"],
-                "-c",
-                python_programs.source("plan_rendering.slurm_allocation_guard"),
-                experiment["root"],
-                json.dumps(expected_run, sort_keys=True, separators=(",", ":")),
-                json.dumps(resources, sort_keys=True, separators=(",", ":")),
-                execution["runtime_commit"],
-            ]
-        )
     return (
         "\n".join(
             rendering.script_lines(
@@ -375,7 +339,7 @@ def generic_script_text(
                 lifecycle_python=runtime_identity.get("python") or context["python"],
                 expected_runtime_commit=runtime_identity.get("runtime_commit"),
                 input_snapshots=input_snapshots,
-                slurm_allocation_guard=allocation_guard,
+                monitor_owns_status=run.get("scheduler_type") == "slurm",
             )
         )
         + "\n"

@@ -86,14 +86,14 @@ projections, status advice, and hparam ranking validation. Recipe fields are onl
 consistency guards, while `run_manifest.tsv` remains the lifecycle owner.
 
 `managed_scheduler` owns backend selection plus the reusable direct
-GPU-capacity/process lifecycle and Slurm submit/observe lifecycle shared by
-managed launchers. `execution_snapshot` owns the frozen execution snapshot those
+GPU-capacity/process lifecycle and the Slurm submit/adopt, state-table, and
+stop lifecycle shared by managed launchers. `execution_snapshot` owns the frozen execution snapshot those
 launches check their target against: its shape, the target probe that produces
 it, the frozen-versus-live comparison, and its atomic write. Plan registration
-and the Slurm compute wrapper use it directly rather than through the scheduler.
-`slurm` owns scheduler resource/script contracts, CLI
-transport, machine-readable job and sidecar identity parsing, state
-normalization, compute-wrapper execution, and cancellation primitives.
+uses it directly rather than through the scheduler.
+`slurm` owns the scheduler resource and `job.sbatch` contracts and the
+`sbatch`, `squeue --me`, and `scancel` primitives with their output parsing and
+state classes.
 
 ### Domain — sleep2vec-specific
 `domain/` (sidecar_summaries, finetune_summary, sex_age_summary, presets,

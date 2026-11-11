@@ -261,7 +261,7 @@ def script_lines(
     lifecycle_python: str | Path | None = None,
     expected_runtime_commit: str | None = None,
     input_snapshots: list[FrozenInputSnapshot] | list[dict[str, str]] | None = None,
-    slurm_allocation_guard: str | None = None,
+    monitor_owns_status: bool = False,
 ) -> list[str]:
     cwd_lines = []
     if run_cwd is not None:
@@ -328,12 +328,9 @@ def script_lines(
             "trap _agent_finish_run EXIT",
             "",
         ]
-        if slurm_allocation_guard is not None:
-            # The outer Slurm worker owns terminal evidence; never write canonical status here.
-            lifecycle_lines = [
-                slurm_allocation_guard,
-                *prelaunch_verification_lines,
-            ]
+        if monitor_owns_status:
+            # Every Slurm task runs this script; the monitor owns status from the job's exit_code.
+            lifecycle_lines = prelaunch_verification_lines
     return [
         "#!/usr/bin/env bash",
         "set -euo pipefail",

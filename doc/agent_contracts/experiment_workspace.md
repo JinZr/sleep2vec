@@ -145,9 +145,10 @@ If a check is slow or SSH disconnects, inspect the original operation handle,
 phase logs and durable completion receipt against its frozen identity. Follow a
 still-live operation rather than starting another attempt. Missing or lost
 completion evidence remains uncertain even if a process disappears; do not retry
-a side effect to obtain a cleaner receipt. Uncertain submission is not definite
-failure; follow the [Slurm uncertainty rules](run_manifest.md#stopping-and-uncertain-states).
-Managed ordinary infer now uses the shared Slurm transaction; older
+a side effect to obtain a cleaner receipt. An interrupted Slurm submission is
+not definite failure: the next pass adopts the job by its unique name; see
+[submission and adoption](run_manifest.md#submission-and-adoption).
+Managed ordinary infer uses the shared Slurm submission pass; older
 manual wrappers remain historical and are not repaired or adopted by this flow.
 
 ### Execution identity legend
@@ -184,8 +185,9 @@ Runtime sync and process launch share a short checkout lock. The lock covers
 only the sync operation or the launch critical section that observes HEAD and
 starts the child. For provenance-aware managed direct launch, embedded
 verification, HEAD capture, and child `Popen` occur in that same critical
-section; Slurm similarly keeps allocation preflight/HEAD, sidecar publication,
-and `srun` `Popen` together. The lock is released for the child lifetime. Thus
+section. The lock is released for the child lifetime. A Slurm job takes no
+checkout lock: it records `git rev-parse HEAD` in `run_dir/runtime_commit` when
+its allocation starts. Thus
 a process whose spawn boundary observed commit A may continue while the
 checkout fast-forwards to B, and a later process observes B. The canonical manifest
 records both values. They are point-in-time provenance: code imported or read
@@ -203,13 +205,12 @@ warned rather than blocked. `runtime-sync` itself still requires a clean tree
 without untracked or ignored importable code. Hparam and ordinary Slurm
 launches retain their owner-specific managed-scheduler gates. Managed direct launch checks stable Python/route/module origin, live argv,
 clean code, and artifact hashes before starting. Commit drift remains allowed.
-The Slurm allocation
-recheck requires the current module to remain inside the current repository with
-the same module name rather than matching the frozen origin path. Direct preset
+A Slurm job rechecks only its frozen config and launch-script hashes in the
+allocation; the live module and CLI gates run before submission. Direct preset
 launch retains its frozen Python, clean importable-code, lifecycle-module, and
 script/config/input-hash gates, but does not claim workload module-origin or
 live-argv checks. Preserve current monitoring obligations and
-do not infer a retry from a lost receipt or uncertain submission.
+do not infer a retry from a lost receipt, an uncertain submission, or a `lost` Slurm run.
 
 ### Fixed-commit runtime staging
 
@@ -371,11 +372,11 @@ fact should not create an entry.
 | `doctor`, `context` | Consultation/diagnostics and diagnostic bundles, not execution authority; [diagnostic contract](task_recipe.md#consultation-and-diagnostics). |
 | `runtime-sync` | Inspect `origin/main` by default; with `--execute`, fast-forward one clean existing checkout in place under the short runtime lock. It does not clone, reset, or launch work. |
 | `plan` | Freeze and register recipe, config, commands, hashes and planned runs; [publication](#publication-and-registration). |
-| `hparam-launch`, `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](hparam_workflow.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. For a direct plan, `hparam-run-queue --execute` starts one detached [queue runner](hparam_workflow.md#direct-queue-runner) and returns; `--foreground` runs the queue in the calling process. |
+| `hparam-launch`, `hparam-run-queue` | Explicit launch/queue advancement; dry-run default; [launch and queue](hparam_workflow.md#launch-and-queue). CLI names preview/execute and projects recorded state counts. For a direct plan, `hparam-run-queue --execute` starts one detached [queue runner](hparam_workflow.md#direct-queue-runner) and returns; `--foreground` runs the queue in the calling process. For a Slurm plan, `--execute` makes one [submission pass](run_manifest.md#submission-and-adoption) and returns. |
 | `infer-launch`, `infer-stop` | Managed ordinary Slurm inference launch/stop; [ordinary inference](task_recipe.md#managed-ordinary-inference). |
 | `preset-launch`, `preset-stop` | Execution-host local detached preset launch/stop; launch defaults to dry-run, stop requires a reason; [managed preset preparation](task_recipe.md#managed-preset-preparation). |
 | `hparam-monitor`, `experiment-monitor` | Observe and write canonical evidence/projections and report direct queue-runner liveness; never launch pending work or start a runner. |
-| `hparam-stop` | Reasoned stop under authenticated identity rules; [prelaunch stop](hparam_workflow.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-uncertain-states). |
+| `hparam-stop` | Reasoned stop under authenticated identity rules; [prelaunch stop](hparam_workflow.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-lost-runs). |
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
 | `experiment-status` | Validate and display the [read-only snapshot](#read-only-status-and-advisory-actions). |

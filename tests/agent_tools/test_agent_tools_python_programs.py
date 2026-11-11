@@ -14,7 +14,6 @@ SOURCE_HASHES = {
     "plan_rendering.commit_status": "7112cb97e0d1ac2bce6fef0c4c453a1dd7adc307eaca04ae7cd66d52416531c9",
     "plan_rendering.verify_input_snapshots": "8c07f2508676126a0362ad9bd080db823a3649d587c00dcf90051149b1fa1701",
     "run_evidence.process_probe": "e2756bdde3a1a1c801e9d1ceab4656fea92c2cdddd5b266f185d98e615b12057",
-    "slurm.worker_bootstrap": "f9a83db38ee5b9c55922c47bda684bebd909d7231f576e0d5d5616d7beb5780e",
 }
 
 COMMAND_HASHES = {
@@ -24,7 +23,6 @@ COMMAND_HASHES = {
     "plan_rendering.commit_status": "5c20b6ed04d665521d6bd3e3bd917892e6f0548a1a71d0bf227ff43884d4eb7f",
     "plan_rendering.verify_input_snapshots": "71e4b5683071833f63e1abbf8e578b58cd99debb9731a67fd2c77f3677c7a4b7",
     "run_evidence.process_probe": "f19223a263e07ffd5d46e110423f8d1dfa4317249940d5cec3debd7a1f8154a8",
-    "slurm.worker_bootstrap": "3a5d44fd6ac4fb9ee6a4f75adc949d54cfed044ae1a6922e2fea871a3c7c9fce",
 }
 
 

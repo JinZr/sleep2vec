@@ -626,16 +626,7 @@ def compile_hparam_run_contracts(
             **combo,
         }
         if slurm_resources is not None:
-            row.update(
-                {
-                    "scheduler_direct_controller": str(slurm_resources["direct_controller"]).lower(),
-                    "scheduler_script": str(run_dir / "job.sbatch"),
-                    "scheduler_result_path": str(run_dir / "slurm_terminal.json"),
-                    "allocation_identity_path": str(run_dir / "allocation_identity.json"),
-                    "log_path": str(run_dir / "slurm.log"),
-                    "terminal_status_owner": "scheduler_sidecar",
-                }
-            )
+            row.update({"scheduler_script": str(run_dir / "job.sbatch"), "log_path": str(run_dir / "slurm.log")})
         if init_snapshots:
             row["input_snapshots"] = init_snapshots
         contract: plan_contract.HparamRunContract | plan_contract.MaterializedHparamRunContract = {"row": row}
@@ -681,24 +672,10 @@ def compile_hparam_run_contracts(
                 "script_text": script_text,
             }
             if slurm_resources is not None:
-                token = slurm.submit_token(row, slurm_resources, execution["runtime_commit"])
                 scheduler_script_text = slurm.render_batch_script(
-                    run=row,
-                    execution={**execution, "workdir": str(run_cwd)},
-                    resources=slurm_resources,
-                    token=token,
-                    result_path=row["scheduler_result_path"],
-                    allocation_identity_path=row["allocation_identity_path"],
-                    execution_snapshot_path=out / "execution_snapshot.json",
-                    log_path=row["log_path"],
-                    module=run_module,
+                    run=row, execution={**execution, "workdir": str(run_cwd)}, resources=slurm_resources
                 )
-                row.update(
-                    {
-                        "scheduler_submit_token": token,
-                        "scheduler_script_sha256": hashlib.sha256(scheduler_script_text.encode()).hexdigest(),
-                    }
-                )
+                row["scheduler_script_sha256"] = hashlib.sha256(scheduler_script_text.encode()).hexdigest()
                 materialized["scheduler_script_text"] = scheduler_script_text
             contract = materialized
         contracts.append(contract)
@@ -1167,7 +1144,6 @@ def render_hparam_preflight_card(
         tasks = resources["gpus_per_run"]
         planned_jobs = len(run_configs)
         cpus_per_job = tasks * resources["cpus_per_task"]
-        controller = "direct controller" if resources["direct_controller"] else "bound cluster"
         topology_lines.extend(
             [
                 f"- Planned allocation topology: nodes/run=1, tasks/run={tasks}, GPUs/run={tasks}, "
@@ -1178,7 +1154,6 @@ def render_hparam_preflight_card(
                 f"- Aggregate across {planned_jobs} planned allocations if active together: "
                 f"tasks={planned_jobs * tasks}, GPUs={planned_jobs * tasks}, CPUs={planned_jobs * cpus_per_job}, "
                 f"memory={planned_jobs} × {resources['memory']}",
-                f"- Scheduler controller: {controller}",
             ]
         )
     lines = [

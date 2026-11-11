@@ -417,29 +417,22 @@ def test_direct_observation_cannot_add_launchable_runs_and_removes_running_pendi
 
 
 def test_slurm_observation_and_merge_cannot_add_launchable_runs(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(managed_scheduler, "_read_slurm_json", lambda *_args: {})
     monkeypatch.setattr(run_evidence, "runtime_artifacts", lambda *_args: ("", {}, []))
-    monkeypatch.setattr(
-        slurm,
-        "active_jobs",
-        lambda *_args, **_kwargs: [slurm.JobObservation("42", "PENDING", comment="unit-token")],
-    )
-    for status in ("queued", "running", "unknown_scheduler", "completed"):
+    run_dir = tmp_path / "runs" / "run-000"
+    run_dir.mkdir(parents=True)
+    jobs = {"42": slurm.JobObservation("42", "unit/tune/run-000", "PENDING", "Resources")}
+    for status in ("queued", "running", "lost", "completed"):
         prior = {
             "step_id": "tune",
             "run_id": "run-000",
             "target": "local",
             "status": status,
+            "run_dir": str(run_dir),
             "scheduler_type": "slurm",
             "scheduler_job_id": "42",
-            "scheduler_cluster": "unit",
-            "scheduler_submit_token": "unit-token",
-            "scheduler_direct_controller": "false",
-            "scheduler_result_path": str(tmp_path / "terminal.json"),
-            "allocation_identity_path": str(tmp_path / "allocation.json"),
         }
-        observed = managed_scheduler.observe_slurm_run(tmp_path, {"target": "local"}, prior)
-        assert observed["status"] == "queued"
+        observed = managed_scheduler.observe_slurm_run(tmp_path, prior, jobs)
+        assert observed["status"] == ("completed" if status == "completed" else "queued")
         assert merge_run_row(prior, observed)["status"] not in managed_scheduler.LAUNCHABLE_STATUSES
         for regression in managed_scheduler.LAUNCHABLE_STATUSES:
             assert merge_run_row(prior, {"status": regression})["status"] == status

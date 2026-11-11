@@ -20,14 +20,13 @@ import re
 import shlex
 from typing import Any, TypedDict
 
-from . import experiment_sources, managed_scheduler, run_artifacts as artifacts, run_evidence as evidence
+from . import experiment_sources, managed_scheduler, run_artifacts as artifacts, run_evidence as evidence, slurm
 from .experiment_workspace import (
     SUCCESS_STATUSES,
     TERMINAL_STATUSES,
     managed_run_key,
     managed_run_parameters,
     resolve_run_row,
-    scheduler_direct_controller,
     scheduler_type,
     stopped_runs_without_reason,
     validate_scheduler_run_identity,
@@ -130,11 +129,9 @@ class ExperimentStatusExecution(TypedDict):
 class ExperimentStatusScheduler(TypedDict):
     type: str | None
     job_id: str | None
-    cluster: str | None
     node: str | None
     raw_state: str | None
     reason: str | None
-    observed_at: str | None
 
 
 class ExperimentStatusProcess(TypedDict):
@@ -220,24 +217,21 @@ def monitor_run_row(
     row: Mapping[str, str],
     previous_rows: Sequence[Mapping[str, str]],
     *,
-    monitor_context: managed_scheduler.SlurmMonitorContext | None = None,
+    slurm_jobs: Mapping[str, slurm.JobObservation] | None = None,
 ) -> dict[str, JsonValue]:
+    """Observe one canonical run; slurm_jobs is the round's shared ``squeue --me`` snapshot."""
     previous = resolve_run_row(previous_rows, row) or {}
     observation_row = dict(row)
     scheduler_row = previous if previous.get("scheduler_type") not in (None, "") else row
     if scheduler_type(scheduler_row) == "slurm":
-        has_execution_identity = any(source.get("target") not in (None, "") for source in (row, previous))
+        # A stop can bind a job to a run whose submit pass never recorded its execution identity.
+        has_execution_identity = any(
+            source.get(field) not in (None, "")
+            for source in (row, previous)
+            for field in ("target", "scheduler_job_id")
+        )
         if has_execution_identity:
-            execution: dict[str, JsonValue] = {}
-            if scheduler_direct_controller(scheduler_row):
-                execution["scheduler"] = {"direct_controller": True}
-            status = managed_scheduler.observe_slurm_run(
-                root,
-                execution,
-                observation_row,
-                health=True,
-                monitor_context=monitor_context,
-            )
+            status = managed_scheduler.observe_slurm_run(root, observation_row, slurm_jobs, health=True)
         else:
             status = {**observation_row}
     else:
@@ -279,30 +273,10 @@ def monitor_run_row(
         status["health_status"] = "completed"
     observation_fields = evidence.RUN_STATUS_FIELDS | {
         "scheduler_job_id",
-        "scheduler_cluster",
         "scheduler_raw_state",
         "scheduler_reason",
         "scheduler_node",
         "scheduler_exit_code",
-        "scheduler_observed_at",
-        "scheduler_started_at",
-        "scheduler_priority",
-        "scheduler_nice",
-        "scheduler_partition",
-        "scheduler_account",
-        "scheduler_qos",
-        "scheduler_reservation",
-        "scheduler_submit_time",
-        "scheduler_eligible_time",
-        "scheduler_start_time",
-        "scheduler_time_limit",
-        "scheduler_requested_nodes",
-        "scheduler_features",
-        "scheduler_requested_tres",
-        "scheduler_tres_per_node",
-        "scheduler_health_error",
-        "scheduler_queue_age_seconds",
-        "scheduler_allocation_age_seconds",
     }
     observation = {
         "step_id": row["step_id"],
@@ -335,7 +309,6 @@ def monitor_report(
                 ("state", "scheduler_raw_state"),
                 ("reason", "scheduler_reason"),
                 ("node", "scheduler_node"),
-                ("priority", "scheduler_priority"),
             )
             if row.get(field) not in (None, "")
         )
@@ -389,7 +362,7 @@ def _experiment_lifecycle_decision(
         )
         decision["manual_choice_required"] = True
     else:
-        uncertain = [row for row in sorted_rows if row["status"] in {"unknown_scheduler", "missing_pid", "submitting"}]
+        uncertain = [row for row in sorted_rows if row["status"] in {"lost", "missing_pid"}]
         active = [row for row in sorted_rows if row["status"] in managed_scheduler.ACTIVE_STATUSES]
         if uncertain:
             state = "blocked"
@@ -1000,7 +973,6 @@ def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
                     ("node", scheduler["node"]),
                     ("state", scheduler["raw_state"]),
                     ("reason", scheduler["reason"]),
-                    ("observed", scheduler["observed_at"]),
                 )
                 if value is not None
             )
@@ -1150,11 +1122,9 @@ def _status_run_payload(row: Mapping[str, str]) -> ExperimentStatusRun:
         "scheduler": {
             "type": _optional_text(row.get("scheduler_type")),
             "job_id": _optional_text(row.get("scheduler_job_id")),
-            "cluster": _optional_text(row.get("scheduler_cluster")),
             "node": _optional_text(row.get("scheduler_node")),
             "raw_state": _optional_text(row.get("scheduler_raw_state")),
             "reason": _optional_text(row.get("scheduler_reason")),
-            "observed_at": _optional_text(row.get("scheduler_observed_at")),
         },
         "process": {
             "pid": _optional_text(row.get("pid")),

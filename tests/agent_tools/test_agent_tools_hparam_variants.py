@@ -386,11 +386,7 @@ def test_hparam_card_skips_sidecar_tables_without_weakening_validation(
     )
 
 
-@pytest.mark.parametrize(
-    ("direct_controller", "controller_label"),
-    [(False, "bound cluster"), (True, "direct controller")],
-)
-def test_hparam_preflight_card_projects_slurm_topology(direct_controller: bool, controller_label: str):
+def test_hparam_preflight_card_projects_slurm_topology():
     config_path = "configs/sleep2vec_dense_finetune_cls.yaml"
     config_bytes = (REPO_ROOT / config_path).read_bytes()
     card = render_hparam_preflight_card(
@@ -405,7 +401,6 @@ def test_hparam_preflight_card_projects_slurm_topology(direct_controller: bool, 
                     "cpus_per_task": 6,
                     "memory": "64G",
                     "walltime": "12:00:00",
-                    "direct_controller": direct_controller,
                 },
             },
         },
@@ -422,4 +417,4 @@ def test_hparam_preflight_card_projects_slurm_topology(direct_controller: bool, 
     assert (
         "- Aggregate across 3 planned allocations if active together: " "tasks=24, GPUs=24, CPUs=144, memory=3 × 64G"
     ) in card
-    assert f"- Scheduler controller: {controller_label}" in card
+    assert "Scheduler controller" not in card

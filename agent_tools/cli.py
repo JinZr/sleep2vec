@@ -296,7 +296,8 @@ def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
         "hparam-run-queue",
         "Drain a hyper-parameter plan's run queue within its GPU capacity until every run is terminal. "
         "Dry run unless --execute is given; --execute starts one detached runner per direct plan "
-        "(logging to queue_runner.log) and returns; --foreground runs the queue in this process.",
+        "(logging to queue_runner.log) and returns; --foreground runs the queue in this process. "
+        "For a Slurm plan, --execute submits every launchable run once and returns.",
     )
     run_queue.add_argument("--plan-dir", required=True, help="Registered plan directory to drain.")
     _add_dry_run_or_execute(
@@ -305,8 +306,8 @@ def _add_launch_commands(sub: argparse._SubParsersAction) -> None:
     run_queue.add_argument(
         "--foreground",
         action="store_true",
-        help="With --execute, run the queue loop in this process until every run is terminal instead of "
-        "starting a detached runner; fails if another runner holds the plan's queue_runner.lock.",
+        help="With --execute, run a direct plan's queue loop in this process until every run is terminal "
+        "instead of starting a detached runner; fails if another runner holds the plan's queue_runner.lock.",
     )
     run_queue.add_argument("--poll-seconds", type=float, default=60, help="Seconds to wait between queue polls.")
     run_queue.set_defaults(func=_cmd_hparam_run_queue)
@@ -572,7 +573,7 @@ def _cmd_preset_stop(args: argparse.Namespace) -> int:
 def _cmd_hparam_run_queue(args: argparse.Namespace) -> int:
     if args.execute and not args.foreground:
         runner = start_hparam_queue_runner(args.plan_dir, poll_seconds=args.poll_seconds)
-        # None means a Slurm plan, whose queue still runs in this process.
+        # None means a Slurm plan, whose --execute is one submit pass in this process.
         if runner is not None:
             print("Mode: execute (detached queue runner started)")
             print(f"Queue runner: started; pid={runner.pid}; log={runner.log_path}")
@@ -608,9 +609,7 @@ def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
     evidence_rows = [
         row
         for row in rows
-        if row.get("status") in {"failed", "missing_pid", "unknown_scheduler"}
-        or row.get("process_identity_error")
-        or row.get("scheduler_health_error")
+        if row.get("status") in {"failed", "missing_pid", "lost"} or row.get("process_identity_error")
     ]
     if evidence_rows:
         print("Failure evidence:")
@@ -619,7 +618,6 @@ def _cmd_hparam_monitor(args: argparse.Namespace) -> int:
         for label, field in (
             ("scheduler reason", "scheduler_reason"),
             ("process identity error", "process_identity_error"),
-            ("scheduler health error", "scheduler_health_error"),
             ("log", "log_path"),
         ):
             if row.get(field):

@@ -267,9 +267,9 @@ agent_tools/**/*.lock
 run_manifest.tsv.lock
 *.cas.lock
 
-# Slurm-sidecar and process identity artifacts
-slurm_terminal.json
-allocation_identity.json
+# Slurm job and process identity artifacts
+**/runs/*/exit_code
+**/runs/*/runtime_commit
 **/pid
 
 # Temporary atomic-write helper directories

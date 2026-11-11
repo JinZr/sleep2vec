@@ -120,7 +120,7 @@ def test_hparam_execution_reports_one_invalid_field(execution, field, message):
     assert message in issues[0].message
 
 
-def test_hparam_execution_warns_when_slurm_request_voluntarily_lowers_priority():
+def test_hparam_execution_keeps_slurm_priority_a_plain_directive():
     issues = decision_hparam._hparam_execution_issues(
         {
             "scheduler": {
@@ -136,10 +136,8 @@ def test_hparam_execution_warns_when_slurm_request_voluntarily_lowers_priority()
         {},
     )
 
-    priority_issue = next(issue for issue in issues if issue.field == "execution.scheduler.priority")
-    assert priority_issue.status.value == "WARN"
-    assert "nice=100 voluntarily lowers priority" in priority_issue.message
-    assert "nodelist narrows eligible nodes" in priority_issue.message
+    # nice and nodelist are frozen sbatch directives; Slurm, not the planner, owns priority.
+    assert not [issue for issue in issues if issue.field.startswith("execution.scheduler")]
 
 
 def test_direct_hparam_allows_slurm_named_environment_variable():

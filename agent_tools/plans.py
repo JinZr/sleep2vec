@@ -864,10 +864,9 @@ def prepare_doctor_report(output_dir: str | Path | None, recipe: dict, report: D
     With no adapter, returns the original report. output_dir is currently unused
     and is not passed to the adapter; this step does not write doctor artifacts.
 
-    Findings are read-only but can require external inspection, including Slurm
-    queries for an otherwise unblocked hparam recipe. Does not publish plans or
-    launch runs. Adapter-handled inspection failures become report issues;
-    unhandled errors propagate. This is not a substitute for preflight_plan.
+    Findings are read-only. Does not publish plans or launch runs. Adapter-handled
+    inspection failures become report issues; unhandled errors propagate. This is
+    not a substitute for preflight_plan.
     """
     adapter = get_adapter(recipe.get("task"))
     return adapter.prepare_doctor_report(recipe, report) if adapter is not None else report

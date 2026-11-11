@@ -39,7 +39,7 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
         root,
         step_id="tune",
         task="hparam_tune",
-        status="unknown_scheduler",
+        status="lost",
     )
     before = _workspace_files(root)
 
@@ -233,11 +233,8 @@ def test_experiment_status_projects_recorded_scheduler_node():
         "run_name": "default",
         "status": "running",
         "scheduler_type": "slurm",
-        "scheduler_submit_token": "unit-token",
         "scheduler_script": str(plan_dir / "run-000.sbatch"),
         "scheduler_script_sha256": "a" * 64,
-        "scheduler_result_path": str(plan_dir / "run-000.result.json"),
-        "allocation_identity_path": str(plan_dir / "run-000.allocation.json"),
         "scheduler_job_id": "3880",
         "scheduler_node": "gpu-node-02",
     }

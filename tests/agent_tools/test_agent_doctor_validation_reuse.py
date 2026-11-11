@@ -559,13 +559,8 @@ def test_doctor_publishes_only_canonical_static_ownership_questions(
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     monkeypatch.setattr(
         managed_scheduler.slurm,
-        "cluster_scheduling_capabilities",
-        lambda *_args, **_kwargs: pytest.fail("Blocked doctor reached Slurm capability inspection"),
-    )
-    monkeypatch.setattr(
-        managed_scheduler.slurm,
-        "fixed_node_resource_capacity",
-        lambda *_args, **_kwargs: pytest.fail("Blocked doctor reached Slurm capacity inspection"),
+        "run_command",
+        lambda *_args, **_kwargs: pytest.fail("Doctor reached a Slurm client"),
     )
     output_dir = tmp_path / "doctor"
 

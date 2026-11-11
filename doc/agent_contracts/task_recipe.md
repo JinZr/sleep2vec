@@ -122,16 +122,10 @@ the consultation result or introduce a dependency-version gate. Manager, target,
 and allocation identities are distinct; see the
 [execution identity legend](experiment_workspace.md#execution-identity-legend).
 
-Slurm task diagnostics may inspect version, priority, backfill, accounting,
-partition, reservation, and one literal fixed node's configured CPU, memory,
-and GPU capacity through read-only `scontrol` queries. Fixed-node capacity is
-an empty-node theoretical limit, not current availability: one run that cannot
-fit is a failure, while a larger co-resident batch or unavailable capacity
-evidence is a warning. Blank, comma-separated, and bracket-expression
-`nodelist` values leave capacity unknown. This time-stamped advice does not
-change the frozen scheduler request or make unavailable accounting or capacity
-a registration blocker. `nice=0` is the highest unprivileged nice setting; no
-user-side option guarantees first priority.
+Slurm diagnostics run no scheduler queries: `nice`, `nodelist`, partition, and
+walltime are plain frozen `sbatch` directives, and Slurm owns queueing and
+priority. `nice=0` is the highest unprivileged nice setting; no user-side
+option guarantees first priority.
 
 Within one `doctor` or `plan` consultation, index checks reuse the accepted
 config summary and subject keys from successful, complete local survival or
@@ -342,7 +336,7 @@ slurm`. They reuse the existing single-node Slurm resource fields and protected
 environment rules in [Launch and queue](hparam_workflow.md#launch-and-queue), with explicit
 `execution.workdir`, `execution.python`, and a full 40-character planned/baseline
 `execution.runtime_commit`, frozen in lowercase. Slurm client commands run on the
-host where agent tools run; `scheduler.direct_controller` selects controller routing. Paths
+host where agent tools run. Paths
 must already be available on the execution host; planning does not upload a
 runtime or input bundle.
 
@@ -356,14 +350,14 @@ worker `launch.sh`, and `job.sbatch`. Use `infer-launch --plan-dir <plan>` for
 a dry-run and add `--execute` only when execution is authorized; `run.sh`
 delegates to the same operation and also defaults to dry-run. Do not submit or
 run the worker separately. Its exact model command stays in the frozen plan,
-while the canonical submission command is bound by the shared launch
-transaction. Registration and dry-run do not bind a job, cluster, or execution
-identity.
+while the canonical submission command is bound by the shared submission
+pass. Registration and dry-run do not bind a job or execution identity.
 
 Use `experiment-monitor` to refresh scheduler evidence and `experiment-status`
 for read-only advice. `infer-stop --plan-dir <plan> --reason <reason>` acts on
 the unique run through the shared Slurm stop transaction. Repeated execute
-does not resubmit a queued, active, terminal, or uncertain run. The
-[Slurm evidence contract](run_manifest.md#slurm-scheduler-evidence) owns terminal
-and lost-receipt rules, including failures before the workload starts. This
+does not resubmit a queued, active, `lost`, or terminal run; a job already
+named for the run is adopted instead. The
+[Slurm evidence contract](run_manifest.md#slurm-scheduler-evidence) owns the
+job script, submission, state table, and stop rules. This
 does not migrate historical manually wrapped inference plans.

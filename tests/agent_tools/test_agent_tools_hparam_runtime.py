@@ -41,7 +41,6 @@ _RUNTIME_COMMIT = subprocess.run(
 
 @pytest.fixture(autouse=True)
 def _stub_execution_snapshot_preflight(monkeypatch, request):
-    monkeypatch.setattr(managed_scheduler.slurm, "controller_cluster", lambda *_args, **_kwargs: "wuji-h20")
     if not request.node.name.startswith("test_execution_probe_"):
         monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
 
@@ -98,7 +97,6 @@ def _write_slurm_plan(
     *,
     run_count: int = 1,
     execution: dict | None = None,
-    direct_controller: bool = False,
 ) -> tuple[Path, dict]:
     recipe_path = _hparam_recipe(tmp_path)
     if run_count > 1:
@@ -123,8 +121,6 @@ def _write_slurm_plan(
             },
         }
     )
-    if direct_controller:
-        recipe["execution"]["scheduler"]["direct_controller"] = True
     recipe["execution"].update(execution or {})
     source_config = (source_plan_dir / "config.source.yaml").read_bytes()
     plan_dir = tmp_path / "slurm-plan"

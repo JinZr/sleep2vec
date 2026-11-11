@@ -34,7 +34,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             slurm_launch = managed_scheduler._slurm_execution_identity({}, {})
             submit_command: str = slurm_launch["command"]
             slurm_launch["command"] = None  # type: ignore[typeddict-item]
-            slurm_launch["execution_snapshot_sha256"] = 1  # type: ignore[typeddict-item]
+            slurm_launch["execution_snapshot_sha256"] = ""  # type: ignore[typeddict-unknown-key]
             slurm_launch["log_path"] = None
             verification_options: managed_scheduler.LaunchVerificationOptions = {}
             verification_options["checkpoint_path"] = None
@@ -45,23 +45,12 @@ def test_result_types_reach_callers(tmp_path: Path):
             frozen_artifact: managed_scheduler.FrozenLaunchArtifact = {"path": "/config", "sha256": "a" * 64}
             frozen_artifact["sha256"] = None  # type: ignore[typeddict-item]
 
-            terminal_sidecar: slurm.TerminalSidecar = {
-                "schema_version": 1, "scheduler_job_id": "42", "scheduler_cluster": "cluster",
-                "scheduler_submit_token": "token", "node": "node", "started_at": "time",
-                "ended_at": "time", "exit_code": 0, "runtime_commit": "",
-            }
-            terminal_sidecar["exit_code"] = "0"  # type: ignore[typeddict-item]
-            terminal_sidecar["scheduler_job_id"] = 42  # type: ignore[typeddict-item]
-            allocation_sidecar: slurm.AllocationSidecar = {
-                "schema_version": 1, "scheduler_job_id": "42", "scheduler_cluster": "cluster",
-                "scheduler_submit_token": "token", "node": "node", "started_at": "time",
-                "execution_snapshot": {"runtime_commit": "a" * 40, "module": "sleep2vec.infer"},
-            }
-            allocation_sidecar["execution_snapshot"]["module"] = None  # type: ignore[typeddict-item]
-            allocation_sidecar["schema_version"] = 2  # type: ignore[typeddict-item]
-            for generated_sidecar in (allocation_sidecar, terminal_sidecar):
-                slurm.sidecar_identity(generated_sidecar, "token")
-            slurm.terminal_exit_code(terminal_sidecar)
+            job = slurm.JobObservation("42", "exp/step/run-000", "PENDING")
+            job_state: str = job.state
+            slurm.JobObservation(42, "exp/step/run-000", "PENDING")  # type: ignore[arg-type]
+            listed_jobs: list[slurm.JobObservation] = slurm.user_jobs(timeout=1)
+            submitted_job: str = slurm.submit("/plan/job.sbatch", timeout=1)
+            slurm_jobs: dict[str, slurm.JobObservation] = managed_scheduler.slurm_job_snapshot([{"status": "queued"}])
 
             def snapshot_result(should_write: bool) -> tuple[execution_snapshot.ExecutionSnapshot, bool]:
                 return {}, should_write
@@ -180,14 +169,7 @@ def test_result_types_reach_callers(tmp_path: Path):
             direct_health["gpu_summary"] = None  # type: ignore[typeddict-item]
             direct_health["checkpoint_counts"]  # type: ignore[typeddict-item]
             direct_health["progress_processed"] = "003"
-            slurm_health: managed_scheduler.SlurmHealthFields = {
-                "health_status": "scheduler_queued", "scheduler_health_error": "",
-                "scheduler_queue_age_seconds": 0, "scheduler_allocation_age_seconds": "", "log_age_seconds": "",
-            }
-            slurm_health["scheduler_queue_age_seconds"] = "0"  # type: ignore[typeddict-item]
-            slurm_health["scheduler_health_error"] = None  # type: ignore[typeddict-item]
-            slurm_health["queue_age_seconds"]  # type: ignore[typeddict-item]
-            experiment_tracking.monitor_report((direct_health, slurm_health))
+            experiment_tracking.monitor_report((direct_health,))
             monitor_result = experiments.monitor_experiment("/workspace")
             monitor_report_path: str = monitor_result["report"]
             monitor_result["runs"] = ["run-000"]  # type: ignore[list-item]
@@ -405,49 +387,9 @@ def test_result_types_reach_callers(tmp_path: Path):
 
             resources = slurm.normalize_resources({}, 1)
             cpus: int = resources["cpus_per_task"]
-            slurm.submit_token({}, resources, "commit")
             resources["cpu_per_task"]  # type: ignore[typeddict-item]
             resources["cpus_per_task"] = "4"  # type: ignore[typeddict-item]
-            slurm.submit_token({}, {**resources, "cpus_per_task": "4"}, "commit")  # type: ignore[typeddict-item]
 
-            capacity = slurm.fixed_node_resource_capacity({}, resources, 4)
-            planned_runs: int = capacity["planned_runs"]
-            capacity["limits"]  # type: ignore[typeddict-item]
-            if capacity["status"] == "known":
-                cpu_limit: int = capacity["limits"]["cpu"]
-                memory_kib: int = capacity["per_run"]["memory_kib"]
-                node_gpus: int = capacity["node_capacity"]["gpus"]
-                minimum_waves: int | None = capacity["minimum_waves"]
-                required_waves: int = capacity["minimum_waves"]  # type: ignore[assignment]
-                capacity["reason"]  # type: ignore[typeddict-item]
-                capacity["limits"]["cpu"] = "4"  # type: ignore[assignment]
-                capacity["per_run"]["memory_kb"]  # type: ignore[typeddict-item]
-                capacity["per_run"]["memory_kib"] = "1024"  # type: ignore[typeddict-item]
-                capacity["node_capacity"]["gpus"] = "8"  # type: ignore[typeddict-item]
-            else:
-                reason: str = capacity["reason"]
-                capacity["overall_empty_node_limit"]  # type: ignore[typeddict-item]
-
-            parsed_capabilities = slurm.parse_cluster_scheduling_capabilities(
-                version_output="", config_output="", partition_output="",
-                reservation_output="", partition="gpu",
-            )
-            version: str = parsed_capabilities["slurm_version"]
-            backfill: bool = parsed_capabilities["backfill_enabled"]
-            reservations: int = parsed_capabilities["reservation_count"]
-            parsed_capabilities["scheduler_typ"]  # type: ignore[typeddict-item]
-            parsed_capabilities["priority_type"] = False  # type: ignore[typeddict-item]
-            parsed_capabilities["backfill_enabled"] = 1  # type: ignore[typeddict-item]
-            parsed_capabilities["reservation_count"] = "1"  # type: ignore[typeddict-item]
-
-            capabilities = slurm.cluster_scheduling_capabilities({}, partition="gpu")
-            partition_state: str = capabilities["partition_state"]
-            accounting: bool = capabilities["accounting_enabled"]
-            visible_reservations: int = capabilities["reservation_count"]
-            capabilities["preemption_enable"]  # type: ignore[typeddict-item]
-            capabilities["partition_max_time"] = 1  # type: ignore[typeddict-item]
-            capabilities["preemption_enabled"] = 1  # type: ignore[typeddict-item]
-            capabilities["reservation_count"] = "1"  # type: ignore[typeddict-item]
 
             minimal_identity: run_evidence.ProcessIdentity = {
                 "pid": 12, "process_group_id": 12, "process_start_token": "token",

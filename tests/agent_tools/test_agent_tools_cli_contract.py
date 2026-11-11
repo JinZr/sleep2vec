@@ -546,6 +546,7 @@ def test_hparam_run_queue_cli_contract():
     assert "Dry run unless --execute" in summary
     assert "--execute starts one detached runner per direct plan" in summary
     assert "--foreground runs the queue in this process" in summary
+    assert "For a Slurm plan, --execute submits every launchable run once and returns." in summary
 
     with pytest.raises(SystemExit):
         parser.parse_args(["hparam-run-queue", "--plan-dir", "plan-dir", "--dry-run", "--execute"])
@@ -599,7 +600,7 @@ def test_hparam_run_queue_runs_in_process_without_a_detached_runner(tmp_path: Pa
     monkeypatch.setattr(
         cli, "run_hparam_queue", lambda plan_dir, *, dry_run, poll_seconds: queue_calls.append(dry_run) or status
     )
-    # start_hparam_queue_runner returns None for a Slurm plan, whose queue keeps running in this process.
+    # start_hparam_queue_runner returns None for a Slurm plan, whose --execute is one submit pass in this process.
     monkeypatch.setattr(cli, "start_hparam_queue_runner", lambda *_args, **_kwargs: start_calls.append("start") or None)
 
     assert cli.main(["hparam-run-queue", "--plan-dir", "plan-dir", *(["--execute"] if execute else [])]) == 0
@@ -660,7 +661,6 @@ def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeyp
                 "run_id": "run-001",
                 "status": "failed",
                 "scheduler_reason": "NonZeroExitCode",
-                "scheduler_health_error": "accounting unavailable",
                 "log_path": "/logs/run-001.log",
                 "log_tail": "rank 2: Traceback\nrank 2: CUDA out of memory",
             },
@@ -674,8 +674,7 @@ def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeyp
         "Lifecycle states: completed=1, failed=1",
         "Queue runner: not active; log=run-dir/queue_runner.log",
         "Failure evidence:",
-        "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; "
-        "scheduler health error=accounting unavailable; log=/logs/run-001.log",
+        "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; log=/logs/run-001.log",
         f"Wrote {status}",
     ]
 
@@ -684,8 +683,7 @@ def test_hparam_monitor_requires_opt_in_for_raw_log_tail(tmp_path: Path, monkeyp
         "Lifecycle states: completed=1, failed=1",
         "Queue runner: not active; log=run-dir/queue_runner.log",
         "Failure evidence:",
-        "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; "
-        "scheduler health error=accounting unavailable; log=/logs/run-001.log",
+        "- tune / run-001: status=failed; scheduler reason=NonZeroExitCode; log=/logs/run-001.log",
         "  rank 2: Traceback",
         "  rank 2: CUDA out of memory",
         f"Wrote {status}",

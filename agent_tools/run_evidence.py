@@ -254,11 +254,7 @@ def _direct_run_status(
             observed_status = "failed"
         else:
             owner = previous.get("terminal_status_owner") or row.get("terminal_status_owner")
-            log_failed = log_has_failure(
-                row.get("log_path"),
-                row,
-                require_exit_code=owner == "monitor",
-            )
+            log_failed = log_has_failure(row.get("log_path"), require_exit_code=owner == "monitor")
             observed_status = "failed" if log_failed else "finished"
     if script_commits_terminal_status and previous.get("status") == "stopping" and previous.get("stop_requested_at"):
         # The stop manager owns final stopped evidence; a live probe cannot release its recorded intent.
@@ -535,18 +531,12 @@ def stop_process_group(row: Mapping[str, JsonValue], identity: ProcessIdentity, 
     raise RuntimeError(f"Managed process group did not stop after SIGTERM: {pgid}")
 
 
-def log_has_failure(
-    path: Any,
-    row: Mapping[str, JsonValue] | None = None,
-    *,
-    require_exit_code: bool = False,
-) -> bool | None:
+def log_has_failure(path: Any, *, require_exit_code: bool = False) -> bool | None:
     """Interpret a log tail as failure evidence without changing runtime state.
 
-    Reads the last 100 lines of the local log. A valid
-    final monitor exit-code marker takes precedence over error text; Slurm's
-    rank-zero label is stripped for that marker. require_exit_code treats a
-    missing/invalid final marker, including an absent log, as failure. Otherwise
+    Reads the last 100 lines of the local log. A valid final monitor
+    exit-code marker takes precedence over error text. require_exit_code treats
+    a missing/invalid final marker, including an absent log, as failure. Otherwise
     falls back to known error strings, so False alone does not prove success.
     A missing file is an empty log. Unhandled I/O exceptions propagate.
     """
@@ -556,9 +546,6 @@ def log_has_failure(
     tail = _local_log_tail(log_path, 100) if log_path.exists() else ""
     lines = tail.splitlines()
     final_line = lines[-1] if lines else ""
-    # srun --label prefixes the rank-zero terminal marker; other ranks cannot own it.
-    if str((row or {}).get("scheduler_type") or "") == "slurm" and final_line.startswith("0:"):
-        final_line = final_line[2:].lstrip()
     if final_line.startswith(MONITOR_EXIT_CODE_PREFIX):
         raw_exit_code = final_line.removeprefix(MONITOR_EXIT_CODE_PREFIX)
         valid_exit_code = raw_exit_code and raw_exit_code.isascii() and raw_exit_code.isdecimal()

@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from agent_tools import experiment_io, experiment_tracking, experiment_workspace, experiments, run_evidence
+from agent_tools import experiment_io, experiment_tracking, experiment_workspace, experiments, run_evidence, slurm
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -339,49 +339,33 @@ def test_monitor_observation_contains_only_managed_identity_and_status_fields(tm
     }
 
 
-@pytest.mark.parametrize(
-    "controller_topology",
-    [None, "false", "true"],
-    ids=["legacy-default", "federation", "direct-controller"],
-)
-def test_experiment_monitor_routes_slurm_observation_by_controller_topology(
-    tmp_path: Path,
-    monkeypatch,
-    controller_topology: str | None,
-):
+def test_experiment_monitor_routes_slurm_observation_through_the_shared_job_snapshot(tmp_path: Path, monkeypatch):
     row = {
         "step_id": "train-model",
         "run_id": "run-000",
         "script": "/plan/run.sh",
         "scheduler_type": "slurm",
-        "scheduler_submit_token": "unit-token",
         "scheduler_script": "/plan/job.sbatch",
         "scheduler_script_sha256": "a" * 64,
-        "scheduler_result_path": "/plan/slurm_terminal.json",
-        "allocation_identity_path": "/plan/slurm_allocation.json",
+        "scheduler_job_id": "3880",
         "target": "local",
-        "status": "submitting",
+        "status": "queued",
     }
-    if controller_topology is not None:
-        row["scheduler_direct_controller"] = controller_topology
+    jobs = {"3880": slurm.JobObservation("3880", "exp/train-model/run-000", "PENDING", "Resources", "")}
     observed = []
 
-    def fake_slurm_observation(owner_dir, execution, observed_row, *, health, monitor_context=None):
-        observed.append((owner_dir, execution, dict(observed_row), health))
+    def fake_slurm_observation(owner_dir, observed_row, slurm_jobs, *, health):
+        observed.append((owner_dir, dict(observed_row), slurm_jobs, health))
         observed_row["log_tail"] = "observer-owned update"
         return {
             **observed_row,
-            "scheduler_job_id": "3880",
-            "scheduler_cluster": "wuji-h20",
             "scheduler_raw_state": "PENDING",
             "scheduler_reason": "Resources",
             "scheduler_node": "",
-            "scheduler_priority": "42",
-            "scheduler_queue_age_seconds": 30,
             "health_status": "scheduler_queued",
-            "scheduler_observed_at": "now",
             "status": "queued",
             "monitored_at": "now",
+            "unrelated_observer_field": "dropped",
         }
 
     monkeypatch.setattr(experiment_tracking.managed_scheduler, "observe_slurm_run", fake_slurm_observation)
@@ -392,67 +376,44 @@ def test_experiment_monitor_routes_slurm_observation_by_controller_topology(
     )
 
     snapshot = dict(row)
-    observation = experiment_tracking.monitor_run_row(tmp_path, row, [row])
+    observation = experiment_tracking.monitor_run_row(tmp_path, row, [row], slurm_jobs=jobs)
 
     assert row == snapshot
-    assert observed[0][0] == tmp_path
-    expected_execution = {}
-    if controller_topology == "true":
-        expected_execution["scheduler"] = {"direct_controller": True}
-    assert observed[0][1] == expected_execution
-    assert observed[0][3] is True
+    assert observed == [(tmp_path, row, jobs, True)]
     assert observation["status"] == "queued"
     assert observation["scheduler_job_id"] == "3880"
-    assert observation["scheduler_cluster"] == "wuji-h20"
     assert observation["scheduler_raw_state"] == "PENDING"
     assert observation["scheduler_reason"] == "Resources"
-    assert observation["scheduler_priority"] == "42"
-    assert observation["scheduler_queue_age_seconds"] == 30
     assert observation["health_status"] == "scheduler_queued"
-    assert observation["scheduler_observed_at"] == "now"
+    assert "unrelated_observer_field" not in observation
 
 
-def test_experiment_monitor_rejects_invalid_controller_topology_before_scheduler_query(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("binding", [{}, {"scheduler_job_id": "3880"}])
+def test_experiment_monitor_observes_a_slurm_run_once_it_has_execution_identity_or_a_job(
+    tmp_path: Path, monkeypatch, binding: dict
+):
     row = {
         "step_id": "train-model",
         "run_id": "run-000",
         "scheduler_type": "slurm",
-        "scheduler_direct_controller": "True",
-        "target": "local",
-        "status": "submitting",
-    }
-    monkeypatch.setattr(
-        experiment_tracking.managed_scheduler,
-        "observe_slurm_run",
-        lambda *_args, **_kwargs: pytest.fail("invalid topology must fail before querying Slurm"),
-    )
-
-    with pytest.raises(ValueError, match="scheduler_direct_controller must be true or false"):
-        experiment_tracking.monitor_run_row(tmp_path, row, [dict(row)])
-
-
-def test_experiment_monitor_does_not_observe_unlaunched_slurm_run(tmp_path: Path, monkeypatch):
-    row = {
-        "step_id": "train-model",
-        "run_id": "run-000",
-        "scheduler_type": "slurm",
-        "scheduler_submit_token": "unit-token",
         "scheduler_script": "/plan/job.sbatch",
         "scheduler_script_sha256": "a" * 64,
-        "scheduler_result_path": "/plan/slurm_terminal.json",
-        "allocation_identity_path": "/plan/slurm_allocation.json",
-        "status": "planned",
+        "status": "stopping" if binding else "planned",
+        **binding,
     }
+    observed = []
     monkeypatch.setattr(
         experiment_tracking.managed_scheduler,
         "observe_slurm_run",
-        lambda *_args, **_kwargs: pytest.fail("An unlaunched Slurm run must remain planned"),
+        lambda _root, observed_row, *_args, **_kwargs: observed.append(observed_row) or dict(observed_row),
     )
 
     observation = experiment_tracking.monitor_run_row(tmp_path, dict(row), [dict(row)])
 
-    assert observation["status"] == "planned"
+    assert observation["status"] == row["status"]
     assert "target" not in observation
+    # A stop can bind a job before any submit pass recorded the run's execution identity.
+    assert len(observed) == (1 if binding else 0)
 
 
 @pytest.mark.parametrize(
