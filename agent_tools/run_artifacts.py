@@ -31,6 +31,7 @@ from .experiment_workspace import (
     experiment_root,
     file_sha256,
     managed_run_key,
+    managed_run_parameters,
     merge_run_manifest,
     plan_registration_rows_state,
     read_managed_yaml_mapping,
@@ -175,7 +176,8 @@ def read_registered_plan(
     refreshing those snapshots. Checks that the step registers the plan, that
     plan.json's recipe equals recipe.resolved.yaml (and, for an hparam plan, its
     frozen SHA-256), that the recipe's experiment and step metadata match the
-    workspace and step, and that run_manifest.tsv holds every plan run.
+    workspace and step, and that run_manifest.tsv holds every plan run with the plan's
+    run parameters.
 
     Frozen configs and scripts are not re-read or recompiled here: the generated
     scripts verify their inputs at run time and the launch paths verify what they
@@ -206,10 +208,15 @@ def read_registered_plan(
     if not isinstance(runs, list) or any(not isinstance(run, dict) for run in runs):
         raise ValueError(f"Registered plan runs must be a list of mappings: {plan_dir / 'plan.json'}")
     plan_keys = [validated_run_key(run) for run in runs]
-    workspace_keys = {managed_run_key(row) for row in workspace_rows}
-    for step_id, run_id in plan_keys:
-        if (step_id, run_id) not in workspace_keys:
+    workspace_by_key = {managed_run_key(row): row for row in workspace_rows}
+    for (step_id, run_id), run in zip(plan_keys, runs):
+        row = workspace_by_key.get((step_id, run_id))
+        if row is None:
             raise ValueError(f"Workspace run_manifest.tsv is missing registered plan run: {step_id} / {run_id}")
+        # Selection reports read run parameters from run_manifest.tsv, so they must match the plan.
+        # Empty cells are other steps' parameter columns in the shared manifest header.
+        if _nonempty_text_parameters(row) != _nonempty_text_parameters(run):
+            raise ValueError(f"Workspace run parameters differ from plan: {step_id} / {run_id}")
 
     selection: RegisteredPlanSelection | None = None
     if task == "hparam_tune":
@@ -228,6 +235,11 @@ def read_registered_plan(
         "recipe": recipe,
         "runs": runs,
     }
+
+
+def _nonempty_text_parameters(row: Mapping[str, object]) -> dict[str, str]:
+    # run_manifest.tsv stores each parameter as str(value), so compare plan values in that form.
+    return {field: str(value) for field, value in managed_run_parameters(row).items() if value not in (None, "")}
 
 
 def hparam_plan_workspace(plan_dir: Path) -> Path:
