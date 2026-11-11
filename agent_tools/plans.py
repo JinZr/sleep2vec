@@ -1178,11 +1178,13 @@ def build_plan(
     Consultation and handled precommit failures return a non-passing report;
     other exceptions propagate. A failure does not promise rollback of every
     workspace artifact. See doc/agent_contracts/ for the publication contracts."""
-    recipe = load_recipe_with_base(recipe_path)
+    recipe: dict | None = None
     build_lock: AbstractContextManager
     if validate_only:
+        # Validate-only leaves the recipe load to preflight_plan, under the publication lock.
         build_lock = plan_publication_lock(Path(output_dir))
     else:
+        recipe = load_recipe_with_base(recipe_path)
         root = experiment_root(recipe)
         build_lock = plan_registration_lock(root) if root is not None else nullcontext()
     request = PlanBuildRequest(
@@ -1209,7 +1211,7 @@ def _prepare_plan_staging(*, out: Path, plan_adapter: TaskAdapter | None) -> tup
     return Path(tempfile.mkdtemp(prefix=f".{out.name}.", suffix=".staging", dir=staging_parent)), True
 
 
-def _build_plan(*, request: PlanBuildRequest, loaded_recipe: dict) -> DecisionReport:
+def _build_plan(*, request: PlanBuildRequest, loaded_recipe: dict | None) -> DecisionReport:
     out = canonical_local_experiment_root(request.output_dir, Path.cwd())
     preflight_recipe, cfg, report = preflight_plan(
         recipe_path=request.recipe_path,
