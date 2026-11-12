@@ -603,7 +603,6 @@ def test_infer_launch_reads_only_its_target_plan(tmp_path: Path, monkeypatch, _r
         {
             "step": {"id": "unrelated", "phase": "evaluate", "purpose": "Hold a broken unrelated plan."},
             "experiment_id": experiment["id"],
-            "plan_controller": "ordinary",
             "recipe_path": "",
             "plans": [str(broken_dir)],
         },

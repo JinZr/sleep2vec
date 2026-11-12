@@ -228,7 +228,6 @@ def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
             {
                 "step": step,
                 "experiment_id": experiment["id"],
-                "plan_controller": "ordinary",
                 "recipe_path": "",
                 "plans": [str(root.resolve())],
             },

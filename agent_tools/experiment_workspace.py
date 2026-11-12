@@ -1,10 +1,9 @@
-"""Managed manifests and the one-way ``plan_controller`` binding.
+"""Managed run and step manifests.
 
 The workspace facade. Owns ``run_manifest.tsv`` -- the lifecycle owner for run
 status -- its managed run lock, the frozen run, scheduler, process, and
 runtime-provenance identity field sets, the phase and status vocabularies, and
-the one-way step ``plan_controller`` binding that makes a step ordinary when its
-first plan registers.
+the step manifests (``steps/<id>/step.yaml``) under which plans register.
 
 ``research_log`` publishes behind this facade rather than writing to the
 workspace directly.
@@ -42,13 +41,11 @@ class RunIdentity(TypedDict):
 class StepManifest(TypedDict):
     step: dict[str, Any]
     experiment_id: Any
-    plan_controller: str
     recipe_path: Any
     plans: list[str]
 
 
 PHASES = {"prepare", "train", "evaluate", "analyze"}
-PLAN_CONTROLLERS = {"ordinary"}
 TERMINAL_STATUSES = {"completed", "failed", "finished", "launch_failed", "stopped", "superseded"}
 SUCCESS_STATUSES = frozenset({"completed", "finished"})
 LAUNCHABLE_STATUSES = frozenset({"planned", "pending"})
@@ -405,7 +402,7 @@ def validate_plan_output(
 def merge_step_manifest(
     existing: StepManifest | dict[str, Any], incoming: StepManifest | dict[str, Any]
 ) -> StepManifest:
-    allowed_fields = {"step", "experiment_id", "plan_controller", "recipe_path", "plans"}
+    allowed_fields = {"step", "experiment_id", "recipe_path", "plans"}
     for source, payload in (("existing", existing), ("incoming", incoming)):
         if not isinstance(payload, dict):
             raise ValueError(f"{source} step manifest must be a mapping.")
@@ -416,9 +413,6 @@ def merge_step_manifest(
             raise ValueError(f"{source} step manifest step must be a mapping.")
         if "plans" in payload and not isinstance(payload["plans"], list):
             raise ValueError(f"{source} step manifest plans must be a list.")
-        controller: Any = payload.get("plan_controller")
-        if controller not in (None, "") and controller not in PLAN_CONTROLLERS:
-            raise ValueError(f"{source} step manifest has invalid plan_controller: {controller}")
 
     merged_step = dict(existing.get("step") or {})
     for field, value in (incoming.get("step") or {}).items():
@@ -444,14 +438,11 @@ def merge_step_manifest(
         if path not in plans:
             plans.append(path)
 
-    # Both payloads were checked against PLAN_CONTROLLERS above, so a set controller cannot differ.
-    controller = existing.get("plan_controller") or incoming.get("plan_controller") or ""
     recipe_path = existing.get("recipe_path") or incoming.get("recipe_path") or ""
 
     return {
         "step": merged_step,
         "experiment_id": existing_experiment_id or incoming_experiment_id or "",
-        "plan_controller": controller,
         "recipe_path": recipe_path,
         "plans": plans,
     }
@@ -476,8 +467,6 @@ def _validated_step_manifest(text: str, path: Path, step_id: str) -> dict[str, A
         raise ValueError(f"Managed step manifest id differs from its directory: {path}")
     if not str(payload["experiment_id"] or "").strip():
         raise ValueError(f"Managed step manifest is missing experiment_id: {path}")
-    if payload["plan_controller"] not in PLAN_CONTROLLERS:
-        raise ValueError(f"Managed step manifest has invalid plan_controller: {path}")
     recipe_path = payload["recipe_path"]
     if not isinstance(recipe_path, str) or (recipe_path and not Path(recipe_path).is_absolute()):
         raise ValueError(f"Managed step manifest recipe_path must be empty or absolute: {path}")
@@ -702,7 +691,6 @@ def ensure_experiment_workspace(
     step_payload: StepManifest = {
         "step": step,
         "experiment_id": experiment["id"],
-        "plan_controller": "ordinary",
         "recipe_path": recipe.get("_recipe_path", ""),
         "plans": [str(plan_path)],
     }

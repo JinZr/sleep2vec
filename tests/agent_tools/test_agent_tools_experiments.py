@@ -44,7 +44,6 @@ def _write_step(root: Path) -> None:
             {
                 "step": {"id": "train-model", "phase": "train", "purpose": "Train a candidate."},
                 "experiment_id": "unit",
-                "plan_controller": "ordinary",
                 "recipe_path": "",
                 "plans": [],
             }

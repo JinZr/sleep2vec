@@ -139,7 +139,7 @@ def test_experiment_status_reports_facts_without_next_action_advice(tmp_path):
     assert snapshot["summary"]["state"] == "ready_to_launch"
 
     assert "recorded evidence, not live" in rendered
-    assert "| Step | Phase | Plan controller | Status counts |" in rendered
+    assert "| Step | Phase | Status counts |" in rendered
     assert (
         "| Run | Canonical | Execution transport | Scheduler | Process | Checkpoints | Runtime manifest | Blocker |"
         in rendered
@@ -162,7 +162,6 @@ def test_experiment_status_human_output_scopes_same_code_blockers(tmp_path):
                 {
                     "step": {"id": step_id, "phase": "evaluate", "purpose": f"Run {step_id}."},
                     "experiment_id": "status-unit",
-                    "plan_controller": "ordinary",
                     "recipe_path": "",
                     "plans": [],
                 },
@@ -189,7 +188,6 @@ def test_experiment_status_projects_execution_target_without_control_host():
         {
             "manifest": {
                 "step": {"id": "train", "phase": "train", "purpose": "Train."},
-                "plan_controller": "ordinary",
             },
             "plans": [
                 {
@@ -212,7 +210,7 @@ def test_experiment_status_projects_execution_target_without_control_host():
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["runs"][0]["execution"] == {"target": "local"}
     rendered = experiment_tracking.format_experiment_status(snapshot)
-    assert "| train | train | ordinary | planned=1 |" in rendered
+    assert "| train | train | planned=1 |" in rendered
     assert "| train / run-000 — default | planned | local |" in rendered
     assert "control host:" not in rendered
 
@@ -235,7 +233,6 @@ def test_experiment_status_projects_recorded_scheduler_node():
         {
             "manifest": {
                 "step": {"id": "train", "phase": "train", "purpose": "Train."},
-                "plan_controller": "ordinary",
             },
             "plans": [
                 {

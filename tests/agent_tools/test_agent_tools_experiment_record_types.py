@@ -75,11 +75,11 @@ def test_step_merge_retains_dynamic_values_and_raw_reader_identity(tmp_path, mon
         "plans": [Path("/plans/b")],
     }
     merged = experiment_workspace.merge_step_manifest(existing, {"plans": ["/plans/b", Path("/plans/a")]})
-    assert merged == {**existing, "plan_controller": "", "plans": ["/plans/b", "/plans/a"]}
+    assert merged == {**existing, "plans": ["/plans/b", "/plans/a"]}
     assert merged["step"]["purpose"] is purpose
     assert merged["recipe_path"] is recipe_path
     assert existing["plans"] == [Path("/plans/b")]
-    payload = {**merged, "recipe_path": "", "plan_controller": "ordinary"}
+    payload = {**merged, "recipe_path": ""}
     monkeypatch.setattr(experiment_workspace, "read_managed_yaml_mapping", lambda *args, **kwargs: payload)
     step_path = tmp_path / "steps" / "train" / "step.yaml"
     step_path.parent.mkdir(parents=True)
@@ -144,10 +144,8 @@ def test_experiment_record_types_reach_callers(tmp_path):
 
             merged = workspace.merge_step_manifest({}, {})
             plans: list[str] = merged["plans"]
-            controller: str = merged["plan_controller"]
             merged["plan"]  # type: ignore[typeddict-item]
             merged["plans"] = [1]  # type: ignore[list-item]
-            merged["plan_controller"] = None  # type: ignore[typeddict-item]
             merged["experiment_id"] = 12
             merged["recipe_path"] = Path("relative.yaml")
             merged["step"]["purpose"] = 7

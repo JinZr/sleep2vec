@@ -152,7 +152,7 @@ owned by [the workspace contract](experiment_workspace.md#publication-and-regist
 The tool also validates managed output topology on the frozen execution host
 and inspects the target Python, repository commit, module origin, supported CLI
 options, and every final argv. Only a complete pass permits atomic publication,
-step/controller registration, canonical run-row merge, and the `plan_created`
+step registration, canonical run-row merge, and the `plan_created`
 event.
 
 `agent_tools plan --validate-only` exposes that exact staged path for an

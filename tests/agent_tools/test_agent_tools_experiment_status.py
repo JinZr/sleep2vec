@@ -170,7 +170,6 @@ def _add_plan(
             {
                 "step": step,
                 "experiment_id": experiment["id"],
-                "plan_controller": "ordinary",
                 "recipe_path": str(recipe_path),
                 "plans": [str(plan_dir)],
             },

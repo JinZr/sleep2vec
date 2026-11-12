@@ -41,7 +41,7 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
     assert "schema_version" not in first
     assert "generated_at" not in first
     assert first["summary"] == {"state": "blocked", "run_count": 1, "status_counts": {"lost": 1}}
-    assert first["steps"][0]["plan_controller"] == "ordinary"
+    assert set(first["steps"][0]) == {"id", "phase", "purpose", "plans", "status_counts"}
     assert first["runs"][0]["execution"] == {"target": None}
     assert first["runs"][0]["scheduler"]["raw_state"] == "MISSING"
     assert set(first["runs"][0]["scheduler"]) == {"type", "job_id", "node", "raw_state", "reason"}
@@ -67,7 +67,6 @@ def test_experiment_status_snapshot_is_independent_of_input_order():
         {
             "manifest": {
                 "step": {"id": row["step_id"], "phase": "train", "purpose": "Run the fixture."},
-                "plan_controller": "ordinary",
             },
             "plans": [
                 {
@@ -182,13 +181,13 @@ def test_experiment_status_reports_ready_to_launch_for_launchable_plans(tmp_path
     assert multiple["blockers"] == []
 
 
-def test_experiment_status_rejects_missing_step_controller_without_writing(tmp_path):
+def test_experiment_status_rejects_incomplete_step_manifest_without_writing(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
     _add_plan(root, step_id="train")
     step_path = root / "steps" / "train" / "step.yaml"
     step_manifest = yaml.safe_load(step_path.read_text())
-    step_manifest.pop("plan_controller")
+    step_manifest.pop("recipe_path")
     step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
     before = _workspace_files(root)
 
@@ -209,7 +208,6 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
             {
                 "step": {"id": "evaluate", "phase": "evaluate", "purpose": "Run external evaluation."},
                 "experiment_id": "status-unit",
-                "plan_controller": "ordinary",
                 "recipe_path": "",
                 "plans": [],
             },
