@@ -611,33 +611,12 @@ def float_or_none(value: Any) -> float | None:
     return score if math.isfinite(score) else None
 
 
-def sortable_score(value: Any, reverse: bool) -> float:
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return -math.inf if reverse else math.inf
-    # NaN is unordered, so every non-finite score must use the same worst-value sentinel.
-    return score if math.isfinite(score) else (-math.inf if reverse else math.inf)
+def assign_ranks(rows: list[dict[str, Any]], *, key: str, reverse: bool) -> list[dict[str, Any]]:
+    """Sort rows by their finite metric value and write 1-based ranks in place.
 
-
-def assign_ranks(
-    rows: list[dict[str, Any]],
-    *,
-    key: str,
-    reverse: bool,
-    top_k: int | None = None,
-    rank_metric: str | None = None,
-) -> list[dict[str, Any]]:
-    """Sort rows by their metric value and write 1-based ranks in place.
-
-    Sorting is stable (ties keep their input order). top_k truncates before
-    ranks are assigned, so ranks stay contiguous from 1. The input list is
-    not reordered; the returned list is the sorted (and truncated) view."""
-    ranked = sorted(rows, key=lambda row: sortable_score(row.get(key), reverse), reverse=reverse)
-    if top_k is not None:
-        ranked = ranked[:top_k]
+    Sorting is stable (ties keep their input order). The input list is not
+    reordered; the returned list is the sorted view."""
+    ranked = sorted(rows, key=lambda row: float(row[key]), reverse=reverse)
     for rank, row in enumerate(ranked, start=1):
         row["rank"] = rank
-        if rank_metric is not None:
-            row["rank_metric"] = rank_metric
     return ranked

@@ -8,6 +8,7 @@ of a launch.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 from typing import Any
@@ -195,12 +196,14 @@ def _git_result(
     *args: str,
     timeout: float = transport.COMMAND_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess:
-    sanitized = tuple(part for name in GIT_REPOSITORY_ENV for part in ("-u", name))
-    command = " ".join(
-        transport.sh(part)
-        for part in ("env", *sanitized, "git", "-c", "core.hooksPath=/dev/null", "-C", workdir, *args)
+    env = {key: value for key, value in os.environ.items() if key not in GIT_REPOSITORY_ENV}
+    return subprocess.run(
+        ["git", "-c", "core.hooksPath=/dev/null", "-C", workdir, *args],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
     )
-    return transport.run_shell(command, timeout=timeout)
 
 
 def _raise_git_error(result: subprocess.CompletedProcess) -> None:

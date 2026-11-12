@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import subprocess
-import sys
 
-from agent_tool_test_helpers import write_yaml
+from agent_tool_test_helpers import run_cli, write_yaml
 import pytest
 import yaml
 
@@ -15,10 +13,6 @@ from agent_tools.plans import build_plan, evaluate_recipe
 from agent_tools.skills import validate_skills
 
 TINY_RECIPE = REPO_ROOT / "recipes/examples/tiny_fixture_sleep2stat.yaml"
-
-
-def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
 
 
 def _tiny_recipe_payload() -> dict:
@@ -539,13 +533,13 @@ def test_sleep2stat_skill_documents_stable_sidecars():
 
 
 def test_sleep2stat_cli_skills_validate_accepts_examples():
-    result = _run("skills", "--validate")
+    result = run_cli("skills", "--validate")
 
     assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_sleep2stat_index_summary_runs_without_config():
-    result = _run("index-summary", "--index", "recipes/examples/fixtures/tiny_sleep2stat_index.csv", "--json")
+    result = run_cli("index-summary", "--index", "recipes/examples/fixtures/tiny_sleep2stat_index.csv", "--json")
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (

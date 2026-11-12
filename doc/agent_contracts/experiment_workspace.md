@@ -220,10 +220,10 @@ content only: it does not select upstream commits, install dependencies, run
 regressions or doctor, activate a runtime, or modify an experiment.
 
 - `stage --source-repo PATH --commit FULL_SHA --destination PATH --evidence-dir PATH`
-  requires fresh destination and evidence directories. For SSH, also provide
-  `--host HOST --remote-python PATH --remote-attempt-dir PATH` explicitly.
-  Bundle production and verification must succeed before transfer; the fixed
-  checkout runs with detached standard streams and persistent evidence.
+  requires fresh destination and evidence directories and stages on the local
+  host only. Bundle production and verification must succeed before the attempt
+  receives the bundle; the fixed checkout runs with detached standard streams
+  and persistent evidence.
   Git subprocesses isolate user/system configuration, global attributes and
   hooks without changing the caller's environment. Worker handles and terminal
   receipts are published atomically without replacement, with directory fsync.
@@ -235,10 +235,10 @@ regressions or doctor, activate a runtime, or modify an experiment.
   a verified failure or invalid evidence is nonzero. A pending `recorded_pid`
   locates the original worker; verify its current command and attempt before
   calling it live, and never treat that PID alone as cancellation authority.
-- Keep the attempt and stage logs after failure or disconnection. Never rerun
+- Keep the attempt and stage logs after failure or interruption. Never rerun
   `stage` to obtain a missing receipt, reuse a destination, or turn a partial HEAD
   into success. A later successful check is independent completion evidence; it
-  does not establish the return code of a previously disconnected SSH command.
+  does not establish the return code of a previously interrupted `stage` command.
 
 Staging success does not waive the activation and consultation gates above.
 
