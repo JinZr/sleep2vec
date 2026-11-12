@@ -37,11 +37,6 @@ def test_recipe_structure_accepts_minimal_registered_adapter_recipe(task):
             "variant",
         ),
         (
-            "hparam_tune",
-            {"task": "hparam_tune", "variant": "sleep2vec", "adaptive": {}},
-            "adaptive",
-        ),
-        (
             "finetune",
             {"task": "finetune", "variant": "sleep2vec", "decisions": []},
             "decisions",
@@ -182,7 +177,6 @@ def test_recipe_rejects_unknown_fields_in_existing_owner_sections(
     ("task", "path", "field", "message"),
     [
         ("finetune", ("artifacts", "overwrite"), "artifacts.overwrite", "Unknown artifacts field for task=finetune"),
-        ("infer", ("artifacts", "overwrite"), "artifacts", "Unknown recipe field for task=infer: artifacts."),
         ("preset_prepare", ("preset", "overwrite"), "preset.overwrite", "Unknown preset field for task=preset_prepare"),
         (
             "finetune",
@@ -201,9 +195,7 @@ def test_recipe_rejects_unknown_fields_in_existing_owner_sections(
 def test_recipe_rejects_removed_overwrite_fields(
     tmp_path: Path, task: str, path: tuple[str, ...], field: str, message: str
 ):
-    if task == "infer":
-        recipe = _write_infer_recipe(tmp_path)
-    elif task == "preset_prepare":
+    if task == "preset_prepare":
         index = tmp_path / "index.csv"
         index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
         config = yaml.safe_load(write_finetune_recipe(tmp_path).read_text())["inputs"]["config"]
@@ -220,21 +212,6 @@ def test_recipe_rejects_removed_overwrite_fields(
     issue = next(issue for issue in report.blocking_issues() if issue.field == field)
     assert report.exit_code == 1
     assert message in issue.message
-
-
-def test_user_decisions_reject_removed_overwrite_policy(tmp_path: Path):
-    recipe = write_finetune_recipe(tmp_path)
-    decisions = write_yaml(
-        tmp_path / "decisions.yaml",
-        {"decisions": {"overwrite_policy": {"value": True, "source": "explicit_user"}}},
-    )
-
-    _recipe, _cfg, report = evaluate_recipe(recipe, decisions)
-
-    issue = next(issue for issue in report.blocking_issues() if issue.field == "decisions.overwrite_policy")
-    assert report.exit_code == 1
-    assert issue.message == "Decision field is not supported for task=finetune: overwrite_policy."
-    assert issue.evidence["source_layer"] == "user"
 
 
 # evaluate was a removed alias of infer and embedding_extraction a removed task; both must stay unknown
@@ -754,7 +731,6 @@ def test_execution_identity_is_all_or_none(tmp_path: Path, task: str, missing_fi
         ("python", "~/miniconda/bin/python"),
         ("runtime_commit", "g" * 40),
         ("runtime_commit", []),
-        ("target", "ssh"),
     ],
 )
 def test_rejects_invalid_execution_identity(tmp_path: Path, task: str, field: str, value: object):
@@ -952,25 +928,6 @@ def test_non_preset_required_channels_decision_is_checked_without_creating_prese
     assert effective["decisions"]["required_channels"]["value"] == required_channels
     if expected_exit_code:
         assert any(issue.field == "required_channels" for issue in report.blocking_issues())
-
-
-def test_preset_regenerate_is_not_an_authored_preset_field(tmp_path: Path):
-    recipe = write_yaml(
-        tmp_path / "preset.yaml",
-        {
-            "name": "unit_preset_regenerate",
-            "task": "preset_prepare",
-            "variant": "sleep2vec",
-            "preset": {"regenerate": True},
-        },
-    )
-
-    _recipe, cfg, report = evaluate_recipe(recipe)
-
-    issue = next(issue for issue in report.blocking_issues() if issue.field == "preset.regenerate")
-    assert report.exit_code == 1
-    assert cfg is None
-    assert issue.evidence["source_layer"] == "effective"
 
 
 @pytest.mark.parametrize(

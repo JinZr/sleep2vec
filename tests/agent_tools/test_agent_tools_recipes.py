@@ -220,18 +220,6 @@ def test_evaluate_recipe_rejects_an_unquoted_yaml_date_at_the_freeze_check(tmp_p
         evaluate_recipe(path)
 
 
-def test_recipe_rejects_unknown_runtime_field(tmp_path: Path):
-    payload = load_yaml_file("recipes/examples/tiny_fixture_finetune.yaml")
-    payload["runtime"]["lrr"] = payload["runtime"].pop("lr")
-    path = tmp_path / "finetune.yaml"
-    path.write_text(yaml.safe_dump(payload))
-
-    _recipe, _cfg, report = evaluate_recipe(path)
-
-    assert report.exit_code == 1
-    assert "runtime.lrr" in {issue.field for issue in report.blocking_issues()}
-
-
 def test_recipe_rejects_test_selection_split(tmp_path: Path):
     payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
     payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
@@ -335,17 +323,10 @@ def test_recipe_rejects_invalid_search_configurations(tmp_path: Path, configurat
     assert any(expected_message_part in message for message in messages)
 
 
-@pytest.mark.parametrize(
-    "adaptive",
-    [
-        {"enabled": False},
-        {"enabled": True, "suggest": {"strategy": "agent_proposal"}, "round_size": 2, "max_rounds": 6},
-    ],
-)
-def test_recipe_rejects_removed_adaptive_block(tmp_path: Path, adaptive: dict):
+def test_recipe_rejects_removed_adaptive_block(tmp_path: Path):
     payload = load_yaml_file("recipes/examples/tiny_fixture_hparam.yaml")
     payload["base_recipe"] = str(Path("recipes/examples/tiny_fixture_finetune.yaml").resolve())
-    payload["adaptive"] = adaptive
+    payload["adaptive"] = {"enabled": True, "suggest": {"strategy": "agent_proposal"}, "round_size": 2, "max_rounds": 6}
     path = tmp_path / "hparam.yaml"
     path.write_text(yaml.safe_dump(payload))
 

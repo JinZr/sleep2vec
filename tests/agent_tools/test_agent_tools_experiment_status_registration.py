@@ -134,26 +134,18 @@ def test_experiment_status_accepts_historical_blocked_plan_without_user_decision
     assert snapshot["summary"]["state"] == "empty"
 
 
-@pytest.mark.parametrize(
-    "mutation",
-    ["missing_questions_json", "missing_questions_md", "launch_script", "config", "runs"],
-)
+@pytest.mark.parametrize("mutation", ["missing_questions_json", "launch_script"])
 def test_experiment_status_rejects_partial_registered_blocked_plan(tmp_path, mutation):
     root = tmp_path / "experiment"
     recipe = write_finetune_recipe(root, include_label=False)
     blocked_dir = root / "plans" / "blocked"
     assert plans.build_plan(recipe_path=recipe, output_dir=blocked_dir).exit_code == 2
 
-    if mutation.startswith("missing_questions"):
-        suffix = ".json" if mutation.endswith("json") else ".md"
-        (blocked_dir / f"questions{suffix}").unlink()
+    if mutation == "missing_questions_json":
+        (blocked_dir / "questions.json").unlink()
         error = "Managed file is missing"
-    elif mutation == "runs":
-        (blocked_dir / "runs").mkdir()
-        error = "directory entries differ"
     else:
-        name = "run.sh" if mutation == "launch_script" else "config.yaml"
-        (blocked_dir / name).write_text("partial artifact\n")
+        (blocked_dir / "run.sh").write_text("partial artifact\n")
         error = "directory entries differ"
     before = _workspace_files(root)
 

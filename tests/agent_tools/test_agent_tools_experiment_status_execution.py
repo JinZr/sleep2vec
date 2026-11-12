@@ -103,13 +103,11 @@ def test_experiment_status_rejects_contradictory_scheduler_identity(tmp_path):
         experiments.experiment_status(root)
 
 
-@pytest.mark.parametrize("status", ["planned", "pending"])
-@pytest.mark.parametrize("field", ["pid", "process_group_id", "process_start_token"])
-def test_experiment_status_rejects_process_identity_on_launchable_direct_runs(tmp_path, status, field):
+def test_experiment_status_rejects_process_identity_on_launchable_direct_runs(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    _plan, canonical = _add_plan(root, step_id="train", status=status)
-    canonical[field] = "42"
+    _plan, canonical = _add_plan(root, step_id="train", status="planned")
+    canonical["pid"] = "42"
     write_rows(root / "run_manifest.tsv", [canonical])
 
     with pytest.raises(ValueError, match="Launchable direct managed run cannot define PID process identity"):

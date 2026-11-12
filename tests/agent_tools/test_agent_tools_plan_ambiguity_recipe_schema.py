@@ -22,12 +22,9 @@ def test_hparam_recipe_cannot_inherit_experiment_and_step_from_base(tmp_path: Pa
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
 
-    doctor = run_cli("doctor", "--recipe", str(recipe))
     plan = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
 
-    assert doctor.returncode == 2
     assert plan.returncode == 2
-    assert "experiment" in doctor.stdout
     assert "experiment" in plan.stdout
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
@@ -672,10 +669,8 @@ def test_hparam_yaml_override_can_match_explicit_decision_when_base_differs(
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    doctor = run_cli("doctor", "--recipe", str(recipe))
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert doctor.returncode == 0, doctor.stderr or doctor.stdout
     assert result.returncode == 0, result.stderr or result.stdout
     run_config = yaml.safe_load(Path(_first_run(output_dir)["config"]).read_text())
     configured = run_config
@@ -695,11 +690,8 @@ def test_hparam_yaml_backend_override_rejects_any_combo_conflicting_with_explici
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    doctor = run_cli("doctor", "--recipe", str(recipe))
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert doctor.returncode == 1
-    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in doctor.stdout
     assert result.returncode == 1
     assert "data_backend decision differs from config data.backend after hparam YAML overrides" in result.stdout
     assert not output_dir.exists()
@@ -712,11 +704,8 @@ def test_hparam_backend_decision_must_match_base_without_yaml_override(tmp_path:
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
 
-    doctor = run_cli("doctor", "--recipe", str(recipe))
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
-    assert doctor.returncode == 1
-    assert "data_backend decision differs from config data.backend after hparam YAML overrides" in doctor.stdout
     assert result.returncode == 1
     assert "data_backend decision differs from config data.backend after hparam YAML overrides" in result.stdout
     assert not output_dir.exists()

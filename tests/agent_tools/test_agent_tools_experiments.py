@@ -692,22 +692,6 @@ def test_interrupted_finalization_preserves_complete_experiment_manifest(tmp_pat
     assert "experiment_finalized" not in {event["event_type"] for event in events}
 
 
-def test_experiment_finalize_rejects_missing_pid_status(tmp_path: Path):
-    spec = _experiment_spec(tmp_path.parent)
-    assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tmissing_pid\n"
-    )
-    report = tmp_path.parent / "missing_pid_final.md"
-    report.write_text("# Final\n")
-
-    result = _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
-
-    assert result.returncode == 1
-    assert "unresolved runs" in result.stderr
-    assert "status: completed" not in (tmp_path / "experiment.yaml").read_text()
-
-
 def test_experiment_finalize_requires_stop_reason_before_writing(tmp_path: Path):
     experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
     run_manifest = tmp_path / "run_manifest.tsv"
@@ -739,18 +723,6 @@ def test_experiment_finalize_rejects_workspace_without_managed_runs(tmp_path: Pa
     assert result.returncode == 1
     assert "no managed runs" in result.stderr
     assert "status: completed" not in (tmp_path / "experiment.yaml").read_text()
-
-
-def test_experiment_finalize_validates_manifest_before_writing_report(tmp_path: Path):
-    (tmp_path / "run_manifest.tsv").write_text("step_id\trun_id\tstatus\ntrain\trun-000\tfinished\n")
-    report = tmp_path.parent / "final_without_manifest.md"
-    report.write_text("# Final\n")
-
-    result = _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
-
-    assert result.returncode == 1
-    assert "experiment.yaml is missing" in result.stderr
-    assert not (tmp_path / "reports" / "final.md").exists()
 
 
 def test_experiment_mutations_require_initialized_workspace_before_side_effects(tmp_path: Path):

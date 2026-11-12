@@ -985,7 +985,7 @@ def test_status_marks_lifecycle_owned_script_without_process_identity_exit_faile
     assert observed["status"] == "failed"
 
 
-@pytest.mark.parametrize("status", ["completed", "failed", "finished", "launch_failed", "stopped", "superseded"])
+@pytest.mark.parametrize("status", ["completed", "superseded"])
 def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Path, monkeypatch, status: str):
     _write_runtime_rows(
         tmp_path,

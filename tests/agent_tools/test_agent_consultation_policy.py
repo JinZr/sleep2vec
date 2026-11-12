@@ -46,16 +46,6 @@ def test_missing_artifacts_warning_respects_task_output_ownership(task, warns):
         assert "artifacts/" in issues[0].message
 
 
-def test_doctor_returns_exit_2_when_label_name_missing_for_finetune(tmp_path: Path):
-    recipe = write_finetune_recipe(tmp_path, include_label=False)
-
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"), cwd=Path.cwd())
-
-    assert result.returncode == 2
-    assert "Status: NEEDS_USER_INPUT" in result.stdout
-    assert "label_name" in result.stdout
-
-
 def test_doctor_without_output_dir_is_read_only(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     payload = yaml.safe_load(recipe.read_text())

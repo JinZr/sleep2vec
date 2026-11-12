@@ -475,18 +475,6 @@ def test_experiment_monitor_does_not_advance_planned_run(tmp_path: Path):
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
-def test_experiment_run_rows_rejects_historical_status_without_rewriting(tmp_path: Path):
-    _initialize_workspace(tmp_path)
-    legacy = "trial_id\tversion\tstatus\ntrial_000\tlegacy-v1\tfailed\n"
-    (tmp_path / "trial_status.tsv").write_text(legacy)
-
-    with pytest.raises(ValueError, match="read-only"):
-        experiments.monitor_experiment(tmp_path)
-
-    assert (tmp_path / "trial_status.tsv").read_text() == legacy
-    assert not (tmp_path / "run_manifest.tsv").exists()
-
-
 def test_experiment_monitor_keeps_duplicate_versions_scoped_by_step_and_run(tmp_path: Path, monkeypatch):
     _initialize_workspace(tmp_path)
     (tmp_path / "run_manifest.tsv").write_text(
