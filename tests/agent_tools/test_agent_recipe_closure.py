@@ -36,11 +36,6 @@ def test_recipe_structure_accepts_minimal_registered_adapter_recipe(task):
             "variant",
         ),
         (
-            "embedding_extraction",
-            {"task": "embedding_extraction", "variant": "sex_age_baseline"},
-            "variant",
-        ),
-        (
             "hparam_tune",
             {"task": "hparam_tune", "variant": "sleep2vec", "adaptive": {}},
             "adaptive",
@@ -184,8 +179,9 @@ def test_recipe_rejects_unknown_fields_in_existing_owner_sections(
     assert issue.evidence["preflight_before_workspace"] is True
 
 
-# evaluate was a removed alias of infer; it must stay an unknown task rather than route anywhere.
-@pytest.mark.parametrize("task", ["not_registered", "evaluate"])
+# evaluate was a removed alias of infer and embedding_extraction a removed task; both must stay unknown
+# tasks rather than route anywhere.
+@pytest.mark.parametrize("task", ["not_registered", "evaluate", "embedding_extraction"])
 def test_recipe_rejects_unregistered_task_at_the_recipe_boundary(tmp_path: Path, task: str):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())

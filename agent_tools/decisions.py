@@ -277,9 +277,6 @@ def evaluate_consultation_gates(
         decisions[decision_field] = decision
         unresolved_recipe_value = decision.value in (None, "") and "recipe" in decision.evidence
         if decision.value == "ASK_USER" or unresolved_recipe_value:
-            evidence = dict(decision.evidence)
-            if unresolved_recipe_value and task_adapter is not None and task_adapter.preflight_on_unresolved:
-                evidence["preflight_before_workspace"] = True
             message = (
                 f"{decision_field} is marked ASK_USER."
                 if decision.value == "ASK_USER"
@@ -291,7 +288,7 @@ def evaluate_consultation_gates(
                     decision_field,
                     message,
                     decision.evidence.get("question") or rule.get("question"),
-                    evidence,
+                    dict(decision.evidence),
                 )
             )
             continue
