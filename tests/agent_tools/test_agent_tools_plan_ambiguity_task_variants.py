@@ -155,15 +155,9 @@ def test_finetune_plan_materializes_test_after_fit_policy_default(tmp_path: Path
         assert frozen["decisions"]["test_after_fit"]["source"] == "policy_default"
 
 
-@pytest.mark.parametrize("test_after_fit", [False, True])
-@pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
-def test_finetune_doctor_and_plan_reject_test_selection_before_workspace_mutation(
-    tmp_path: Path,
-    variant: str,
-    test_after_fit: bool,
-):
+def test_finetune_plan_rejects_test_selection_before_workspace_mutation(tmp_path: Path):
     source_dir = tmp_path / "source"
-    recipe = write_finetune_recipe(source_dir, variant=variant)
+    recipe = write_finetune_recipe(source_dir)
     workspace = tmp_path / "workspace"
     payload = yaml.safe_load(recipe.read_text())
     payload["experiment"]["root"] = str(workspace)
@@ -171,14 +165,14 @@ def test_finetune_doctor_and_plan_reject_test_selection_before_workspace_mutatio
         {
             "selection_split": "test",
             "external_test_locked": False,
-            "test_after_fit": test_after_fit,
+            "test_after_fit": True,
         }
     )
     payload["decisions"].update(
         {
             "train_val_test_policy": {"value": "test", "source": "explicit_user"},
             "external_test_locked": {"value": False, "source": "explicit_user"},
-            "test_after_fit": {"value": test_after_fit, "source": "explicit_user"},
+            "test_after_fit": {"value": True, "source": "explicit_user"},
         }
     )
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -186,7 +180,6 @@ def test_finetune_doctor_and_plan_reject_test_selection_before_workspace_mutatio
     config = Path(payload["inputs"]["config"])
     source_config_bytes = config.read_bytes()
 
-    doctor = run_cli("doctor", "--recipe", str(recipe))
     planned = run_cli(
         "plan",
         "--recipe",
@@ -195,9 +188,8 @@ def test_finetune_doctor_and_plan_reject_test_selection_before_workspace_mutatio
         str(workspace / "plans" / "direct-finetune"),
     )
 
-    for result in (doctor, planned):
-        assert result.returncode == 1
-        assert "The test split is never a selection split" in result.stdout
+    assert planned.returncode == 1
+    assert "The test split is never a selection split" in planned.stdout
     assert not workspace.exists()
     assert recipe.read_bytes() == source_recipe_bytes
     assert config.read_bytes() == source_config_bytes

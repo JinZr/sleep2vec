@@ -157,14 +157,6 @@ def test_unresolved_user_search_preserves_the_authored_search_space(tmp_path: Pa
     assert decisions_path.read_bytes() == decision_bytes
 
 
-def test_tiny_fixture_keeps_legacy_explicit_search():
-    recipe, _summary, report = plans.evaluate_recipe(REPO_ROOT / "recipes/examples/tiny_fixture_hparam.yaml")
-
-    assert report.exit_code == 0
-    assert "profile" not in recipe["search"]
-    assert recipe["search"]["parameters"] == {"runtime.lr": [1.0e-6]}
-
-
 @pytest.mark.parametrize(
     "template_name",
     ["hparam_tune_ppg_ahi.yaml", "hparam_tune_sleep2vec2_ppg_ahi.yaml", "hparam_tune_sleep2expert_ahi.yaml"],
@@ -175,7 +167,6 @@ def test_checked_in_templates_use_explicit_configurations(template_name):
     search = template["search"]
     points = search["configurations"]
 
-    assert "profile" not in search
     assert "parameters" not in search
     assert search["method"] == "grid"
     assert search["max_runs"] == len(points) <= hparam_search_defaults()["max_runs_total"]

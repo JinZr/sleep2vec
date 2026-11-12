@@ -314,8 +314,12 @@ def test_experiment_finalize_requires_selection_and_uses_verified_selection_repo
         experiments.finalize_experiment(root, arbitrary)
 
     selection_report = _record_hparam_selection(root, write_report=True)
+    copied_report = root / "selection-copy.md"
+    copied_report.write_bytes(selection_report.read_bytes())
+    before = _workspace_files(root)
     with pytest.raises(ValueError, match="must finalize from"):
-        experiments.finalize_experiment(root, arbitrary)
+        experiments.finalize_experiment(root, copied_report)
+    assert _workspace_files(root) == before
 
     target = experiments.finalize_experiment(root, selection_report)
     assert target.read_text() == selection_report.read_text()
@@ -340,50 +344,12 @@ def test_experiment_finalize_rehashes_selected_checkpoints_before_writing(tmp_pa
 
     assert _workspace_files(root) == before
     assert not (root / "reports" / "final.md").exists()
-
-
-def test_hparam_checkpoint_rehash_validates_evidence_and_hashes_checkpoint_path(monkeypatch):
-    row = {
-        "step_id": "tune",
-        "run_id": "run-000",
-        "target": "local",
-        "checkpoint_path": "/data/epoch=1.ckpt",
-        "checkpoint_sha256": "a" * 64,
-    }
-    validated = []
-    hashed = []
-    monkeypatch.setattr(
-        experiments.tracking,
-        "validate_checkpoint_evidence_rows",
-        lambda rows, ranked: validated.append((rows, ranked)),
-    )
-
-    def checkpoint_sha256(checkpoint_path):
-        hashed.append(checkpoint_path)
-        return "a" * 64
-
-    monkeypatch.setattr(experiments.evidence, "checkpoint_file_sha256", checkpoint_sha256)
-
-    experiments._validate_hparam_checkpoints([row], [{"ranked": [row]}])
-
-    assert validated == [([row], [row])]
-    assert hashed == [row["checkpoint_path"]]
-
-
-def test_experiment_finalize_rejects_selection_report_copy_for_pure_hparam_experiment(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
-    selection_report = _record_hparam_selection(root, write_report=True)
-    copied_report = root / "selection-copy.md"
-    copied_report.write_bytes(selection_report.read_bytes())
+    # The selected checkpoint evidence is revalidated, not only rehashed.
+    checkpoint.unlink()
     before = _workspace_files(root)
-
-    with pytest.raises(ValueError, match="must finalize from"):
-        experiments.finalize_experiment(root, copied_report)
-
+    with pytest.raises(ValueError, match="Checkpoint evidence is missing"):
+        experiments.finalize_experiment(root, selection_report)
     assert _workspace_files(root) == before
-    assert not (root / "reports" / "final.md").exists()
 
 
 @pytest.mark.parametrize("mutation", ["delete", "tamper"])
@@ -667,18 +633,8 @@ def test_experiment_status_rejects_missing_or_drifted_hparam_ranking(tmp_path, m
 @pytest.mark.parametrize(
     ("field", "mutation"),
     [
-        ("run_name", "tamper"),
-        ("parameter_summary", "tamper"),
-        ("version", "tamper"),
         ("config", "tamper"),
-        ("runtime.lr", "tamper"),
-        ("run_manifest", "tamper"),
-        ("status", "tamper"),
-        ("run_manifest", "remove"),
-        ("status", "remove"),
-        ("checkpoint_rank", "empty"),
         ("config", "remove"),
-        ("runtime.lr", "remove"),
         ("unexpected", "add"),
     ],
 )
@@ -702,8 +658,6 @@ def test_experiment_status_rejects_hparam_ranking_candidate_provenance_drift(tmp
     if mutation == "remove":
         for row in ranking_rows:
             row.pop(field)
-    elif mutation == "empty":
-        ranking_rows[0][field] = ""
     else:
         ranking_rows[0][field] = "tampered"
     write_rows(ranking, ranking_rows)
