@@ -383,6 +383,87 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
+    ("target", "output_dim", "projection_dim"),
+    [("stage5", 5, None), ("stage5", 5, 3), ("ahi", 30, 3)],
+)
+def test_concat_projection_preserves_sequence_predictions(
+    tmp_path: Path, target: str, output_dim: int, projection_dim: int | None
+):
+    import torch
+    import torch.nn as nn
+
+    pytest.importorskip("peft", exc_type=ImportError)
+    from sleep2vec.downstream_model import Sleep2vecDownstreamModel
+    from sleep2vec.pretrain_model import Sleep2vecPretrainModel
+
+    payload = _finetune_payload()
+    payload["model"]["head"]["channel_agg"] = {
+        "name": "concat",
+        "kwargs": {} if projection_dim is None else {"projection_dim": projection_dim},
+    }
+    payload["model"]["backbone"]["config_overrides"] = {"intermediate_size": 16}
+    payload["finetune"]["task"].update(output_dim=output_dim, is_seq=True)
+    payload["finetune"]["layer_mix"].update(enabled=True, layer_indices=[1, 2])
+    bundle = load_finetune_config(_write_yaml(tmp_path, payload))
+    channels = [channel.name for channel in bundle.model.channels]
+    backbone = Sleep2vecPretrainModel(bundle.model, device="cpu")
+    model = Sleep2vecDownstreamModel(
+        target=target,
+        backbone=backbone,
+        channel_names=channels,
+        output_dim=bundle.finetune.task.output_dim,
+        is_classification=True,
+        is_seq=bundle.finetune.task.is_seq,
+        device="cpu",
+        model_config=bundle.model,
+        head_config=bundle.model.head,
+        layer_mix_cfg=bundle.finetune.layer_mix,
+    )
+
+    hidden_size = bundle.model.backbone.hidden_size
+    first_linear = next(layer for layer in model.head.mlp if isinstance(layer, nn.Linear))
+    assert first_linear.in_features == len(channels) * (projection_dim or hidden_size)
+    logits = model({"tokens": {channel: torch.randn(2, 4, 4) for channel in channels}, "length": torch.tensor([4, 3])})
+    assert logits.shape == (2, 4, output_dim)
+    projection_weights = [weight for weight in model.head.fusion.aggregator.parameters() if weight.ndim == 2]
+    if projection_dim is None:
+        assert not projection_weights
+    else:
+        (weight,) = projection_weights
+        assert weight.shape == (projection_dim, hidden_size)
+        logits.square().mean().backward()
+        assert weight.grad is not None and torch.count_nonzero(weight.grad) > 0
+
+
+@pytest.mark.parametrize(
+    ("aggregation", "projection_dim"),
+    [("mean", 3), ("concat", 0), ("concat", 8), ("concat", True), ("concat", 2.5), ("concat", None)],
+)
+def test_load_finetune_config_rejects_invalid_concat_projection(tmp_path: Path, aggregation: str, projection_dim):
+    payload = _finetune_payload()
+    payload["model"]["head"]["channel_agg"] = {"name": aggregation, "kwargs": {"projection_dim": projection_dim}}
+
+    with pytest.raises(ValueError, match=r"model\.head\.channel_agg\.kwargs\.projection_dim"):
+        load_finetune_config(_write_yaml(tmp_path, payload))
+
+
+@pytest.mark.parametrize(
+    ("head_kwargs", "error"),
+    [
+        ({"agg": "mean"}, r"cannot be combined with model\.head\.kwargs\.agg"),
+        ({"channel_agg_kwargs": {"projection_dim": 4}}, r"Set channel aggregator options in model\.head\.channel_agg"),
+    ],
+)
+def test_load_finetune_config_rejects_concat_projection_overrides(tmp_path: Path, head_kwargs: dict, error: str):
+    payload = _finetune_payload()
+    payload["model"]["head"]["channel_agg"] = {"name": "concat", "kwargs": {"projection_dim": 3}}
+    payload["model"]["head"]["kwargs"] = head_kwargs
+
+    with pytest.raises(ValueError, match=error):
+        load_finetune_config(_write_yaml(tmp_path, payload))
+
+
+@pytest.mark.parametrize(
     "module_name",
     [
         "sleep2vec.config",

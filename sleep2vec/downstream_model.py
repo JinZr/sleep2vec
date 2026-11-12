@@ -115,6 +115,8 @@ class Sleep2vecDownstreamModel(nn.Module):
         head_kwargs.setdefault("hidden_dim", head_config.hidden_dim)
         head_kwargs.setdefault("dropout", head_config.dropout)
         head_kwargs.update(head_config.kwargs or {})
+        if channel_cfg.kwargs:
+            head_kwargs["channel_agg_kwargs"] = channel_cfg.kwargs
         temporal_cfg = head_config.temporal_agg
 
         self.head = create_head(
