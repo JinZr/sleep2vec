@@ -23,9 +23,6 @@ runtime:
   devices: [0]
   precision: bf16-mixed
 
-artifacts:
-  overwrite: false
-
 evaluation_policy:
   external_test_locked: true
   final_test_unlocked: false
@@ -45,6 +42,3 @@ decisions:
     value: ASK_USER
     source: unresolved
     question: "Should the selected sleep2vec2 model now be evaluated on the external test set?"
-  overwrite_policy:
-    value: false
-    source: explicit_recipe

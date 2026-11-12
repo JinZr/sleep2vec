@@ -96,7 +96,6 @@ def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
                 "task": {"value": "hparam_tune", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -200,7 +199,7 @@ def test_doctor_rejects_exact_output_symlink(tmp_path: Path):
 def test_doctor_template_does_not_promote_scalar_recipe_decision_to_user(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     payload = yaml.safe_load(recipe.read_text())
-    payload["decisions"]["overwrite_policy"] = False
+    payload["decisions"]["selection_mode"] = "max"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "doctor"
 
@@ -222,7 +221,7 @@ def test_doctor_template_preserves_explicit_user_decisions_and_metadata(tmp_path
                 "question": "Which outcome?",
                 "rationale": "Outcome is pending review.",
             },
-            "overwrite_policy": {"value": False, "source": "explicit_user"},
+            "selection_mode": {"value": "max", "source": "explicit_user"},
         },
     )
     output_dir = tmp_path / "doctor"
@@ -246,7 +245,7 @@ def test_doctor_template_preserves_explicit_user_decisions_and_metadata(tmp_path
                 "question": "Which outcome?",
                 "rationale": "Outcome is pending review.",
             },
-            "overwrite_policy": {"value": False, "source": "explicit_user"},
+            "selection_mode": {"value": "max", "source": "explicit_user"},
         }
     }
 
@@ -271,7 +270,7 @@ def test_doctor_requires_fresh_output_for_new_decision(tmp_path: Path):
     output_dir = tmp_path / "doctor"
     output_dir.mkdir()
     template = output_dir / "decisions.yaml"
-    original = "decisions:\n  overwrite_policy:\n    value: false\n"
+    original = "decisions:\n  selection_mode:\n    value: max\n"
     template.write_text(original)
 
     result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -287,7 +286,7 @@ def test_doctor_requires_fresh_output_for_changed_concrete_decision(tmp_path: Pa
     recipe = {"task": "finetune"}
     report = DecisionReport(
         status=DecisionStatus.NEEDS_USER_INPUT,
-        issues=[DecisionIssue(DecisionStatus.NEEDS_USER_INPUT, "overwrite_policy", "Overwrite policy is missing.")],
+        issues=[DecisionIssue(DecisionStatus.NEEDS_USER_INPUT, "selection_mode", "Selection mode is missing.")],
         decisions={
             "label_name": ResolvedDecision("label_name", "stage5", source, "high", {}),
         },
@@ -299,7 +298,7 @@ def test_doctor_requires_fresh_output_for_changed_concrete_decision(tmp_path: Pa
         {
             "decisions": {
                 "label_name": {"value": "ahi", "source": "explicit_user"},
-                "overwrite_policy": {"value": "ASK_USER", "source": "explicit_user"},
+                "selection_mode": {"value": "ASK_USER", "source": "explicit_user"},
             }
         },
         sort_keys=False,
@@ -647,7 +646,7 @@ def test_task_template_preserves_user_decisions_not_evaluated_after_task_blocker
         {
             "task": {"value": "ASK_USER", "source": "explicit_user"},
             "label_name": "ahi",
-            "overwrite_policy": False,
+            "selection_mode": "max",
         },
     )
     output_dir = tmp_path / "doctor"
@@ -665,7 +664,7 @@ def test_task_template_preserves_user_decisions_not_evaluated_after_task_blocker
     assert result.returncode == 2
     template = yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]
     assert template["label_name"] == {"value": "ahi", "source": "explicit_user"}
-    assert template["overwrite_policy"] == {"value": False, "source": "explicit_user"}
+    assert template["selection_mode"] == {"value": "max", "source": "explicit_user"}
 
 
 def test_layered_hparam_task_template_preserves_user_decisions(tmp_path: Path):
@@ -699,7 +698,7 @@ def test_layered_hparam_task_template_preserves_user_decisions(tmp_path: Path):
         tmp_path,
         {
             "hparam_budget": 3,
-            "overwrite_policy": {"value": True, "source": "explicit_user"},
+            "selection_mode": {"value": "max", "source": "explicit_user"},
         },
     )
     output_dir = tmp_path / "doctor"
@@ -717,7 +716,7 @@ def test_layered_hparam_task_template_preserves_user_decisions(tmp_path: Path):
     assert result.returncode == 2, result.stdout
     template = yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]
     assert template["hparam_budget"] == {"value": 3, "source": "explicit_user"}
-    assert template["overwrite_policy"] == {"value": True, "source": "explicit_user"}
+    assert template["selection_mode"] == {"value": "max", "source": "explicit_user"}
     assert template["task"] == {
         "value": "ASK_USER",
         "source": "explicit_user",

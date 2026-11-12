@@ -27,7 +27,6 @@ runtime:
 
 artifacts:
   run_dir: results/sleep2stat/spo2_respiratory_v02
-  overwrite: false
 
 evaluation_policy:
   external_test_locked: true
@@ -41,7 +40,4 @@ decisions:
     source: explicit_recipe
   sleep2stat_metric_use_policy:
     value: "Treat ODI/T90/desaturation burden as signal-derived metrics; event-related hypoxic burden is a proxy unless respiratory event annotations are configured."
-    source: explicit_recipe
-  overwrite_policy:
-    value: false
     source: explicit_recipe

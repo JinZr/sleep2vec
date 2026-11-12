@@ -38,8 +38,10 @@ Canonical flow:
 
 Preset payloads remain `list[SampleIndex]`; missing-channel presets preserve
 `payload["available_channels"]`. Kaldi changes storage discovery and loading,
-not the collated batch shape. Split policy, label selection, required channels,
-and preset regeneration are high-impact decisions and must not be inferred.
+not the collated batch shape. Split policy, label selection, and required
+channels are high-impact decisions and must not be inferred. Managed preset
+outputs are single-use: plan publication fails when a preset file at the
+recipe's `output_template` already exists.
 When config defines `preset_build`, it exclusively owns required-channel and
 minimum-channel runtime policy; otherwise the preset recipe owns those CLI fields.
 

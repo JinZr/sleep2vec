@@ -28,7 +28,6 @@ runtime:
 
 artifacts:
   run_dir: results/sleep2stat/model_only_v02
-  overwrite: false
 
 evaluation_policy:
   external_test_locked: true
@@ -42,7 +41,4 @@ decisions:
     source: explicit_recipe
   sleep2stat_metric_use_policy:
     value: "Treat stage5/AHI/age/sex model outputs as model-derived proxy metrics. Do not report predicted AHI as clinical AHI."
-    source: explicit_recipe
-  overwrite_policy:
-    value: false
     source: explicit_recipe

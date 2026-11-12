@@ -6,6 +6,7 @@ sidecar checks, and the execution contract for the preparation step.
 
 from __future__ import annotations
 
+from pathlib import Path
 import sys
 from typing import Any
 
@@ -29,7 +30,6 @@ class PresetPrepareAdapter(TaskAdapter):
     }
     extra_decision_fields = frozenset({"config"})
     decision_recipe_targets = {
-        "overwrite_policy": ("preset", "overwrite"),
         "required_channels": ("preset", "channels"),
     }
     unsupported_variants = frozenset({"sex_age_baseline"})
@@ -185,6 +185,7 @@ class PresetPrepareAdapter(TaskAdapter):
             "split": preset.get("split"),
             "n_tokens": preset.get("n_tokens"),
             "allow_missing_channels": preset.get("allow_missing_channels"),
+            "output_template": preset.get("output_template"),
         }.items():
             if value in (None, "", []):
                 issues.append(
@@ -266,6 +267,45 @@ class PresetPrepareAdapter(TaskAdapter):
                 ]
             )
         ]
+
+    def external_output_paths(self, recipe: dict[str, JsonValue]) -> list[Path]:
+        # Mirrors save_dataset_presets.py output planning: one pickle per metadata variant and split, resolved
+        # against the run workdir, plus the sleep2vec manifests; a dry run writes nothing.
+        preset, inputs, execution = recipe["preset"], recipe["inputs"], recipe["execution"]
+        assert isinstance(preset, dict) and isinstance(inputs, dict) and isinstance(execution, dict)
+        if preset.get("dry_run") is True:
+            return []
+        n_tokens = preset["n_tokens"]
+        stride_tokens = preset.get("stride_tokens")
+        if stride_tokens is None:
+            stride_tokens = 0 if n_tokens == 1535 else n_tokens
+        assert isinstance(n_tokens, int) and isinstance(stride_tokens, int)
+        splits = list(dict.fromkeys(coerce_list(preset["split"])))
+        if 0 < stride_tokens < n_tokens and not preset.get("include_overlap_eval_splits"):
+            splits = [split for split in splits if split not in {"val", "test"}]
+        meta_names = list(dict.fromkeys(coerce_list(preset.get("meta_data_names"))))
+        meta_variants: list[str | None] = [None] if not meta_names or preset.get("include_no_metadata") else []
+        meta_variants.extend(meta_names)
+        workdir = Path(str(execution.get("workdir") or REPO_ROOT))
+        sidecars = recipe.get("variant") == "sleep2vec" and preset.get("write_sidecar_manifest") is not False
+        paths: list[Path] = []
+        for meta in meta_variants:
+            for split in splits:
+                rendered = str(preset["output_template"]).format(
+                    dataset=inputs["dataset_name"],
+                    split=split,
+                    tokens=n_tokens,
+                    n_tokens=n_tokens,
+                    meta=meta or "none",
+                    meta_suffix=f"_{meta}" if meta else "",
+                )
+                path = workdir / Path(rendered).expanduser()
+                paths.append(path)
+                if sidecars:
+                    paths.append(path.with_name(f"{path.name}.manifest.json"))
+        if preset.get("manifest_output") not in (None, ""):
+            paths.append(workdir / Path(str(preset["manifest_output"])).expanduser())
+        return paths
 
     def index_summary_inputs_override(
         self, recipe: dict[str, Any], config_summary: ConfigSummaryInput | None

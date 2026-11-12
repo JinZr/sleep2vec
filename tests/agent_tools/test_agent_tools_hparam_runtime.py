@@ -83,7 +83,6 @@ def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None, variant: st
                     "value": "val",
                     "source": "explicit_recipe",
                 },
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
         },

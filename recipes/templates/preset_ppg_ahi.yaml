@@ -27,17 +27,10 @@ preset:
   include_no_metadata: false
   allow_missing_channels: true
   output_template: data/{dataset}_{split}_preset_{tokens}{meta_suffix}.pickle
-  overwrite: false
 
 decisions:
   task:
     value: preset_prepare
-    source: explicit_recipe
-  preset_regeneration:
-    value: true
-    source: explicit_recipe
-  overwrite_policy:
-    value: false
     source: explicit_recipe
   required_channels:
     value: [ppg, ahi, stage5]

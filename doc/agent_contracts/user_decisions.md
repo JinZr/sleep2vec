@@ -61,8 +61,6 @@ canonical fields.
 Special cases are explicit:
 
 - Non-preset `required_channels` is checked against the selected config.
-- `preset_regeneration` remains decision evidence; `preset.overwrite` controls
-  the rendered overwrite flag.
 - Hparam `ckpt_path` selects only the final-evaluation checkpoint.
 - A user `task` may fill a missing recipe task but cannot replace an explicit
   recipe task. For layered hparam recipes, it is compared with the local
@@ -86,10 +84,6 @@ decisions:
     value: true
     source: explicit_user
     rationale: Report post-fit test metrics for every tuning trial.
-
-  overwrite_policy:
-    value: false
-    source: explicit_user
 ```
 
 Resolution precedence is:

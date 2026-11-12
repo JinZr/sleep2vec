@@ -88,7 +88,7 @@ RECIPE_CASES = [
         "recipes/templates/infer_ppg_ahi_external_test.yaml",
         2,
         "NEEDS_USER_INPUT",
-        {"ckpt_path", "final_eval_unlock", "overwrite_policy"},
+        {"ckpt_path", "final_eval_unlock"},
     ),
     _recipe_case(
         "recipes/templates/infer_sleep2expert_ahi_external_test.yaml",

@@ -12,6 +12,7 @@ from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: 
 import yaml
 
 from agent_tools import configs, plan_context, plans
+from agent_tools.adapters.preset_prepare import PRESET_PREPARE_ADAPTER
 from agent_tools.models import REPO_ROOT
 
 
@@ -233,13 +234,11 @@ def test_direct_test_evaluation_requires_external_test_unlock(tmp_path: Path, ex
             "eval_split": "test",
         },
         "evaluation_policy": {"final_test_unlocked": True},
-        "artifacts": {"overwrite": False},
         "decisions": {
             "task": {"value": task, "source": "explicit_recipe"},
             "label_name": {"value": "ahi", "source": "explicit_recipe"},
             "ckpt_path": {"value": str(ckpt), "source": "explicit_recipe"},
             "final_eval_unlock": {"value": True, "source": "explicit_recipe"},
-            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
         },
     }
     if external_test_locked is not None:
@@ -441,7 +440,7 @@ def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_pa
     assert not (output_dir / "plan.md").exists()
 
 
-def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_ckpt(tmp_path: Path):
+def test_hparam_plan_skips_final_script_when_unlocked_without_ckpt(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"].update(
@@ -457,26 +456,16 @@ def test_hparam_plan_removes_stale_final_script_when_overwrite_allowed_without_c
             "external_test_locked": {"value": False, "source": "explicit_user"},
             "test_after_fit": {"value": False, "source": "explicit_user"},
             "final_eval_unlock": {"value": True, "source": "explicit_user"},
-            "overwrite_policy": {"value": True, "source": "explicit_user"},
         }
     )
-    payload["artifacts"] = {**payload.get("artifacts", {}), "overwrite": True}
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
-    output_dir.mkdir()
-    stale_final_script = output_dir / "final_external_test.sh"
-    stale_final_script.write_text("# stale final test script\n")
-    stale_final_config = output_dir / "config.final_eval.yaml"
-    stale_final_config.write_text("stale: true\n")
-    unrelated = output_dir / "unrelated.txt"
-    unrelated.write_text("preserve me\n")
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    assert not stale_final_script.exists()
-    assert not stale_final_config.exists()
-    assert unrelated.read_text() == "preserve me\n"
+    assert not (output_dir / "final_external_test.sh").exists()
+    assert not (output_dir / "config.final_eval.yaml").exists()
     trial_script = Path(_first_run(output_dir)["script"]).read_text()
     assert "--no-test-after-fit" in trial_script
     assert "--test-after-fit" not in trial_script
@@ -563,7 +552,6 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
             "allow_missing_channels": True,
             "min_channels": 2,
             "output_template": str(output_template),
-            "overwrite": True,
             "batch_size": 4,
             "shuffle": False,
             "mask_rate": 0.1,
@@ -588,13 +576,71 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     assert "--allow-missing-channels" in script
     assert "--min-channels 2" in script
     assert f"--output-template {shlex_quote(str(output_template))}" in script
-    assert "--overwrite" in script
+    assert "--overwrite" not in script
     assert "--batch-size 4" in script
     assert "--no-shuffle" in script
     assert "--mask-rate 0.1" in script
     assert "--dry-run" in script
     assert f"--manifest-output {shlex_quote(str(manifest_output))}" in script
     assert "--no-write-sidecar-manifest" in script
+
+
+@pytest.mark.parametrize("existing", ["pickle", "sidecar"])
+def test_preset_plan_rejects_existing_preset_outputs(tmp_path: Path, existing: str):
+    base = write_finetune_recipe(tmp_path)
+    config = yaml.safe_load(base.read_text())["inputs"]["config"]
+    index = tmp_path / "preset_index.csv"
+    index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
+    recipe = _write_preset_recipe(tmp_path, config=config, index=index)
+    preset_path = tmp_path / "presets" / "unit_train_128.pickle"
+    target = preset_path if existing == "pickle" else preset_path.with_name(f"{preset_path.name}.manifest.json")
+    target.parent.mkdir()
+    target.write_text("old preset output\n")
+    output_dir = tmp_path / "plan"
+
+    result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+
+    assert result.returncode == 1, result.stderr or result.stdout
+    assert (
+        "Task output files already exist; these outputs are single-use, so choose fresh output paths." in result.stdout
+    )
+    assert str(target) in result.stdout
+    assert target.read_text() == "old preset output\n"
+    assert not (output_dir / "plan.json").exists()
+
+
+def test_preset_external_output_paths_mirror_the_preset_script(tmp_path: Path):
+    recipe = {
+        "variant": "sleep2vec",
+        "inputs": {"dataset_name": "shhs"},
+        "execution": {"workdir": str(tmp_path)},
+        "preset": {
+            "n_tokens": 128,
+            "stride_tokens": 64,
+            "split": ["train", "val", "train"],
+            "meta_data_names": ["age", "age"],
+            "include_no_metadata": True,
+            "output_template": "data/{dataset}_{split}_{tokens}{meta_suffix}.pickle",
+            "manifest_output": "data/manifest.json",
+        },
+    }
+
+    # Overlapping windows drop val/test unless explicitly included; splits and metadata names are deduplicated.
+    assert PRESET_PREPARE_ADAPTER.external_output_paths(recipe) == [
+        tmp_path / "data/shhs_train_128.pickle",
+        tmp_path / "data/shhs_train_128.pickle.manifest.json",
+        tmp_path / "data/shhs_train_128_age.pickle",
+        tmp_path / "data/shhs_train_128_age.pickle.manifest.json",
+        tmp_path / "data/manifest.json",
+    ]
+    recipe["variant"] = "sleep2vec2"
+    recipe["preset"].update({"stride_tokens": 128, "meta_data_names": [], "manifest_output": None})
+    assert PRESET_PREPARE_ADAPTER.external_output_paths(recipe) == [
+        tmp_path / "data/shhs_train_128.pickle",
+        tmp_path / "data/shhs_val_128.pickle",
+    ]
+    recipe["preset"]["dry_run"] = True
+    assert PRESET_PREPARE_ADAPTER.external_output_paths(recipe) == []
 
 
 def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
@@ -615,7 +661,6 @@ def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
             "channels": ["stage5"],
             "allow_missing_channels": True,
             "min_channels": 1,
-            "overwrite": False,
         },
     )
     payload = yaml.safe_load(recipe.read_text())
@@ -623,7 +668,6 @@ def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
         {
             "required_channels": {"value": ["ppg", "ahi"], "source": "explicit_recipe"},
             "min_channels": {"value": 2, "source": "explicit_recipe"},
-            "overwrite_policy": {"value": True, "source": "explicit_recipe"},
         }
     )
     write_yaml(recipe, payload)
@@ -639,10 +683,8 @@ def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
     assert "--channels ppg ahi" in script
     assert "--channels stage5" not in script
     assert "--min-channels 2" in script
-    assert "--overwrite" in script
     resolved = yaml.safe_load((output_dir / "recipe.resolved.yaml").read_text())
     assert "regenerate" not in resolved["preset"]
-    assert resolved["decisions"]["preset_regeneration"]["value"] is True
 
 
 @pytest.mark.parametrize(

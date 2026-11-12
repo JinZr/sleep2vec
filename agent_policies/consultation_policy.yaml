@@ -65,14 +65,6 @@ high_impact_fields:
     allowed_values: ["train", "val", "test"]
     question: "Which split should be evaluated: train, val, or test?"
 
-  - id: preset_regeneration
-    required_for_tasks: ["preset_prepare"]
-    question: "Should existing preset files be reused or regenerated?"
-
-  - id: overwrite_policy
-    required_for_tasks: ["preset_prepare", "finetune", "hparam_tune", "infer", "sleep2stat"]
-    question: "Is overwriting existing output files allowed for this task?"
-
   - id: sleep2stat_split_policy
     required_for_tasks: ["sleep2stat"]
     question: "Which split(s) should sleep2stat process, and are outputs restricted to descriptive alignment/statistics rather than threshold or cleaning-rule selection?"

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 class RecipeField:
     #: Ordered (section, key) lookups; the first section whose mapping contains
     #: the key wins (mirrors ``.get(key, <fallback>)`` chains, so a present but
-    #: falsy value like ``overwrite=False`` still counts as a hit).
+    #: falsy value like ``external_test_locked=False`` still counts as a hit).
     read_path: tuple[tuple[str, str], ...]
     #: Single materialization target, or None for read-only fields (the base
     #: table has no write target; an adapter may inject one).
@@ -70,10 +70,6 @@ BASE_RECIPE_FIELDS: dict[str, RecipeField] = {
     "final_eval_config_path": RecipeField(
         (("inputs", "final_eval_config_path"),),
         ("inputs", "final_eval_config_path"),
-    ),
-    "overwrite_policy": RecipeField(
-        (("artifacts", "overwrite"), ("preset", "overwrite")),
-        ("artifacts", "overwrite"),
     ),
     "required_channels": RecipeField(
         (("preset", "required_channels"), ("preset", "channels")),

@@ -94,7 +94,6 @@ def _hparam_recipe(
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
                 "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -135,7 +134,6 @@ def _survival_recipe_with_missing_sidecar_key(tmp_path: Path) -> tuple[Path, Pat
                 "meaning": "train from scratch",
             },
             "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
         },
     }
     return write_yaml(tmp_path / "survival_recipe.yaml", recipe), config
@@ -184,14 +182,12 @@ def _write_infer_recipe(
             "variant": "sleep2vec",
             "inputs": inputs,
             "evaluation_policy": {"external_test_locked": False, "final_test_unlocked": True},
-            "artifacts": {"overwrite": True},
             "decisions": {
                 "task": {"value": "infer", "source": "explicit_recipe"},
                 "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
                 "ckpt_path": {"value": str(ckpt), "source": "explicit_recipe"},
                 "external_test_locked": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": True, "source": "explicit_recipe"},
-                "overwrite_policy": {"value": True, "source": "explicit_recipe"},
             },
         },
     )
@@ -207,7 +203,10 @@ def _write_preset_recipe(
     execution: dict | None = None,
     name: str = "unit_preset",
 ) -> Path:
-    preset = preset or {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False}
+    preset = {
+        "output_template": str(tmp_path / "presets" / "{dataset}_{split}_{tokens}{meta_suffix}.pickle"),
+        **(preset or {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False}),
+    }
     config_payload = yaml.safe_load(Path(config).read_text())
     preset_build = config_payload.get("preset_build") or {}
     required_channels = preset.get("channels")
@@ -228,8 +227,6 @@ def _write_preset_recipe(
         "preset": preset,
         "decisions": {
             "task": {"value": "preset_prepare", "source": "explicit_recipe"},
-            "preset_regeneration": {"value": True, "source": "explicit_recipe"},
-            "overwrite_policy": {"value": bool(preset.get("overwrite", False)), "source": "explicit_recipe"},
             "required_channels": {
                 "value": required_channels if required_channels is not None else ["ppg"],
                 "source": required_channels_source,
@@ -329,7 +326,7 @@ def test_blocked_plan_directory_may_equal_fresh_experiment_root(tmp_path: Path, 
     if task == "hparam_tune":
         recipe = _hparam_recipe(source)
         payload = yaml.safe_load(recipe.read_text())
-        payload["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
+        payload["decisions"]["label_name"]["value"] = "ASK_USER"
     else:
         recipe = write_finetune_recipe(source, include_label=False)
         payload = yaml.safe_load(recipe.read_text())
@@ -507,17 +504,19 @@ def test_generic_pass_rolls_back_blocked_artifact_created_after_final_guard(
 def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
-    payload["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
+    payload["decisions"]["label_name"]["value"] = "ASK_USER"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "hparam-blocked"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
-    assert yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]["overwrite_policy"] == {
+    assert yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]["label_name"] == {
         "value": "ASK_USER",
         "source": "explicit_user",
-        "question": "Is overwriting existing output files allowed for this task?",
+        "question": (
+            "Which label should this task use, for example ahi, age, sex, stage5, or a custom metadata label?"
+        ),
     }
 
 
@@ -578,11 +577,10 @@ def test_blocked_plan_registers_step_after_complete_bundle(tmp_path: Path, monke
     assert step_manifest.is_file()
 
 
-def test_hparam_blocked_plan_retry_rejects_same_output_dir_even_with_overwrite(tmp_path: Path):
+def test_hparam_blocked_plan_retry_rejects_same_output_dir(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["decisions"]["label_name"]["value"] = "ASK_USER"
-    payload["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     blocked_dir = tmp_path / "hparam-blocked"
 
@@ -592,8 +590,6 @@ def test_hparam_blocked_plan_retry_rejects_same_output_dir_even_with_overwrite(t
     decisions = blocked_dir / "decisions.yaml"
     decision_payload = yaml.safe_load(decisions.read_text())
     assert decision_payload["decisions"]["label_name"]["value"] == "ASK_USER"
-    decision_payload["decisions"]["overwrite_policy"]["value"] = True
-    decisions.write_text(yaml.safe_dump(decision_payload, sort_keys=False))
     blocked_files = {path.name: path.read_bytes() for path in blocked_dir.iterdir() if path.is_file()}
     manifest = tmp_path / "run_manifest.tsv"
     manifest_bytes = manifest.read_bytes()

@@ -31,9 +31,6 @@ search:
       runtime.epochs: 30
       yaml:/model/head/dropout: 0.1
 
-artifacts:
-  overwrite: false
-
 evaluation_policy:
   selection_metric: val_ahi_pearson
   selection_mode: max
@@ -59,9 +56,6 @@ decisions:
     source: explicit_recipe
     rationale: Select hyper-parameters on validation evidence while external test access remains locked.
   test_after_fit:
-    value: false
-    source: explicit_recipe
-  overwrite_policy:
     value: false
     source: explicit_recipe
   final_eval_unlock:

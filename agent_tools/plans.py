@@ -905,15 +905,14 @@ def write_doctor_outputs(
                 *plan_contract.pass_plan_artifact_paths(out),
                 *_plan_publication_temporary_paths(out),
             ],
-            False,
             root=out,
             require_fresh="Plan artifacts already exist; doctor output requires a fresh --output-dir.",
         )
         locked_report = _guard_existing_outputs(
             locked_report,
             plan_contract.doctor_control_paths(out),
-            True,
             root=out,
+            allow_existing=True,
         )
         if _has_output_artifact_issue(locked_report):
             raise ValueError(locked_report.blocking_issues()[-1].message)
@@ -1441,7 +1440,7 @@ def publish_staged_plan_locked(
         for name in new_order[:-1]:
             (write_out / name).replace(out / name)
             moved_new.append(name)
-        # Committed run directories are append-only; overwrite replaces only plan-level files.
+        # Committed run directories are append-only; republication replaces only plan-level files.
         if "runs" in source_names:
             destination_runs = out / "runs"
             if os.path.lexists(destination_runs):
@@ -1587,7 +1586,6 @@ def preflight_plan(
             report = _guard_existing_outputs(
                 report,
                 [root / "events.jsonl"],
-                _overwrite_policy(recipe),
                 root=root,
                 allow_existing=True,
             )
@@ -1631,13 +1629,6 @@ def _unsupported_command_report(report: DecisionReport, task: str | None) -> Dec
 
 def _has_output_artifact_issue(report: DecisionReport) -> bool:
     return any(issue.field == "output_artifacts" for issue in report.issues)
-
-
-def _overwrite_policy(recipe: dict) -> Any:
-    section, key = _resolve_write_targets(recipe.get("task"))["overwrite_policy"]
-    owner_value = recipe.get(section)
-    owner = owner_value if isinstance(owner_value, dict) else {}
-    return owner.get(key)
 
 
 def _registered_plan_owners(recipe: dict[str, Any], out: Path) -> list[dict[str, Any]]:
@@ -1753,8 +1744,7 @@ def _plan_registration_state(
             )
             if tree_matches:
                 return "owner_missing"
-            if _overwrite_policy(recipe) is not True:
-                raise ValueError(f"Published plan differs from deterministic regeneration: {out}")
+            raise ValueError(f"Published plan differs from deterministic regeneration: {out}")
         return "unregistered"
     step_id = str((recipe.get("step") or {}).get("id") or "")
     if len(owners) != 1 or str((owners[0].get("step") or {}).get("id") or "") != step_id:
@@ -1799,12 +1789,15 @@ def _registered_plan_immutable_report(report: DecisionReport, out: Path) -> Deci
 def _guard_existing_outputs(
     report: DecisionReport,
     paths: list[Path],
-    overwrite_policy: Any,
     *,
-    root: Path,
+    root: Path | None,
     allow_existing: bool = False,
     require_fresh: str | None = None,
 ) -> DecisionReport:
+    """Fail when a planned output already exists; outputs are single-use.
+
+    root=None marks outputs outside any managed workspace, which skip the managed-path check.
+    """
     existing = (
         sorted(str(path) for path in paths if os.path.lexists(path))
         if require_fresh is not None and not allow_existing
@@ -1812,7 +1805,8 @@ def _guard_existing_outputs(
     )
     if not existing:
         try:
-            exp_io.validate_managed_output_paths(root, paths)
+            if root is not None:
+                exp_io.validate_managed_output_paths(root, paths)
         except ValueError as exc:
             return _append_issues(
                 report,
@@ -1831,32 +1825,15 @@ def _guard_existing_outputs(
         existing = sorted(str(path) for path in paths if path.exists())
     if not existing:
         return report
-    if require_fresh is not None:
-        status = DecisionStatus.FAIL
-        message = require_fresh
-        question = None
-    elif overwrite_policy is True:
-        return report
-    elif overwrite_policy is False:
-        status = DecisionStatus.FAIL
-        message = "Output artifacts already exist and overwrite_policy=false."
-        question = None
-    else:
-        status = DecisionStatus.NEEDS_USER_INPUT
-        message = "Output artifacts already exist and overwrite policy is not explicit."
-        question = "Is overwriting existing agent-generated output files allowed for this task?"
-    evidence: dict[str, Any] = {"existing_paths": existing}
-    if require_fresh is None:
-        evidence["user_decision_field"] = "overwrite_policy"
     return _append_issues(
         report,
         [
             DecisionIssue(
-                status,
+                DecisionStatus.FAIL,
                 "output_artifacts",
-                message,
-                question,
-                evidence,
+                require_fresh or "Output artifacts already exist; retry with a fresh --output-dir.",
+                None,
+                {"existing_paths": existing},
             )
         ],
     )
@@ -1879,15 +1856,22 @@ def _guard_pass_plan_publication(
     report = _guard_existing_outputs(
         report,
         planned_paths,
-        _overwrite_policy(recipe),
         root=out,
         allow_existing=owned_by_current_step or recovering_unowned_plan,
+    )
+    adapter = get_adapter(recipe.get("task"))
+    assert adapter is not None
+    report = _guard_existing_outputs(
+        report,
+        adapter.external_output_paths(recipe),
+        root=None,
+        allow_existing=owned_by_current_step or recovering_unowned_plan,
+        require_fresh="Task output files already exist; these outputs are single-use, so choose fresh output paths.",
     )
     # Blocked bundles are human-editable evidence; reusing one would mix PASS and blocked envelopes.
     return _guard_existing_outputs(
         report,
         plan_contract.blocked_plan_control_paths(out),
-        _overwrite_policy(recipe),
         root=out,
         require_fresh="Blocked plan artifacts already exist; retry with a fresh --output-dir.",
     )
@@ -1902,11 +1886,9 @@ def _guard_blocked_plan_publication(
 ) -> DecisionReport:
     planned_paths = _planned_plan_paths(recipe, out, report, unlock_final_test)
     blocked_paths = plan_contract.blocked_plan_control_paths(out)
-    overwrite_policy = _overwrite_policy(recipe)
     report = _guard_existing_outputs(
         report,
         blocked_paths,
-        overwrite_policy,
         root=out,
         require_fresh="Blocked plan artifacts already exist; retry with a fresh --output-dir.",
     )
@@ -1915,7 +1897,6 @@ def _guard_blocked_plan_publication(
         report = _guard_existing_outputs(
             report,
             non_control_paths,
-            overwrite_policy,
             root=out,
         )
     root_resident = out == experiment_root(recipe)
@@ -1927,7 +1908,6 @@ def _guard_blocked_plan_publication(
     report = _guard_existing_outputs(
         report,
         pass_plan_paths,
-        overwrite_policy,
         root=out,
         require_fresh="PASS plan artifacts already exist; retry with a fresh --output-dir.",
     )

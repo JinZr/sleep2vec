@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_survival_sidecars, write_yaml
 import pytest
+from test_agent_plan_blocks_on_ambiguity import _write_preset_recipe
 import yaml
 
 from agent_tools import decision_rules
@@ -89,7 +90,6 @@ def _write_hparam_recipe(tmp_path: Path) -> Path:
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
                 "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -114,14 +114,12 @@ def _write_infer_recipe(tmp_path: Path) -> Path:
                 "eval_split": "val",
             },
             "runtime": {"devices": [0]},
-            "artifacts": {"overwrite": False},
             "evaluation_policy": {"external_test_locked": False},
             "decisions": {
                 "task": {"value": "infer", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "ckpt_path": {"value": str(checkpoint), "source": "explicit_recipe"},
                 "eval_split": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
     )
@@ -177,6 +175,66 @@ def test_recipe_rejects_unknown_fields_in_existing_owner_sections(
     assert report.exit_code == 1
     assert issue.evidence["source_layer"] == "effective"
     assert issue.evidence["preflight_before_workspace"] is True
+
+
+# Outputs are single-use: the removed overwrite/regeneration fields and decisions fail rather than being ignored.
+@pytest.mark.parametrize(
+    ("task", "path", "field", "message"),
+    [
+        ("finetune", ("artifacts", "overwrite"), "artifacts.overwrite", "Unknown artifacts field for task=finetune"),
+        ("infer", ("artifacts", "overwrite"), "artifacts", "Unknown recipe field for task=infer: artifacts."),
+        ("preset_prepare", ("preset", "overwrite"), "preset.overwrite", "Unknown preset field for task=preset_prepare"),
+        (
+            "finetune",
+            ("decisions", "overwrite_policy"),
+            "decisions.overwrite_policy",
+            "Decision field is not supported for task=finetune: overwrite_policy.",
+        ),
+        (
+            "preset_prepare",
+            ("decisions", "preset_regeneration"),
+            "decisions.preset_regeneration",
+            "Decision field is not supported for task=preset_prepare: preset_regeneration.",
+        ),
+    ],
+)
+def test_recipe_rejects_removed_overwrite_fields(
+    tmp_path: Path, task: str, path: tuple[str, ...], field: str, message: str
+):
+    if task == "infer":
+        recipe = _write_infer_recipe(tmp_path)
+    elif task == "preset_prepare":
+        index = tmp_path / "index.csv"
+        index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
+        config = yaml.safe_load(write_finetune_recipe(tmp_path).read_text())["inputs"]["config"]
+        recipe = _write_preset_recipe(tmp_path, config=config, index=index)
+    else:
+        recipe = write_finetune_recipe(tmp_path)
+    payload = yaml.safe_load(recipe.read_text())
+    value = {"value": False, "source": "explicit_recipe"} if path[0] == "decisions" else False
+    _set_path(payload, path, value)
+    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
+
+    _recipe, _cfg, report = evaluate_recipe(recipe)
+
+    issue = next(issue for issue in report.blocking_issues() if issue.field == field)
+    assert report.exit_code == 1
+    assert message in issue.message
+
+
+def test_user_decisions_reject_removed_overwrite_policy(tmp_path: Path):
+    recipe = write_finetune_recipe(tmp_path)
+    decisions = write_yaml(
+        tmp_path / "decisions.yaml",
+        {"decisions": {"overwrite_policy": {"value": True, "source": "explicit_user"}}},
+    )
+
+    _recipe, _cfg, report = evaluate_recipe(recipe, decisions)
+
+    issue = next(issue for issue in report.blocking_issues() if issue.field == "decisions.overwrite_policy")
+    assert report.exit_code == 1
+    assert issue.message == "Decision field is not supported for task=finetune: overwrite_policy."
+    assert issue.evidence["source_layer"] == "user"
 
 
 # evaluate was a removed alias of infer and embedding_extraction a removed task; both must stay unknown

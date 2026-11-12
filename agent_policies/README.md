@@ -2,7 +2,7 @@
 
 `consultation_policy.yaml` defines the high-impact fields that require explicit user intent before an agent may plan or run an experiment. It also owns the finetune and hparam `test_after_fit=true` policy default, which is materialized into the resolved recipe and decision record before consultation, and the `hparam_search_defaults` search size that agents author into new hparam recipes. Documentation links to that section instead of restating its numbers. Other runtime defaults remain owned by their runtime/rendering code.
 
-The goal is to prevent silent guessing for high-impact choices such as experiment ownership, step purpose, label selection, split usage, checkpoint selection, external-test evaluation, preset regeneration, and hyper-parameter search space.
+The goal is to prevent silent guessing for high-impact choices such as experiment ownership, step purpose, label selection, split usage, checkpoint selection, external-test evaluation, and hyper-parameter search space.
 
 New runnable plans also require a managed experiment workspace and semantic run names. Monitoring does not authorize launching, and stopping requires a recorded reason.
 

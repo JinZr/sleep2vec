@@ -221,7 +221,7 @@ class Sleep2statAdapter(TaskAdapter):
     requires_variant = False
 
     recipe_extra_fields = frozenset({"artifacts", "evaluation_policy", "execution", "inputs", "runtime"})
-    artifact_fields = frozenset({"overwrite", "run_dir"})
+    artifact_fields = frozenset({"run_dir"})
     contract_sections = {
         "inputs": frozenset({"config", "split"}),
         "evaluation_policy": frozenset({"external_test_locked"}),

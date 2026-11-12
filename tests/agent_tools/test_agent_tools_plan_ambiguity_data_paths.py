@@ -122,7 +122,6 @@ def test_hparam_plan_skips_survival_index_gate_when_base_preset_is_configured(tm
                 "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
                 "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -157,7 +156,6 @@ def test_infer_invalid_eval_split_blocks_command_generation(tmp_path: Path):
                 "task": {"value": "infer", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "ckpt_path": {"value": str(ckpt), "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
     )
@@ -273,11 +271,13 @@ def test_preset_plan_checks_inputs_index_even_when_config_has_finetune_preset(tm
             "task": "preset_prepare",
             "variant": "sleep2vec",
             "inputs": {"config": str(config), "index": [str(bad_index)], "dataset_name": "unit"},
-            "preset": {"n_tokens": 128, "split": ["train"]},
+            "preset": {
+                "n_tokens": 128,
+                "split": ["train"],
+                "output_template": str(tmp_path / "presets" / "{dataset}_{split}_{tokens}.pickle"),
+            },
             "decisions": {
                 "task": {"value": "preset_prepare", "source": "explicit_recipe"},
-                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "required_channels": {
                     "value": ["ppg", "ahi", "stage5"],
                     "source": "explicit_config",
@@ -306,11 +306,14 @@ def test_preset_plan_blocks_survival_config_with_invalid_sidecars(tmp_path: Path
             "task": "preset_prepare",
             "variant": "sleep2vec",
             "inputs": {"config": str(config), "index": [str(index)], "dataset_name": "unit"},
-            "preset": {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False},
+            "preset": {
+                "n_tokens": 128,
+                "split": ["train"],
+                "allow_missing_channels": False,
+                "output_template": str(tmp_path / "presets" / "{dataset}_{split}_{tokens}.pickle"),
+            },
             "decisions": {
                 "task": {"value": "preset_prepare", "source": "explicit_recipe"},
-                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
                 "min_channels": {"value": 1, "source": "explicit_recipe"},
             },
@@ -374,11 +377,14 @@ def test_preset_plan_checks_survival_sidecar_keys_only_for_requested_split(tmp_p
             "task": "preset_prepare",
             "variant": "sleep2vec",
             "inputs": {"config": str(config), "index": [str(index)], "dataset_name": "unit"},
-            "preset": {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False},
+            "preset": {
+                "n_tokens": 128,
+                "split": ["train"],
+                "allow_missing_channels": False,
+                "output_template": str(tmp_path / "presets" / "{dataset}_{split}_{tokens}.pickle"),
+            },
             "decisions": {
                 "task": {"value": "preset_prepare", "source": "explicit_recipe"},
-                "preset_regeneration": {"value": True, "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "required_channels": {"value": ["ppg"], "source": "explicit_recipe"},
                 "min_channels": {"value": 1, "source": "explicit_recipe"},
             },

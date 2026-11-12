@@ -151,8 +151,8 @@ def test_slurm_plan_rejects_existing_scheduler_artifact_before_writing(tmp_path:
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 1
-    # A pre-existing artifact, even a symlink out of the plan, needs an overwrite decision before anything is written.
-    assert "user_decision_field: overwrite_policy" in result.stdout
+    # A pre-existing artifact, even a symlink out of the plan, fails before anything is written.
+    assert "Output artifacts already exist; retry with a fresh --output-dir." in result.stdout
     assert "job.sbatch" in result.stdout
     assert artifact.is_symlink()
     assert target.read_text() == "outside\n"

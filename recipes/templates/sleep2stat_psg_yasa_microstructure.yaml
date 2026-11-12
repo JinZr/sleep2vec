@@ -29,7 +29,6 @@ runtime:
 
 artifacts:
   run_dir: results/sleep2stat/psg_yasa_microstructure_v02
-  overwrite: false
 
 evaluation_policy:
   external_test_locked: true
@@ -43,7 +42,4 @@ decisions:
     source: explicit_recipe
   sleep2stat_metric_use_policy:
     value: "Treat YASA-derived microstructure metrics as automatic detector outputs, not manually adjudicated clinical labels."
-    source: explicit_recipe
-  overwrite_policy:
-    value: false
     source: explicit_recipe

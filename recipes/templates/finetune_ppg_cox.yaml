@@ -34,7 +34,6 @@ runtime:
 artifacts:
   version_name: ppg-cox-agent-example
   results_csv_path: results/ppg_cox_agent_example.csv
-  overwrite: false
 
 evaluation_policy:
   selection_metric: val_loss
@@ -57,9 +56,6 @@ decisions:
     value: val
     source: explicit_recipe
   external_test_locked:
-    value: false
-    source: explicit_recipe
-  overwrite_policy:
     value: false
     source: explicit_recipe
   required_channels:

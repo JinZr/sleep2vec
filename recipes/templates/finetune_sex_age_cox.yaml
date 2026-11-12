@@ -36,7 +36,6 @@ runtime:
 artifacts:
   version_name: sex-age-cox-agent-example
   results_csv_path: results/sex_age_cox_agent_example.csv
-  overwrite: false
 
 evaluation_policy:
   selection_metric: val_c_index
@@ -59,9 +58,6 @@ decisions:
     value: val
     source: explicit_recipe
   external_test_locked:
-    value: false
-    source: explicit_recipe
-  overwrite_policy:
     value: false
     source: explicit_recipe
   required_channels:

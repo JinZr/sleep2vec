@@ -85,7 +85,6 @@ def _hparam_recipe(
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
                 "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -1491,7 +1490,8 @@ def test_hparam_select_rejects_same_step_non_hparam_selection_metadata_without_w
 def test_hparam_select_skips_registered_blocked_plan_after_successful_retry(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
-    payload["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
+    label_name = payload["decisions"]["label_name"]["value"]
+    payload["decisions"]["label_name"]["value"] = "ASK_USER"
     write_yaml(recipe, payload)
     blocked_plan = tmp_path / "blocked-plan"
 
@@ -1500,7 +1500,7 @@ def test_hparam_select_skips_registered_blocked_plan_after_successful_retry(tmp_
     assert blocked.returncode == 2
     assert (blocked_plan / "plan.blocked.md").exists()
     assert not (blocked_plan / "plan.json").exists()
-    payload["decisions"]["overwrite_policy"]["value"] = False
+    payload["decisions"]["label_name"]["value"] = label_name
     write_yaml(recipe, payload)
     current_plan = tmp_path / "current-plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(current_plan)).returncode == 0

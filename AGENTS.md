@@ -130,7 +130,7 @@ If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated ques
 
 Generated runtime commands must respect recipe `variant`; do not route `sleep2vec2` or `sleep2expert` recipes through root `sleep2vec` entrypoints.
 
-High-impact decisions include label selection, split policy, external-test locking, checkpoint selection, pretrained-backbone choice, preset regeneration, overwrite behavior, required channels, selection metric, metric direction, and hyper-parameter search budget.
+High-impact decisions include label selection, split policy, external-test locking, checkpoint selection, pretrained-backbone choice, required channels, selection metric, metric direction, and hyper-parameter search budget.
 
 Keep concept planning, publication, and launch as separate interaction stages. Concept planning discusses scientific choices, candidate scope, and budget without running `doctor` or `plan`, publishing a recipe, inspecting live resources, or generating runnable commands. Publication may write the authorized recipe or decisions, run `doctor` and `plan`, and freeze artifacts, but it does not authorize execution. Launch requires an explicit request to execute or complete the run; a request that explicitly covers design and execution may authorize all three stages without a later confirmation. Do not infer a later stage from a narrower request.
 

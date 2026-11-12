@@ -47,7 +47,6 @@ def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):
                 "task": {"value": "infer", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "ckpt_path": {"value": str(ckpt), "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
     )
@@ -441,11 +440,9 @@ def test_infer_user_decision_ckpt_path_must_exist(tmp_path: Path):
                 "eval_split": "validation",
             },
             "evaluation_policy": {"final_test_unlocked": False},
-            "artifacts": {"overwrite": True},
             "decisions": {
                 "task": {"value": "infer", "source": "explicit_recipe"},
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": True, "source": "explicit_recipe"},
             },
         },
     )
