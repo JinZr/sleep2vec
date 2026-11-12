@@ -38,6 +38,7 @@ class TemporalTransformerHead(nn.Module):
         out_dim: int,
         *,
         agg: str = "gated_scalar",
+        channel_agg_kwargs: dict[str, t.Any] | None = None,
         hidden_dim: t.Optional[int] = None,
         dropout: float = 0.1,
         act: t.Type[nn.Module] = nn.GELU,
@@ -50,7 +51,7 @@ class TemporalTransformerHead(nn.Module):
         norm_first: bool = True,
     ):
         super().__init__()
-        self.fusion = FeatureFusion(feature_dim, n_mods, agg)
+        self.fusion = FeatureFusion(feature_dim, n_mods, agg, channel_agg_kwargs)
         in_dim = self.fusion.output_dim
         model_dim = hidden_dim or in_dim
         self.proj_in = nn.Linear(in_dim, model_dim) if model_dim != in_dim else nn.Identity()
@@ -117,6 +118,7 @@ def build_temporal_transformer_head(
     n_mods,
     output_dim,
     agg: str = "gated_scalar",
+    channel_agg_kwargs: dict[str, t.Any] | None = None,
     hidden_dim: t.Optional[int] = None,
     dropout: float = 0.1,
     act: t.Type[nn.Module] = nn.GELU,
@@ -134,6 +136,7 @@ def build_temporal_transformer_head(
         n_mods,
         output_dim,
         agg=agg,
+        channel_agg_kwargs=channel_agg_kwargs,
         hidden_dim=hidden_dim,
         dropout=dropout,
         act=act,

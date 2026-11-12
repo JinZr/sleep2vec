@@ -19,6 +19,7 @@ class RegressionHead(nn.Module):
         out_dim: int = 1,
         *,
         agg: str = "gated_scalar",
+        channel_agg_kwargs: dict[str, t.Any] | None = None,
         hidden_dim: t.Optional[int] = None,
         dropout: float = 0.1,
         act: t.Type[nn.Module] = nn.ELU,
@@ -27,7 +28,7 @@ class RegressionHead(nn.Module):
     ):
         super().__init__()
         self.target = target
-        self.fusion = FeatureFusion(feature_dim, n_mods, agg)
+        self.fusion = FeatureFusion(feature_dim, n_mods, agg, channel_agg_kwargs)
         self.out_dim = out_dim
         self.extra_feature_dim = extra_feature_dim
         in_dim = self.fusion.output_dim + extra_feature_dim
@@ -80,6 +81,7 @@ def build_regression_head(
     n_mods,
     output_dim,
     agg: str = "mean",
+    channel_agg_kwargs: dict[str, t.Any] | None = None,
     hidden_dim: t.Optional[int] = None,
     dropout: float = 0.1,
     act: t.Type[nn.Module] = nn.ELU,
@@ -93,6 +95,7 @@ def build_regression_head(
         n_mods,
         out_dim=output_dim,
         agg=agg,
+        channel_agg_kwargs=channel_agg_kwargs,
         hidden_dim=hidden_dim,
         dropout=dropout,
         act=act,

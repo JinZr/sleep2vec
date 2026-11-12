@@ -13,13 +13,14 @@ class ChannelAggregator(nn.Module):
         super().__init__()
         self.feature_dim = feature_dim
         self.n_mods = n_mods
+        self.output_dim = feature_dim
 
     def forward(self, feats: t.List[torch.Tensor]) -> tuple[torch.Tensor, bool]:
         """
         Args:
             feats: list of modality tensors, each [B, D] or [B, L, D]
         Returns:
-            fused: [B, D] or [B, L, D]
+            fused: [B, output_dim] or [B, L, output_dim]
             has_L: bool, whether sequence dimension is present
         """
         raise NotImplementedError

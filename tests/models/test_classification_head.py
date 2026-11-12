@@ -6,6 +6,25 @@ import torch.nn as nn
 
 
 @pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
+@pytest.mark.parametrize("is_sequence", [False, True])
+def test_concat_projects_each_channel_and_preserves_order(package_name: str, is_sequence: bool):
+    module = importlib.import_module(f"{package_name}.downstreams.channel_aggregation")
+    aggregator = module.build_channel_aggregator("concat", feature_dim=4, n_mods=2, projection_dim=2)
+    with torch.no_grad():
+        aggregator.projection.weight.copy_(torch.eye(4)[:2])
+        aggregator.projection.bias.zero_()
+    first = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    if not is_sequence:
+        first = first[:, 0]
+    second = first + 24
+
+    fused, has_sequence = aggregator([first, second])
+
+    assert has_sequence is is_sequence
+    torch.testing.assert_close(fused, torch.cat([first[..., :2], second[..., :2]], dim=-1))
+
+
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 @pytest.mark.parametrize(
     ("num_layers", "expected_dims"),
     [

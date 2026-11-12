@@ -420,6 +420,8 @@ def _build_head_config(model_block: dict[str, t.Any], *, required: bool) -> Head
     channel_cfg = (
         ChannelAggConfig(**channel_block) if isinstance(channel_block, dict) else ChannelAggConfig(name=channel_block)
     )
+    if "channel_agg_kwargs" in (head_raw.get("kwargs") or {}):
+        raise ValueError("Set channel aggregator options in model.head.channel_agg.kwargs.")
 
     return HeadConfig(temporal_agg=temporal_cfg, channel_agg=channel_cfg, **head_raw)
 
@@ -439,6 +441,19 @@ def _build_model_config(model_block: t.Any, *, require_head: bool) -> ModelConfi
     projection = ProjectionConfig(**model_block["projection"])
     cls_cfg = _build_cls_config(model_block)
     head = _build_head_config(model_block, required=require_head)
+    if head is not None and "projection_dim" in (head.channel_agg.kwargs or {}):
+        projection_dim = head.channel_agg.kwargs["projection_dim"]
+        field_path = "model.head.channel_agg.kwargs.projection_dim"
+        if head.channel_agg.name != "concat":
+            raise ValueError(f"{field_path} requires model.head.channel_agg.name='concat'.")
+        if "agg" in (head.kwargs or {}):
+            raise ValueError(f"{field_path} cannot be combined with model.head.kwargs.agg.")
+        if (
+            not isinstance(projection_dim, int)
+            or isinstance(projection_dim, bool)
+            or not 0 < projection_dim < backbone.hidden_size
+        ):
+            raise ValueError(f"{field_path} must be a positive integer smaller than model.backbone.hidden_size.")
     return ModelConfig(
         channels=channels,
         backbone=backbone,
