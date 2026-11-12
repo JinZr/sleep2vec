@@ -8,15 +8,26 @@ from shlex import quote as shlex_quote, split as shlex_split
 import subprocess
 import sys
 
-from agent_tool_test_helpers import FakeLauncher, frozen_artifact_launch, run_cli, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    FakeLauncher,
+    bound_config_summary,
+    checkout_commit,
+    frozen_artifact_launch,
+    git_commit,
+    plan_first_run,
+    run_cli,
+    write_finetune_recipe,
+    write_variant_hparam_recipe,
+    write_yaml,
+)
 import pytest
-from test_agent_plan_blocks_on_ambiguity import _RUNTIME_COMMIT, _bound_config_summary, _first_run, _hparam_recipe
-from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
 from agent_tools import experiments, hparam_runtime, plan_contract, plan_hparam, plans
 from agent_tools.experiment_workspace import file_sha256, merge_run_manifest, read_run_manifest
 from agent_tools.models import REPO_ROOT
+
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
 
 
 def test_plan_normalizes_scalar_runtime_devices(tmp_path: Path):
@@ -51,7 +62,7 @@ def test_finetune_plan_honors_runtime_wandb_mode_cli(tmp_path: Path):
 
 
 def test_hparam_plan_expands_explicit_configurations_to_exact_runs(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"] = {
         "method": "grid",
@@ -77,7 +88,7 @@ def test_hparam_plan_expands_explicit_configurations_to_exact_runs(tmp_path: Pat
 
 
 def test_hparam_run_script_honors_base_runtime_wandb_mode_cli(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
     base_payload = yaml.safe_load(base_recipe.read_text())
@@ -88,13 +99,13 @@ def test_hparam_run_script_honors_base_runtime_wandb_mode_cli(tmp_path: Path):
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    script = Path(_first_run(output_dir)["script"]).read_text()
+    script = Path(plan_first_run(output_dir)["script"]).read_text()
     assert "--wandb-mode offline" in script
     assert "WANDB_MODE=" not in script
 
 
 def test_hparam_plan_and_launch_use_merged_effective_recipe(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["label_name"] = "effective-label"
     payload["runtime"] = {"devices": [4], "batch_size": 7}
@@ -204,7 +215,7 @@ def test_generated_commands_quote_paths_with_spaces(tmp_path: Path):
 
 
 def test_hparam_materialization_failure_does_not_register_plan(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     effective_recipe, _, _ = plans.evaluate_recipe(recipe)
     workspace = Path(effective_recipe["experiment"]["root"])
     step_id = effective_recipe["step"]["id"]
@@ -267,7 +278,7 @@ def test_single_run_materialization_failure_does_not_register_plan(tmp_path: Pat
 
 
 def test_hparam_outer_workspace_owns_base_finetune_metadata(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
     base_payload = yaml.safe_load(base_recipe.read_text())
@@ -291,7 +302,7 @@ def test_single_finetune_freezes_runtime_and_checkpoint_paths(tmp_path: Path):
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr
-    run = _first_run(output_dir)
+    run = plan_first_run(output_dir)
     expected_runtime = REPO_ROOT / "log-finetune" / run["version"]
     assert run["runtime_dir"] == str(expected_runtime)
     assert run["checkpoint_dir"] == str(expected_runtime / "checkpoints")
@@ -319,7 +330,7 @@ def test_single_finetune_uses_explicit_execution_workdir(tmp_path: Path):
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr
-    run = _first_run(output_dir)
+    run = plan_first_run(output_dir)
     expected_runtime = run_cwd / "log-finetune" / run["version"]
     expected_checkpoint = expected_runtime / "checkpoints"
     assert run["runtime_dir"] == str(expected_runtime)
@@ -339,13 +350,13 @@ def test_single_finetune_uses_explicit_execution_workdir(tmp_path: Path):
 def test_hparam_workdir_is_verbatim_run_cwd_for_all_generated_scripts(tmp_path: Path):
     checkpoint = tmp_path / "selected.ckpt"
     checkpoint.write_text("checkpoint")
-    recipe = _hparam_recipe(tmp_path, ckpt_path=checkpoint)
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=checkpoint)
     payload = yaml.safe_load(recipe.read_text())
     run_cwd = tmp_path / "runtime cwd"
     payload["execution"] = {
         "workdir": str(run_cwd),
         "python": sys.executable,
-        "runtime_commit": _RUNTIME_COMMIT,
+        "runtime_commit": checkout_commit(),
     }
     recipe.write_text(yaml.safe_dump(payload))
     output_dir = tmp_path / "plan"
@@ -353,7 +364,7 @@ def test_hparam_workdir_is_verbatim_run_cwd_for_all_generated_scripts(tmp_path: 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
 
     assert result.returncode == 0, result.stderr
-    run = _first_run(output_dir)
+    run = plan_first_run(output_dir)
     expected_runtime = run_cwd / "log-finetune" / run["version"]
     assert run["runtime_dir"] == str(expected_runtime)
     expected_cwd = f"cd {shlex_quote(str(run_cwd))}"
@@ -370,7 +381,7 @@ def test_hparam_workdir_is_verbatim_run_cwd_for_all_generated_scripts(tmp_path: 
 
 
 def test_hparam_plan_freezes_explicit_target_python_and_commit(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload.setdefault("execution", {}).update({"python": "/runtime/bin/python3", "runtime_commit": "A" * 40})
     recipe.write_text(yaml.safe_dump(payload))
@@ -388,7 +399,7 @@ def test_hparam_plan_freezes_explicit_target_python_and_commit(tmp_path: Path):
 
 
 def test_hparam_plan_rejects_sha256_runtime_commit_before_plan_write(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload.setdefault("execution", {}).update({"python": "/runtime/bin/python3", "runtime_commit": "b" * 64})
     recipe.write_text(yaml.safe_dump(payload))
@@ -402,7 +413,7 @@ def test_hparam_plan_rejects_sha256_runtime_commit_before_plan_write(tmp_path: P
 
 
 def test_hparam_plan_rejects_compound_target_python_before_plan_write(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"] = {
         "workdir": "/separate/runtime",
@@ -431,7 +442,7 @@ def test_hparam_plan_rejects_compound_target_python_before_plan_write(tmp_path: 
 def test_hparam_plan_requires_explicit_identity_for_non_manager_runtime_before_plan_write(
     tmp_path: Path, execution: dict
 ):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"] = execution
     recipe.write_text(yaml.safe_dump(payload))
@@ -455,7 +466,7 @@ def test_hparam_plan_requires_explicit_identity_for_non_manager_runtime_before_p
     ],
 )
 def test_hparam_plan_rejects_unsafe_execution_environment_before_plan_write(tmp_path: Path, env: dict, message: str):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"] = {
         "workdir": "/separate/runtime",
@@ -476,7 +487,7 @@ def test_hparam_plan_rejects_unsafe_execution_environment_before_plan_write(tmp_
 
 
 def test_hparam_relative_workdir_fails_before_workspace_creation(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"] = {"workdir": "relative/runtime"}
     recipe.write_text(yaml.safe_dump(payload))
@@ -490,7 +501,7 @@ def test_hparam_relative_workdir_fails_before_workspace_creation(tmp_path: Path)
 
 
 def test_hparam_run_all_queue_rehashes_tampered_leaf_before_its_process_starts(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     output_dir = tmp_path / "plan"
     marker = tmp_path / "ran.txt"
 
@@ -501,7 +512,7 @@ def test_hparam_run_all_queue_rehashes_tampered_leaf_before_its_process_starts(t
         f"{shlex_quote(sys.executable)} -m agent_tools hparam-run-queue "
         f"--plan-dir {shlex_quote(str(output_dir.resolve()))} --execute" in run_all_text
     )
-    run = _first_run(output_dir)
+    run = plan_first_run(output_dir)
     Path(run["script"]).write_text(f"#!/usr/bin/env bash\nset -euo pipefail\nprintf ok > {shlex_quote(str(marker))}\n")
     launcher = FakeLauncher(frozen_artifact_launch)
 
@@ -558,7 +569,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
     recipe["_recipe_path"] = str(recipe_path.resolve())
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, bound_config_summary(recipe), report))
     marker = tmp_path / "runtime.txt"
     runtime_code = (
         "import sys; from pathlib import Path; "
@@ -603,12 +614,12 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
     recipe["execution"] = {
         "workdir": str(REPO_ROOT),
         "python": runtime_python,
-        "runtime_commit": _RUNTIME_COMMIT,
+        "runtime_commit": checkout_commit(),
     }
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, bound_config_summary(recipe), report))
     command = f"{runtime_python} -m sleep2vec.infer --unit-runtime-identity"
     # The task adapter owns command rendering; a probe command exercises run.sh instead of a training workload.
     monkeypatch.setattr(plans.get_adapter(recipe["task"]), "commands", lambda *_args, **_kwargs: [command])
@@ -624,7 +635,7 @@ def test_infer_plan_uses_frozen_runtime_python_for_workload_and_lifecycle(tmp_pa
     helper = "\n".join(lines[helper_index:running_index])
     assert f"{runtime_python} -c " in helper
     assert "record-runtime-commit" in helper
-    assert _RUNTIME_COMMIT in helper
+    assert checkout_commit() in helper
     assert helper_index < running_index < workload_index
     plan = json.loads((plan_dir / "plan.json").read_text())
     assert plan["recipe"]["execution"] == recipe["execution"]
@@ -639,24 +650,7 @@ def test_infer_runtime_commit_mismatch_runs_and_records_both_commits(tmp_path: P
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main", str(runtime)], check=True)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(runtime),
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "Initial",
-        ],
-        check=True,
-        capture_output=True,
-    )
-    actual_commit = subprocess.check_output(["git", "-C", str(runtime), "rev-parse", "HEAD"], text=True).strip()
+    actual_commit = git_commit(runtime, "Initial", allow_empty=True)
     marker = tmp_path / "payload-ran.txt"
     recipe.update({"task": "infer", "name": "unit_infer_runtime_commit_guard"})
     recipe["experiment"]["root"] = str(workspace)
@@ -670,7 +664,7 @@ def test_infer_runtime_commit_mismatch_runs_and_records_both_commits(tmp_path: P
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, bound_config_summary(recipe), report))
     payload_code = "from pathlib import Path; Path(__import__('sys').argv[1]).write_text('ran')"
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", payload_code, marker))
     # The task adapter owns command rendering; a probe command exercises run.sh instead of a training workload.
@@ -700,7 +694,7 @@ def test_non_hparam_run_script_records_failure_and_preserves_runtime_exit_code(t
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, bound_config_summary(recipe), report))
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", "import sys; sys.exit(7)"))
     # The task adapter owns command rendering; a probe command exercises run.sh instead of a training workload.
     monkeypatch.setattr(plans.get_adapter(recipe["task"]), "commands", lambda *_args, **_kwargs: [command])
@@ -723,7 +717,7 @@ def test_non_hparam_run_script_propagates_terminal_commit_failure(tmp_path: Path
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, bound_config_summary(recipe), report))
     runtime_code = "import sys; from pathlib import Path; (Path(sys.argv[1]) / 'run_manifest.tsv').unlink()"
     command = " ".join(shlex_quote(str(value)) for value in (sys.executable, "-c", runtime_code, workspace))
     # The task adapter owns command rendering; a probe command exercises run.sh instead of a training workload.
@@ -747,7 +741,7 @@ def test_non_hparam_run_script_refuses_to_execute_terminal_run(tmp_path: Path, m
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     plan_contract.bind_plan_context(recipe)
     report = plans.DecisionReport(status=plans.DecisionStatus.PASS, issues=[], decisions={})
-    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, _bound_config_summary(recipe), report))
+    monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (recipe, bound_config_summary(recipe), report))
     marker = tmp_path / "runtime.txt"
     command = " ".join(
         shlex_quote(str(value))
@@ -758,7 +752,7 @@ def test_non_hparam_run_script_refuses_to_execute_terminal_run(tmp_path: Path, m
     monkeypatch.setattr(plans.get_adapter(recipe["task"]), "frozen_commands", lambda *_args, **_kwargs: [command])
     plan_dir = workspace / "plan"
     plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
-    run = _first_run(plan_dir)
+    run = plan_first_run(plan_dir)
     merge_run_manifest(
         workspace,
         [{"step_id": run["step_id"], "run_id": run["run_id"], "status": "completed"}],

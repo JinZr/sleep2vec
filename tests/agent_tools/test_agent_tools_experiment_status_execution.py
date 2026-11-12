@@ -2,19 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent_tool_test_helpers import add_plan, init_status_workspace, workspace_files
 import pytest
-from test_agent_tools_experiment_status import _add_plan, _init_workspace, _workspace_files
-from test_agent_tools_experiment_status import _stub_execution_target  # noqa: F401
 import yaml
 
 from agent_tools import experiment_tracking, experiments
 from agent_tools.manifests import write_rows
 
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
+
 
 def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _plan, canonical = _add_plan(root, step_id="train", status="lost", task="hparam_tune")
+    init_status_workspace(root)
+    _plan, canonical = add_plan(root, step_id="train", status="lost", task="hparam_tune")
     canonical.update(
         {
             "scheduler_raw_state": "MISSING",
@@ -94,8 +95,8 @@ def test_experiment_status_snapshot_is_independent_of_input_order():
 
 def test_experiment_status_rejects_contradictory_scheduler_identity(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _plan, canonical = _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    _plan, canonical = add_plan(root, step_id="train")
     canonical["scheduler_job_id"] = "123"
     write_rows(root / "run_manifest.tsv", [canonical])
 
@@ -105,8 +106,8 @@ def test_experiment_status_rejects_contradictory_scheduler_identity(tmp_path):
 
 def test_experiment_status_rejects_process_identity_on_launchable_direct_runs(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _plan, canonical = _add_plan(root, step_id="train", status="planned")
+    init_status_workspace(root)
+    _plan, canonical = add_plan(root, step_id="train", status="planned")
     canonical["pid"] = "42"
     write_rows(root / "run_manifest.tsv", [canonical])
 
@@ -117,9 +118,9 @@ def test_experiment_status_rejects_process_identity_on_launchable_direct_runs(tm
 @pytest.mark.parametrize("status", ["lost", "missing_pid"])
 def test_experiment_status_uncertain_states_block_planned_launch(tmp_path, status):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train", status=status)
-    _add_plan(root, step_id="planned", status="planned")
+    init_status_workspace(root)
+    add_plan(root, step_id="train", status=status)
+    add_plan(root, step_id="planned", status="planned")
 
     snapshot = experiments.experiment_status(root)
 
@@ -130,8 +131,8 @@ def test_experiment_status_uncertain_states_block_planned_launch(tmp_path, statu
 @pytest.mark.parametrize("status", ["queued", "launched", "running", "stopping"])
 def test_experiment_status_active_states_report_in_progress(tmp_path, status):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train", status=status)
+    init_status_workspace(root)
+    add_plan(root, step_id="train", status=status)
 
     snapshot = experiments.experiment_status(root)
 
@@ -141,9 +142,9 @@ def test_experiment_status_active_states_report_in_progress(tmp_path, status):
 
 def test_experiment_status_preserves_active_blockers_with_uncertain_runs(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="uncertain", status="lost")
-    _add_plan(root, step_id="active", status="running")
+    init_status_workspace(root)
+    add_plan(root, step_id="uncertain", status="lost")
+    add_plan(root, step_id="active", status="running")
 
     snapshot = experiments.experiment_status(root)
     blockers_by_step = {run["step_id"]: run["blockers"] for run in snapshot["runs"]}
@@ -154,7 +155,7 @@ def test_experiment_status_preserves_active_blockers_with_uncertain_runs(tmp_pat
 
 def test_experiment_status_empty_workspace_does_not_guess_a_command(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
+    init_status_workspace(root)
 
     snapshot = experiments.experiment_status(root)
 
@@ -164,15 +165,15 @@ def test_experiment_status_empty_workspace_does_not_guess_a_command(tmp_path):
 
 def test_experiment_status_reports_ready_to_launch_for_launchable_plans(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="tune", task="hparam_tune")
+    init_status_workspace(root)
+    add_plan(root, step_id="tune", task="hparam_tune")
 
     one = experiments.experiment_status(root)
 
     assert one["summary"]["state"] == "ready_to_launch"
     assert one["blockers"] == []
 
-    _add_plan(root, step_id="train")
+    add_plan(root, step_id="train")
     multiple = experiments.experiment_status(root)
 
     assert multiple["summary"]["state"] == "ready_to_launch"
@@ -181,24 +182,24 @@ def test_experiment_status_reports_ready_to_launch_for_launchable_plans(tmp_path
 
 def test_experiment_status_rejects_incomplete_step_manifest_without_writing(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    add_plan(root, step_id="train")
     step_path = root / "steps" / "train" / "step.yaml"
     step_manifest = yaml.safe_load(step_path.read_text())
     step_manifest.pop("recipe_path")
     step_path.write_text(yaml.safe_dump(step_manifest, sort_keys=False))
-    before = _workspace_files(root)
+    before = workspace_files(root)
 
     with pytest.raises(ValueError, match="incomplete canonical envelope"):
         experiments.experiment_status(root)
 
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
 
 
 def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="ordinary", status="completed")
+    init_status_workspace(root)
+    add_plan(root, step_id="ordinary", status="completed")
     step_dir = root / "steps" / "evaluate"
     step_dir.mkdir(parents=True)
     (step_dir / "step.yaml").write_text(
@@ -239,9 +240,9 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
 )
 def test_experiment_status_prioritizes_active_hparam_plan_over_ordinary_launch(tmp_path, status, state, code):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="ordinary")
-    _add_plan(root, step_id="tune", task="hparam_tune", status=status)
+    init_status_workspace(root)
+    add_plan(root, step_id="ordinary")
+    add_plan(root, step_id="tune", task="hparam_tune", status=status)
 
     snapshot = experiments.experiment_status(root)
 
@@ -251,10 +252,10 @@ def test_experiment_status_prioritizes_active_hparam_plan_over_ordinary_launch(t
 
 def test_experiment_status_attributes_blockers_by_full_managed_run_key(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="first", status="lost")
-    _add_plan(root, step_id="second", status="lost")
-    _add_plan(root, step_id="terminal", status="failed")
+    init_status_workspace(root)
+    add_plan(root, step_id="first", status="lost")
+    add_plan(root, step_id="second", status="lost")
+    add_plan(root, step_id="terminal", status="failed")
 
     snapshot = experiments.experiment_status(root)
     blockers_by_step = {run["step_id"]: run["blockers"] for run in snapshot["runs"]}

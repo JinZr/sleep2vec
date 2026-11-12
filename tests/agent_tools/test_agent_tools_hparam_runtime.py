@@ -1,318 +1,21 @@
 from __future__ import annotations
 
-import csv
-import hashlib
 import json
 import os
 from pathlib import Path
-import shlex
-import subprocess
-import sys
 
-from agent_tool_test_helpers import (
-    FakeLauncher,
-    config_payload,
-    run_cli,
-    run_execution_preflight_fixture,
-    write_finetune_recipe,
-    write_yaml,
-)
+from agent_tool_test_helpers import FakeLauncher, read_table, run_cli, write_local_hparam_recipe
 import pytest
 import yaml
 
-from agent_tools import (
-    execution_snapshot,
-    hparam_runtime,
-    managed_scheduler,
-    manifests,
-    plan_hparam,
-    python_programs,
-    run_artifacts,
-)
-from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX, file_sha256
-from agent_tools.models import REPO_ROOT
+from agent_tools import hparam_runtime
+from agent_tools.experiment_workspace import MONITOR_EXIT_CODE_PREFIX
 
-_RUNTIME_COMMIT = subprocess.run(
-    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
-).stdout.strip()
-
-
-@pytest.fixture(autouse=True)
-def _stub_execution_snapshot_preflight(monkeypatch, request):
-    if not request.node.name.startswith("test_execution_probe_"):
-        monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
-
-
-def _hparam_recipe(tmp_path: Path, *, execution: dict | None = None, variant: str = "sleep2vec") -> Path:
-    base = write_finetune_recipe(tmp_path, variant=variant)
-    execution_payload = dict(execution) if execution is not None else {"workdir": str(tmp_path)}
-    manager_runtime = execution_payload.get("workdir") in (None, "", str(REPO_ROOT)) and execution_payload.get(
-        "conda_env"
-    ) in (None, "")
-    if not manager_runtime:
-        execution_payload.setdefault("python", sys.executable)
-        execution_payload.setdefault("runtime_commit", _RUNTIME_COMMIT)
-    return write_yaml(
-        tmp_path / "tune.yaml",
-        {
-            "name": "unit_hparam",
-            "task": "hparam_tune",
-            "variant": variant,
-            "base_recipe": str(base),
-            "search": {
-                "method": "grid",
-                "max_runs": 1,
-                "parameters": {"runtime.lr": [1e-6]},
-            },
-            "execution": execution_payload,
-            "evaluation_policy": {
-                "selection_metric": "val_ahi_pearson",
-                "selection_mode": "max",
-                "selection_split": "val",
-                "external_test_locked": True,
-                "test_after_fit": False,
-                "final_eval_split": "test",
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {
-                    "value": "val",
-                    "source": "explicit_recipe",
-                },
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
-    )
-
-
-def _write_slurm_plan(
-    tmp_path: Path,
-    *,
-    run_count: int = 1,
-    execution: dict | None = None,
-) -> tuple[Path, dict]:
-    recipe_path = _hparam_recipe(tmp_path)
-    if run_count > 1:
-        payload = yaml.safe_load(recipe_path.read_text())
-        payload["search"]["max_runs"] = run_count
-        payload["search"]["parameters"]["runtime.lr"] = [1e-6 * (index + 1) for index in range(run_count)]
-        recipe_path.write_text(yaml.safe_dump(payload, sort_keys=False))
-    source_plan_dir = tmp_path / "source-plan"
-    result = run_cli("plan", "--recipe", str(recipe_path), "--output-dir", str(source_plan_dir))
-    assert result.returncode == 0, result.stderr
-    source_plan = json.loads((source_plan_dir / "plan.json").read_text())
-    recipe = source_plan["recipe"]
-    recipe["execution"].update(
-        {
-            "gpus_per_run": 1,
-            "scheduler": {
-                "type": "slurm",
-                "partition": "gpu",
-                "cpus_per_task": 8,
-                "memory": "64G",
-                "walltime": "01:00:00",
-            },
-        }
-    )
-    recipe["execution"].update(execution or {})
-    source_config = (source_plan_dir / "config.source.yaml").read_bytes()
-    plan_dir = tmp_path / "slurm-plan"
-    plan_hparam.write_hparam_plan(
-        recipe,
-        plan_dir,
-        unlock_final_test=False,
-        source_config_bytes=source_config,
-        source_config_sha256=hashlib.sha256(source_config).hexdigest(),
-        final_eval_config=None,
-    )
-    run_artifacts.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
-    run_artifacts.commit_hparam_plan(plan_dir)
-    return plan_dir, json.loads((plan_dir / "plan.json").read_text())
-
-
-def _read_table(path: Path) -> list[dict[str, str]]:
-    delimiter = "\t" if path.suffix == ".tsv" else ","
-    with path.open(newline="") as file_obj:
-        return list(csv.DictReader(file_obj, delimiter=delimiter))
-
-
-def _process_identity(pid: int = 123) -> dict[str, int | str]:
-    return {"pid": pid, "process_group_id": pid, "process_start_token": "proc:unit-start"}
-
-
-def _write_process_identity(path: str | Path, pid: int = 123) -> dict[str, int | str]:
-    identity = _process_identity(pid)
-    Path(path).write_text(json.dumps(identity) + "\n")
-    return identity
-
-
-def _write_proc_stat(proc_root: Path, pid: int, pgid: int, state: str) -> None:
-    process_dir = proc_root / str(pid)
-    process_dir.mkdir(parents=True)
-    (process_dir / "stat").write_text(f"{pid} (unit) {state} 1 {pgid}\n")
-
-
-def _set_execution_probe(
-    monkeypatch,
-    plan_dir: Path,
-    *,
-    commit: str | None = None,
-    missing_options: set[str] | None = None,
-    extra_options: set[str] | None = None,
-    parse_error: str | None = None,
-) -> list[str]:
-    plan = json.loads((plan_dir / "plan.json").read_text())
-    frozen = json.loads((plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_text())
-    command = shlex.split(plan["runs"][0]["command"])
-    module = command[command.index("-m") + 1]
-    options = set(frozen["supported_options"]) - set(missing_options or set())
-    options.update(extra_options or set())
-    runtime_commit = commit or frozen["runtime_commit"]
-    calls = []
-
-    def run_probe(_execution, probe_command):
-        if len(probe_command) > 2 and probe_command[2] == python_programs.source("managed_scheduler.runtime_identity"):
-            calls.append("identity")
-            return subprocess.CompletedProcess(
-                probe_command,
-                0,
-                json.dumps(
-                    {
-                        "python": frozen["python"],
-                        "python_version": frozen["python_version"],
-                        "runtime_commit": runtime_commit,
-                        "runtime_repo_root": frozen["runtime_repo_root"],
-                        "runtime_hostname": frozen["runtime_hostname"],
-                        "module": module,
-                        "module_origin": frozen["module_origin"],
-                    }
-                ),
-                "",
-            )
-        calls.append("parse")
-        evidence = json.dumps(
-            {
-                "supported_options": sorted(options),
-                "cli_options_sha256": "changed-cli-options" if extra_options else frozen["cli_options_sha256"],
-            }
-        )
-        return subprocess.CompletedProcess(
-            probe_command,
-            2 if parse_error else 0,
-            "" if parse_error else f"AGENT_CLI_PREFLIGHT={evidence}\n",
-            parse_error or "",
-        )
-
-    monkeypatch.setattr(execution_snapshot, "run_execution_command", run_probe)
-    return calls
-
-
-def _write_runtime_rows(root: Path, specs: list[dict]) -> list[dict]:
-    experiment = {
-        "id": "unit-experiment",
-        "title": "Unit experiment",
-        "objective": "Exercise hparam runtime state transitions.",
-        "root": str(root),
-        "baseline": {"type": "none", "rationale": "Unit fixture."},
-    }
-    step = {"id": "train-model", "phase": "train", "purpose": "Exercise managed runs."}
-    (root / "experiment.yaml").write_text(yaml.safe_dump({"experiment": experiment}, sort_keys=False))
-    step_dir = root / "steps" / step["id"]
-    step_dir.mkdir(parents=True, exist_ok=True)
-    (step_dir / "step.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "step": step,
-                "experiment_id": experiment["id"],
-                "recipe_path": "",
-                "plans": [str(root.resolve())],
-            },
-            sort_keys=False,
-        )
-    )
-    runs = []
-    rows = []
-    for index, spec in enumerate(specs):
-        run_id = str(spec["run_id"])
-        managed_dir = root / "runs" / run_id
-        managed_dir.mkdir(parents=True, exist_ok=True)
-        config = managed_dir / "config.yaml"
-        script = managed_dir / "launch.sh"
-        artifacts_path = managed_dir / "artifacts.json"
-        config.write_text(yaml.safe_dump(config_payload(root / "index.csv")))
-        script.write_text("#!/usr/bin/env bash\ntrue\n")
-        artifacts_path.write_text("{}\n")
-        version = str(spec.get("version") or f"version-{index}")
-        runtime_dir = root / "log-finetune" / version
-        run = {
-            "experiment_id": "unit-experiment",
-            "step_id": "train-model",
-            "run_id": run_id,
-            "run_name": run_id,
-            "version": version,
-            "run_dir": str(managed_dir),
-            "runtime_dir": str(runtime_dir),
-            "checkpoint_dir": str(runtime_dir / "checkpoints"),
-            "config": str(config),
-            "config_sha256": file_sha256(config),
-            "script": str(script),
-            "script_sha256": file_sha256(script),
-            "artifacts": str(artifacts_path),
-        }
-        runs.append(run)
-        row = {
-            **run,
-            "target": "local",
-            "workdir": str(root),
-            "gpus": "",
-            "pid_path": str(managed_dir / "pid"),
-            "log_path": str(managed_dir / "stdout.log"),
-            "command": managed_scheduler.build_launch_command(
-                {"workdir": str(root)},
-                script,
-                managed_dir / "stdout.log",
-                managed_dir / "pid",
-                [],
-            ),
-            "status": "planned",
-            "launched_at": "",
-            **spec,
-        }
-        rows.append(row)
-    resolved_recipe = {
-        "variant": "sleep2vec",
-        "experiment": experiment,
-        "step": step,
-        "execution": {"workdir": str(root)},
-    }
-    resolved_path = root / "recipe.resolved.yaml"
-    resolved_path.write_text(yaml.safe_dump(resolved_recipe, sort_keys=False))
-    snapshot_path = root / execution_snapshot.EXECUTION_SNAPSHOT_NAME
-    snapshot_path.write_text("{}\n")
-    (root / "plan.json").write_text(
-        json.dumps(
-            {
-                "runs": runs,
-                "recipe": resolved_recipe,
-                "resolved_recipe_sha256": file_sha256(resolved_path),
-                "execution_snapshot": {"path": str(snapshot_path), "sha256": file_sha256(snapshot_path)},
-            }
-        )
-    )
-    manifests.write_rows(
-        root / "run_manifest.tsv",
-        rows,
-    )
-    (root / "run_manifest.tsv.lock").touch()
-    return rows
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
 
 
 def test_hparam_launch_rejects_plan_without_workspace_binding_before_start(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan = json.loads((plan_dir / "plan.json").read_text())
@@ -327,7 +30,7 @@ def test_hparam_launch_rejects_plan_without_workspace_binding_before_start(tmp_p
 
 
 def test_hparam_plan_canonicalizes_relative_workspace_root_consistently(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["experiment"]["root"] = os.path.relpath(tmp_path, Path.cwd())
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -345,14 +48,14 @@ def test_hparam_plan_canonicalizes_relative_workspace_root_consistently(tmp_path
 
 
 def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 0, result.stderr
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     script = Path(run["script"]).read_text()
     assert run["terminal_status_owner"] == "monitor"
     assert run["scheduler_type"] == "direct"
@@ -364,7 +67,7 @@ def test_hparam_plan_records_monitor_owned_exit_status_contract(tmp_path: Path):
 
 
 def test_hparam_plan_rejects_duplicate_gpu_assignments_within_a_run(tmp_path: Path):
-    recipe = _hparam_recipe(
+    recipe = write_local_hparam_recipe(
         tmp_path,
         execution={"workdir": str(tmp_path), "gpu_pool": [0, 0], "gpus_per_run": 2},
     )
@@ -377,7 +80,7 @@ def test_hparam_plan_rejects_duplicate_gpu_assignments_within_a_run(tmp_path: Pa
 
 @pytest.mark.parametrize("env_name", ["PYTHONPATH", "WANDB_PROJECT", "WANDB_GROUP", "WANDB_RUN_GROUP", "WANDB_MODE"])
 def test_hparam_plan_rejects_environment_semantic_aliases(tmp_path: Path, env_name: str):
-    recipe = _hparam_recipe(
+    recipe = write_local_hparam_recipe(
         tmp_path,
         execution={"workdir": str(tmp_path), "env": {env_name: "unit"}},
     )
@@ -391,7 +94,7 @@ def test_hparam_plan_rejects_environment_semantic_aliases(tmp_path: Path, env_na
 @pytest.mark.parametrize("field", ["target", "host", "path_context", "path_validation"])
 def test_hparam_doctor_rejects_removed_ssh_execution_fields(tmp_path: Path, field: str):
     value = {"target": "ssh", "host": "runtime-host", "path_context": "remote", "path_validation": "ssh"}[field]
-    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), field: value})
+    recipe = write_local_hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), field: value})
 
     result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
@@ -400,7 +103,7 @@ def test_hparam_doctor_rejects_removed_ssh_execution_fields(tmp_path: Path, fiel
 
 
 def test_hparam_doctor_rejects_deprecated_log_and_pid_dirs(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, execution={"log_dir": "logs", "pid_dir": "pids"})
+    recipe = write_local_hparam_recipe(tmp_path, execution={"log_dir": "logs", "pid_dir": "pids"})
 
     result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 

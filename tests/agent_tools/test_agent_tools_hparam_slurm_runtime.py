@@ -8,10 +8,15 @@ import re
 import shlex
 import subprocess
 
-from agent_tool_test_helpers import run_cli
+from agent_tool_test_helpers import (
+    read_table,
+    run_cli,
+    tree_files,
+    write_local_hparam_recipe,
+    write_slurm_plan,
+    write_yaml,
+)
 import pytest
-from test_agent_tools_hparam_runtime import _hparam_recipe, _read_table, _write_slurm_plan, write_yaml
-from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 import yaml
 
 from agent_tools import (
@@ -31,13 +36,15 @@ from agent_tools.experiment_workspace import (
     run_identity,
 )
 
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
+
 
 @pytest.mark.parametrize(
     ("variant", "gpus_per_run"),
     [("sleep2vec", 1), ("sleep2vec", 2), ("sleep2vec2", 2), ("sleep2expert", 2)],
 )
 def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path, variant: str, gpus_per_run: int):
-    recipe = _hparam_recipe(tmp_path, variant=variant)
+    recipe = write_local_hparam_recipe(tmp_path, variant=variant)
     payload = yaml.safe_load(recipe.read_text())
     configured_scheduler = {
         "type": "slurm",
@@ -64,7 +71,7 @@ def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path, variant: str
     assert preview.returncode == 0, preview.stderr
     plan = json.loads((plan_dir / "plan.json").read_text())
     run = plan["runs"][0]
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     assert plan["recipe"]["execution"]["scheduler"] == configured_scheduler
     assert run["scheduler_type"] == "slurm"
     assert canonical["scheduler_type"] == "slurm"
@@ -89,7 +96,7 @@ def test_public_hparam_recipe_plans_slurm_leaf_jobs(tmp_path: Path, variant: str
 
 @pytest.mark.parametrize("artifact_name", ["job.sbatch", "slurm.log"])
 def test_slurm_plan_rejects_existing_single_use_artifacts_before_writing(tmp_path: Path, artifact_name: str):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"].update(
         {
@@ -112,17 +119,17 @@ def test_slurm_plan_rejects_existing_single_use_artifacts_before_writing(tmp_pat
     run_dir.mkdir(parents=True)
     artifact = run_dir / artifact_name
     artifact.write_text("stale\n")
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 1
     assert "Output artifacts already exist" in result.stdout
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 def test_slurm_plan_rejects_existing_scheduler_artifact_before_writing(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"].update(
         {
@@ -175,7 +182,7 @@ def test_public_slurm_hparam_recipe_rejects_direct_scheduler_controls(
     value,
     message: str,
 ):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"]["scheduler"] = {
         "type": "slurm",
@@ -195,7 +202,7 @@ def test_public_slurm_hparam_recipe_rejects_direct_scheduler_controls(
 
 
 def test_public_slurm_hparam_recipe_rejects_unrecognized_scheduler_fields(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"]["scheduler"] = {
         "type": "slurm",
@@ -225,7 +232,7 @@ def test_public_slurm_hparam_recipe_rejects_unrecognized_scheduler_fields(tmp_pa
     ],
 )
 def test_public_hparam_recipe_requires_complete_scheduler_contract(tmp_path: Path, scheduler: dict, message: str):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"]["scheduler"] = scheduler
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -238,7 +245,7 @@ def test_public_hparam_recipe_requires_complete_scheduler_contract(tmp_path: Pat
 
 
 def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path: Path, monkeypatch):
-    recipe_path = _hparam_recipe(tmp_path)
+    recipe_path = write_local_hparam_recipe(tmp_path)
     direct_plan_dir = tmp_path / "direct-plan"
     assert run_cli("plan", "--recipe", str(recipe_path), "--output-dir", str(direct_plan_dir)).returncode == 0
     direct_plan = json.loads((direct_plan_dir / "plan.json").read_text())
@@ -270,7 +277,7 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
     run_artifacts.commit_hparam_plan(slurm_plan_dir)
 
     run = json.loads((slurm_plan_dir / "plan.json").read_text())["runs"][0]
-    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    canonical = next(row for row in read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     batch_script = Path(run["scheduler_script"]).read_text()
     assert run["scheduler_type"] == "slurm"
     assert run["terminal_status_owner"] == "monitor"
@@ -303,7 +310,7 @@ def test_hparam_plan_freezes_one_slurm_job_per_run_before_registration(tmp_path:
 
 
 def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
+    plan_dir, plan = write_slurm_plan(tmp_path, run_count=2)
     calls = []
 
     def submit(script, *, timeout):
@@ -317,7 +324,7 @@ def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: 
 
     rows = [
         row
-        for row in _read_table(tmp_path / "run_manifest.tsv")
+        for row in read_table(tmp_path / "run_manifest.tsv")
         if row["run_id"] in {run["run_id"] for run in plan["runs"]}
     ]
     assert calls == [(run["scheduler_script"], managed_scheduler.LAUNCH_TIMEOUT_SECONDS) for run in plan["runs"]]
@@ -332,7 +339,7 @@ def test_slurm_launch_submits_each_logical_gpu_zero_run_independently(tmp_path: 
 
 @pytest.mark.parametrize("field", ["runtime_dir", "checkpoint_dir"])
 def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tmp_path: Path, monkeypatch, field: str):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
+    plan_dir, plan = write_slurm_plan(tmp_path)
     snapshot = (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes()
     run = plan["runs"][0]
     Path(run[field]).mkdir(parents=True)
@@ -342,14 +349,14 @@ def test_slurm_launch_rejects_existing_local_runtime_output_before_submission(tm
     with pytest.raises(ValueError, match="Managed output paths must be independent regular files"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
 
-    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    canonical = next(row for row in read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert submitted == []
     assert canonical["status"] in {"planned", "pending"}
     assert (plan_dir / execution_snapshot.EXECUTION_SNAPSHOT_NAME).read_bytes() == snapshot
 
 
 def test_hparam_launch_ignores_existing_runtime_dir_for_nonlaunchable_run(tmp_path: Path, monkeypatch):
-    recipe_path = _hparam_recipe(tmp_path)
+    recipe_path = write_local_hparam_recipe(tmp_path)
     recipe = yaml.safe_load(recipe_path.read_text())
     recipe["search"] = {"method": "grid", "max_runs": 2, "parameters": {"runtime.lr": [1e-6, 2e-6]}}
     recipe_path.write_text(yaml.safe_dump(recipe))
@@ -387,7 +394,7 @@ def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
     runtime_devices,
     expected_devices: str,
 ):
-    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), **execution})
+    recipe = write_local_hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), **execution})
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
     base_payload = yaml.safe_load(base_recipe.read_text())
@@ -404,7 +411,7 @@ def test_hparam_plan_uses_logical_devices_for_scheduled_gpu_groups(
 
 @pytest.mark.parametrize("gpus_per_run", [1.0, "1"])
 def test_slurm_hparam_rejects_coerced_gpu_count_before_plan_write(tmp_path: Path, gpus_per_run):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"].update(
         {
@@ -504,7 +511,7 @@ def test_hparam_script_omits_slurm_task_start_record_for_direct_run(tmp_path: Pa
     ],
 )
 def test_slurm_hparam_rejects_scheduler_owned_environment_before_plan_write(tmp_path: Path, env_name: str):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["execution"].update(
         {

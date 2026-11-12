@@ -13,7 +13,7 @@ import sys
 import threading
 from types import SimpleNamespace
 
-from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS
+from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS, git_commit
 import pytest
 
 from agent_tools import python_programs
@@ -271,22 +271,7 @@ def runtime_repo(tmp_path):
     (repo / ".gitignore").write_text("ignored_repo/\n")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "add", "runtime_cli.py", ".gitignore"], cwd=repo, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "-qm",
-            "Initialize runtime fixture",
-        ],
-        cwd=repo,
-        check=True,
-    )
+    git_commit(repo, "Initialize runtime fixture")
     return repo
 
 
@@ -488,40 +473,10 @@ def test_runtime_identity_allows_only_untracked_code_inside_tracked_submodule(ru
     (nested / "README.md").write_text("tracked submodule fixture\n")
     subprocess.run(["git", "init", "-q", str(nested)], check=True)
     subprocess.run(["git", "add", "README.md"], cwd=nested, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "-qm",
-            "Initialize submodule fixture",
-        ],
-        cwd=nested,
-        check=True,
-    )
+    git_commit(nested, "Initialize submodule fixture")
     (runtime_repo / ".gitmodules").write_text('[submodule "submodule"]\n\tpath = submodule\n\turl = ./submodule\n')
     subprocess.run(["git", "add", "submodule", ".gitmodules"], cwd=runtime_repo, check=True, capture_output=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "-qm",
-            "Track submodule fixture",
-        ],
-        cwd=runtime_repo,
-        check=True,
-    )
+    git_commit(runtime_repo, "Track submodule fixture")
     (nested / "untracked_module.py").write_text("pass\n")
 
     result = subprocess.run(

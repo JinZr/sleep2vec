@@ -9,13 +9,15 @@ import shutil
 import subprocess
 import time
 
-from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS, call_while_run_lock_holder_commits
-import pytest
-from test_agent_preset_runtime_identity import (
-    _PRESET_SCRIPTS,
-    _runtime_recipe,
-    preset_runtime as preset_runtime_fixture,
+from agent_tool_test_helpers import (
+    PRESET_SCRIPTS,
+    SUBPROCESS_WAIT_SECONDS,
+    call_while_run_lock_holder_commits,
+    git_commit,
+    make_preset_runtime,
+    write_preset_runtime_recipe,
 )
+import pytest
 
 from agent_tools import cli, experiment_workspace, experiments, managed_scheduler, plans, run_evidence
 from agent_tools.experiment_workspace import (
@@ -30,32 +32,13 @@ from agent_tools.models import REPO_ROOT
 
 def _commit_runtime_python(preset_runtime):
     workdir = Path(preset_runtime["execution"]["workdir"])
-    subprocess.run(["git", "add", "--force", "--", "agent_tools", *_PRESET_SCRIPTS.values()], cwd=workdir, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Preset runtime test",
-            "-c",
-            "user.email=preset-test@example.invalid",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "Commit test runtime Python",
-        ],
-        cwd=workdir,
-        check=True,
-    )
-    preset_runtime["execution"]["runtime_commit"] = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=workdir, text=True
-    ).strip()
+    subprocess.run(["git", "add", "--force", "--", "agent_tools", *PRESET_SCRIPTS.values()], cwd=workdir, check=True)
+    preset_runtime["execution"]["runtime_commit"] = git_commit(workdir, "Commit test runtime Python")
 
 
 @pytest.fixture
 def preset_runtime(tmp_path):
-    runtime = preset_runtime_fixture.__wrapped__(tmp_path)
+    runtime = make_preset_runtime(tmp_path)
     package = Path(runtime["execution"]["workdir"]) / "agent_tools"
     package.unlink()
     shutil.copytree(REPO_ROOT / "agent_tools", package, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -64,14 +47,14 @@ def preset_runtime(tmp_path):
 
 
 def _plan(tmp_path, preset_runtime, monkeypatch, variant="sleep2vec"):
-    recipe = _runtime_recipe(tmp_path, preset_runtime, variant)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime, variant)
     plan_dir = preset_runtime["workspace"] / "plan"
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     assert report.status == plans.DecisionStatus.PASS, [issue.message for issue in report.blocking_issues()]
     return plan_dir, json.loads((plan_dir / "plan.json").read_text())
 
 
-@pytest.mark.parametrize("variant", _PRESET_SCRIPTS)
+@pytest.mark.parametrize("variant", PRESET_SCRIPTS)
 def test_new_preset_plan_freezes_managed_direct_launch(tmp_path, preset_runtime, monkeypatch, variant):
     plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch, variant)
 
@@ -85,7 +68,7 @@ def test_new_preset_plan_freezes_managed_direct_launch(tmp_path, preset_runtime,
     assert plan["commands"][0] not in (plan_dir / "run.sh").read_text()
     assert shlex.split(plan["commands"][0])[:2] == [
         preset_runtime["execution"]["python"],
-        _PRESET_SCRIPTS[variant],
+        PRESET_SCRIPTS[variant],
     ]
     assert plan["commands"][0] in Path(plan["runs"][0]["script"]).read_text()
 
@@ -132,7 +115,7 @@ def test_preset_launch_preview_does_not_bind_or_spawn(tmp_path, preset_runtime, 
 
 
 def test_real_preset_consultation_can_generate_a_registered_launchable_plan(tmp_path, preset_runtime):
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     assert report.status == plans.DecisionStatus.PASS, [(issue.field, issue.message) for issue in report.issues]
@@ -164,12 +147,12 @@ def test_wait_status_locks_manifest_while_reading(tmp_path, monkeypatch):
     assert _wait_status(tmp_path, {"completed"}) == {"status": "completed"}
 
 
-@pytest.mark.parametrize("variant", _PRESET_SCRIPTS)
+@pytest.mark.parametrize("variant", PRESET_SCRIPTS)
 @pytest.mark.parametrize("exit_code", [0, 7])
 def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     tmp_path, preset_runtime, monkeypatch, variant, exit_code
 ):
-    worker = Path(preset_runtime["execution"]["workdir"]) / _PRESET_SCRIPTS[variant]
+    worker = Path(preset_runtime["execution"]["workdir"]) / PRESET_SCRIPTS[variant]
     worker.write_text(
         "import os, time\n"
         "assert os.read(0, 1) == b''\n"
@@ -223,7 +206,7 @@ def test_preset_launch_command_failure_is_recorded_launch_failed(tmp_path, prese
     for name, value in preset_runtime["env"].items():
         monkeypatch.setenv(name, value)
     if failure == "dirty_runtime":
-        tracked = Path(preset_runtime["execution"]["workdir"]) / _PRESET_SCRIPTS["sleep2vec"]
+        tracked = Path(preset_runtime["execution"]["workdir"]) / PRESET_SCRIPTS["sleep2vec"]
         tracked.write_text(tracked.read_text() + "# uncommitted runtime change\n")
 
     result = experiments.launch_preset_run(plan_dir, dry_run=False)
@@ -471,7 +454,7 @@ def test_preset_claim_write_failure_never_spawns(tmp_path, preset_runtime, monke
 
 
 def _launch_waiting_worker(tmp_path, preset_runtime, monkeypatch):
-    worker = Path(preset_runtime["execution"]["workdir"]) / _PRESET_SCRIPTS["sleep2vec"]
+    worker = Path(preset_runtime["execution"]["workdir"]) / PRESET_SCRIPTS["sleep2vec"]
     worker.write_text("import time\nprint('worker ready', flush=True)\ntime.sleep(30)\n")
     _commit_runtime_python(preset_runtime)
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)

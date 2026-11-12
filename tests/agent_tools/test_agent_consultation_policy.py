@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-import subprocess
-import sys
 
-from agent_tool_test_helpers import config_payload, survival_config_payload, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    config_payload,
+    hparam_recipe_payload,
+    run_cli,
+    survival_config_payload,
+    tree_files,
+    write_finetune_recipe,
+    write_yaml,
+)
 import pytest
 import yaml
 
@@ -30,10 +36,6 @@ def test_selection_split_and_test_access_questions_are_distinct():
     )
 
 
-def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], cwd=cwd, text=True, capture_output=True)
-
-
 @pytest.mark.parametrize(("task", "warns"), [("finetune", True), ("preset_prepare", False)])
 def test_missing_artifacts_warning_respects_task_output_ownership(task, warns):
     report = evaluate_consultation_gates(
@@ -53,14 +55,14 @@ def test_doctor_without_output_dir_is_read_only(tmp_path: Path):
     write_yaml(recipe, payload)
     implicit_output = Path.cwd() / "artifacts" / "agent_context" / payload["name"]
     assert not implicit_output.exists()
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
 
-    result = _run("doctor", "--recipe", str(recipe), cwd=Path.cwd())
+    result = run_cli("doctor", "--recipe", str(recipe))
 
     assert result.returncode == 2
     assert "Status: NEEDS_USER_INPUT" in result.stdout
     assert not implicit_output.exists()
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 def test_survival_preset_does_not_require_sidecar_files(tmp_path: Path):
@@ -108,7 +110,7 @@ def test_survival_preset_does_not_require_sidecar_files(tmp_path: Path):
         },
     )
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"), cwd=Path.cwd())
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 0
     assert "survival_sidecars" not in result.stdout
@@ -120,7 +122,7 @@ def test_local_missing_config_path_still_fails(tmp_path: Path):
     payload["inputs"]["config"] = str(tmp_path / "missing.yaml")
     write_yaml(recipe, payload)
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"), cwd=Path.cwd())
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 1
     assert "Required input file does not exist" in result.stdout
@@ -227,33 +229,24 @@ def test_high_impact_decision_with_unresolved_source_blocks(tmp_path: Path):
     payload["decisions"]["label_name"] = {"value": "ahi", "source": "unresolved"}
     write_yaml(recipe, payload)
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"), cwd=Path.cwd())
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 2
     assert "label_name is not explicitly resolved" in result.stdout
 
 
 def test_hparam_tune_missing_external_test_locked_needs_user_input(tmp_path: Path):
-    recipe = {
-        "name": "unit_tune",
-        "task": "hparam_tune",
-        "variant": "sleep2vec",
-        "base_recipe": str(write_finetune_recipe(tmp_path)),
-        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
-        "evaluation_policy": {
-            "selection_metric": "val_ahi_pearson",
-            "selection_mode": "max",
-            "selection_split": "val",
-            "test_after_fit": False,
-            "final_eval_split": "validation",
-            "final_test_unlocked": False,
-            "require_manual_unlock_for_final_test": True,
-        },
-        "decisions": {"task": {"value": "hparam_tune", "source": "explicit_recipe"}},
-    }
+    recipe = hparam_recipe_payload(
+        write_finetune_recipe(tmp_path),
+        name="unit_tune",
+        search={"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
+    )
+    recipe["evaluation_policy"]["final_eval_split"] = "validation"
+    del recipe["evaluation_policy"]["external_test_locked"]
+    recipe["decisions"] = {"task": {"value": "hparam_tune", "source": "explicit_recipe"}}
     recipe_path = write_yaml(tmp_path / "tune.yaml", recipe)
 
-    result = _run("doctor", "--recipe", str(recipe_path), "--output-dir", str(tmp_path / "doctor"), cwd=Path.cwd())
+    result = run_cli("doctor", "--recipe", str(recipe_path), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 2
     assert "external_test_locked" in result.stdout
@@ -267,38 +260,13 @@ def test_hparam_tune_blocks_on_base_config_blocking_issues(tmp_path: Path):
     config_payload["data"]["finetune_data_index"] = None
     config_payload["data"]["finetune_preset_path"] = None
     write_yaml(config, config_payload)
-    recipe = {
-        "name": "unit_tune",
-        "task": "hparam_tune",
-        "variant": "sleep2vec",
-        "base_recipe": str(base),
-        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
-        "evaluation_policy": {
-            "selection_metric": "val_ahi_pearson",
-            "selection_mode": "max",
-            "selection_split": "val",
-            "external_test_locked": True,
-            "test_after_fit": False,
-            "final_eval_split": "validation",
-            "final_test_unlocked": False,
-            "require_manual_unlock_for_final_test": True,
-        },
-        "decisions": {
-            "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-            "label_name": {"value": "ahi", "source": "explicit_recipe"},
-            "external_test_locked": {"value": True, "source": "explicit_recipe"},
-            "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-            "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-        },
-    }
+    recipe = hparam_recipe_payload(
+        base, name="unit_tune", search={"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}}
+    )
+    recipe["evaluation_policy"]["final_eval_split"] = "validation"
 
-    result = _run(
-        "doctor",
-        "--recipe",
-        str(write_yaml(tmp_path / "tune.yaml", recipe)),
-        "--output-dir",
-        str(tmp_path / "doctor"),
-        cwd=Path.cwd(),
+    result = run_cli(
+        "doctor", "--recipe", str(write_yaml(tmp_path / "tune.yaml", recipe)), "--output-dir", str(tmp_path / "doctor")
     )
 
     assert result.returncode == 2
@@ -306,34 +274,18 @@ def test_hparam_tune_blocks_on_base_config_blocking_issues(tmp_path: Path):
 
 
 def test_hparam_tune_requires_local_selection_policy_even_when_base_has_it(tmp_path: Path):
-    recipe = {
-        "name": "unit_tune",
-        "task": "hparam_tune",
-        "variant": "sleep2vec",
-        "base_recipe": str(write_finetune_recipe(tmp_path)),
-        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
-        "evaluation_policy": {
-            "external_test_locked": True,
-            "test_after_fit": False,
-            "final_eval_split": "validation",
-            "final_test_unlocked": False,
-            "require_manual_unlock_for_final_test": True,
-        },
-        "decisions": {
-            "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-            "label_name": {"value": "ahi", "source": "explicit_recipe"},
-            "external_test_locked": {"value": True, "source": "explicit_recipe"},
-            "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-        },
-    }
+    recipe = hparam_recipe_payload(
+        write_finetune_recipe(tmp_path),
+        name="unit_tune",
+        search={"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
+    )
+    recipe["evaluation_policy"]["final_eval_split"] = "validation"
+    for field in ("selection_metric", "selection_mode", "selection_split"):
+        del recipe["evaluation_policy"][field]
+    del recipe["decisions"]["train_val_test_policy"]
 
-    result = _run(
-        "doctor",
-        "--recipe",
-        str(write_yaml(tmp_path / "tune.yaml", recipe)),
-        "--output-dir",
-        str(tmp_path / "doctor"),
-        cwd=Path.cwd(),
+    result = run_cli(
+        "doctor", "--recipe", str(write_yaml(tmp_path / "tune.yaml", recipe)), "--output-dir", str(tmp_path / "doctor")
     )
 
     assert result.returncode == 2
@@ -341,38 +293,16 @@ def test_hparam_tune_requires_local_selection_policy_even_when_base_has_it(tmp_p
 
 
 def test_hparam_tune_blocks_when_selection_metric_conflicts_with_config(tmp_path: Path):
-    recipe = {
-        "name": "unit_tune",
-        "task": "hparam_tune",
-        "variant": "sleep2vec",
-        "base_recipe": str(write_finetune_recipe(tmp_path)),
-        "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
-        "evaluation_policy": {
-            "selection_metric": "val_loss",
-            "selection_mode": "max",
-            "selection_split": "val",
-            "external_test_locked": True,
-            "test_after_fit": False,
-            "final_eval_split": "validation",
-            "final_test_unlocked": False,
-            "require_manual_unlock_for_final_test": True,
-        },
-        "decisions": {
-            "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-            "label_name": {"value": "ahi", "source": "explicit_recipe"},
-            "external_test_locked": {"value": True, "source": "explicit_recipe"},
-            "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-            "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-        },
-    }
+    recipe = hparam_recipe_payload(
+        write_finetune_recipe(tmp_path),
+        name="unit_tune",
+        search={"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
+        selection_metric="val_loss",
+    )
+    recipe["evaluation_policy"]["final_eval_split"] = "validation"
 
-    result = _run(
-        "doctor",
-        "--recipe",
-        str(write_yaml(tmp_path / "tune.yaml", recipe)),
-        "--output-dir",
-        str(tmp_path / "doctor"),
-        cwd=Path.cwd(),
+    result = run_cli(
+        "doctor", "--recipe", str(write_yaml(tmp_path / "tune.yaml", recipe)), "--output-dir", str(tmp_path / "doctor")
     )
 
     assert result.returncode == 1

@@ -3,20 +3,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_tool_test_helpers import write_finetune_recipe
-import pytest
-from test_agent_tools_experiment_status import (
-    _add_plan,
-    _init_workspace,
-    _read_manifest_rows,
-    _sha256,
-    _workspace_files,
-    _write_public_hparam_recipe,
+from agent_tool_test_helpers import (
+    add_plan,
+    init_status_workspace,
+    read_manifest_rows,
+    sha256_of,
+    workspace_files,
+    write_finetune_recipe,
+    write_public_hparam_recipe,
 )
-from test_agent_tools_experiment_status import _stub_execution_target  # noqa: F401
+import pytest
 import yaml
 
 from agent_tools import cli, experiment_io, experiment_workspace, experiments, plan_hparam, plans, run_artifacts
+
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
 
 
 @pytest.mark.parametrize("allow_unresolved", [False, True])
@@ -49,13 +50,13 @@ def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(
         user_decisions_path=decisions_path,
     )
     assert retry.exit_code == 0
-    before = _workspace_files(root)
+    before = workspace_files(root)
 
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["steps"][0]["plans"] == [str(retry_dir)]
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
 
 
 def test_experiment_status_skips_registered_blocked_plan_after_successful_plan(tmp_path):
@@ -69,13 +70,13 @@ def test_experiment_status_skips_registered_blocked_plan_after_successful_plan(t
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     blocked_dir = root / "plans" / "blocked"
     assert plans.build_plan(recipe_path=recipe, output_dir=blocked_dir).exit_code == 2
-    before = _workspace_files(root)
+    before = workspace_files(root)
 
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["steps"][0]["plans"] == [str(successful_dir)]
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
 
 
 def test_experiment_status_allows_later_ordinary_plan_from_new_recipe(tmp_path):
@@ -104,11 +105,11 @@ def test_experiment_status_rejects_blocked_artifacts_beside_pass_plan(tmp_path):
     plan_dir = root / "plans" / "train"
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     (plan_dir / "plan.blocked.md").write_text("blocked\n")
-    before = _workspace_files(root)
+    before = workspace_files(root)
 
     with pytest.raises(ValueError, match="both PASS and blocked"):
         experiments.experiment_status(root)
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
 
 
 def test_experiment_status_rejects_user_decisions_beside_pass_plan(tmp_path):
@@ -147,11 +148,11 @@ def test_experiment_status_rejects_partial_registered_blocked_plan(tmp_path, mut
     else:
         (blocked_dir / "run.sh").write_text("partial artifact\n")
         error = "directory entries differ"
-    before = _workspace_files(root)
+    before = workspace_files(root)
 
     with pytest.raises(ValueError, match=error):
         experiments.experiment_status(root)
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
 
 
 def test_experiment_status_rejects_step_metadata_drift_from_registered_plan(tmp_path):
@@ -160,12 +161,12 @@ def test_experiment_status_rejects_step_metadata_drift_from_registered_plan(tmp_
     recipe_payload = yaml.safe_load(recipe.read_text())
     plan_dir = root / "plans" / "train"
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
-    before = _workspace_files(root)
+    before = workspace_files(root)
 
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
     step_path = root / "steps" / recipe_payload["step"]["id"] / "step.yaml"
     step_manifest = yaml.safe_load(step_path.read_text())
     step_manifest["step"]["purpose"] = "Different purpose."
@@ -176,8 +177,8 @@ def test_experiment_status_rejects_step_metadata_drift_from_registered_plan(tmp_
 
 def test_experiment_status_rejects_unknown_registered_step_metadata(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    add_plan(root, step_id="train")
     step_path = root / "steps" / "train" / "step.yaml"
     step_manifest = yaml.safe_load(step_path.read_text())
     step_manifest["step"]["purpsoe"] = "typo"
@@ -190,7 +191,7 @@ def test_experiment_status_rejects_unknown_registered_step_metadata(tmp_path):
 @pytest.mark.parametrize("parameters", [{"runtime.lr": [1e-6]}, {"yaml:/data/finetune_preset_path": [None]}])
 def test_experiment_status_accepts_public_layered_hparam_plan(tmp_path, parameters):
     root = tmp_path / "experiment"
-    recipe = _write_public_hparam_recipe(root, parameters)
+    recipe = write_public_hparam_recipe(root, parameters)
     plan_dir = root / "plans" / "tune"
 
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
@@ -200,7 +201,7 @@ def test_experiment_status_accepts_public_layered_hparam_plan(tmp_path, paramete
     parameter = next(iter(parameters))
     if parameters[parameter] == [None]:
         assert plan["runs"][0][parameter] is None
-        assert _read_manifest_rows(root)[0][parameter] == ""
+        assert read_manifest_rows(root)[0][parameter] == ""
 
     snapshot = experiments.experiment_status(root)
 
@@ -216,7 +217,7 @@ def test_hparam_configurations_preserve_frozen_identity_across_json_roundtrip(tm
     ]
     if reverse_keys:
         configurations = [dict(reversed(list(point.items()))) for point in configurations]
-    recipe = _write_public_hparam_recipe(root, {})
+    recipe = write_public_hparam_recipe(root, {})
     payload = yaml.safe_load(recipe.read_text())
     payload["search"] = {"method": "grid", "max_runs": 2, "configurations": configurations}
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -232,7 +233,7 @@ def test_hparam_configurations_preserve_frozen_identity_across_json_roundtrip(tm
         "runtime.lr=1e-06; runtime.weight_decay=0.01",
     ]
     assert [{key: run[key] for key in point} for run, point in zip(runs, configurations)] == configurations
-    canonical = _read_manifest_rows(root)
+    canonical = read_manifest_rows(root)
     identity_fields = (
         *("experiment_id", "step_id", "run_id", "run_name", "parameter_summary", "version"),
         *("config", "config_sha256", "script", "script_sha256", "run_dir", "artifacts", "runtime_dir"),
@@ -242,14 +243,14 @@ def test_hparam_configurations_preserve_frozen_identity_across_json_roundtrip(tm
     for run, row in zip(runs, canonical):
         for field in identity_fields:
             assert str(run.get(field) or "") == str(row.get(field) or "")
-        assert run["config_sha256"] == _sha256(Path(run["config"]))
-        assert run["script_sha256"] == _sha256(Path(run["script"]))
+        assert run["config_sha256"] == sha256_of(Path(run["config"]))
+        assert run["script_sha256"] == sha256_of(Path(run["script"]))
         assert run["command"] in Path(run["script"]).read_text()
-    before = _workspace_files(root)
+    before = workspace_files(root)
 
     assert run_artifacts.read_hparam_plan(plan_dir)["runs"] == runs
     assert experiments.experiment_status(root)["summary"]["state"] == "ready_to_launch"
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
 
 
 @pytest.mark.parametrize("max_runs", [3, 4])
@@ -263,7 +264,7 @@ def test_hparam_grid_key_order_does_not_change_run_indices_or_budget_subset(tmp_
     parameters = {"runtime.weight_decay": [0.1, 0.01], "runtime.lr": [2e-6, 1e-6]}
     for index, mapping in enumerate((parameters, dict(reversed(list(parameters.items()))))):
         root = tmp_path / f"experiment-{index}"
-        recipe = _write_public_hparam_recipe(root, mapping, max_runs=max_runs)
+        recipe = write_public_hparam_recipe(root, mapping, max_runs=max_runs)
         payload = yaml.safe_load(recipe.read_text())
         payload["search"]["parameters"] = mapping
         recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -275,17 +276,17 @@ def test_hparam_grid_key_order_does_not_change_run_indices_or_budget_subset(tmp_
         runs = json.loads((plan_dir / "plan.json").read_text())["runs"]
         assert [run["run_id"] for run in runs] == [f"run-{run_index:03d}" for run_index in range(max_runs)]
         assert [{key: run[key] for key in parameters} for run in runs] == expected
-        before = _workspace_files(root)
+        before = workspace_files(root)
 
         assert run_artifacts.read_hparam_plan(plan_dir)["runs"] == runs
         assert experiments.experiment_status(root)["summary"]["state"] == "ready_to_launch"
-        assert _workspace_files(root) == before
+        assert workspace_files(root) == before
 
 
 def test_experiment_status_requires_hparam_resolved_recipe_digest(tmp_path, capsys):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="tune", task="hparam_tune")
+    init_status_workspace(root)
+    plan_dir, _canonical = add_plan(root, step_id="tune", task="hparam_tune")
     plan = json.loads((plan_dir / "plan.json").read_text())
     del plan["resolved_recipe_sha256"]
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
@@ -301,12 +302,12 @@ def test_experiment_status_requires_hparam_resolved_recipe_digest(tmp_path, caps
 def test_experiment_status_allows_unrelated_blank_parameter_columns(tmp_path):
     root = tmp_path / "experiment"
     parameter = "yaml:/data/finetune_preset_path"
-    recipe = _write_public_hparam_recipe(root, {parameter: [None]})
+    recipe = write_public_hparam_recipe(root, {parameter: [None]})
     plan_dir = root / "plans" / "tune"
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
-    _add_plan(root, step_id="analyze", task="sleep2stat")
+    add_plan(root, step_id="analyze", task="sleep2stat")
 
-    generic_row = next(row for row in _read_manifest_rows(root) if row["step_id"] == "analyze")
+    generic_row = next(row for row in read_manifest_rows(root) if row["step_id"] == "analyze")
     assert generic_row[parameter] == ""
 
     snapshot = experiments.experiment_status(root)
@@ -318,8 +319,8 @@ def test_experiment_status_allows_unrelated_blank_parameter_columns(tmp_path):
 @pytest.mark.parametrize("drift", ["resolved_recipe", "plan_escape", "canonical_run"])
 def test_experiment_status_rejects_registered_plan_binding_drift(tmp_path, drift):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    plan_dir, _canonical = add_plan(root, step_id="train")
 
     if drift == "resolved_recipe":
         (plan_dir / "recipe.resolved.yaml").write_text("task: changed\n")
@@ -337,8 +338,8 @@ def test_experiment_status_rejects_registered_plan_binding_drift(tmp_path, drift
 
 def test_experiment_status_rejects_plan_escape_before_external_probe(tmp_path, monkeypatch):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    add_plan(root, step_id="train")
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "plan.blocked.md").write_text("blocked\n")
@@ -364,8 +365,8 @@ def test_experiment_status_rejects_plan_escape_before_external_probe(tmp_path, m
 @pytest.mark.parametrize("field", ["title", "objective", "baseline"])
 def test_experiment_status_rejects_coherent_registered_plan_experiment_drift(tmp_path, field):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    plan_dir, _canonical = add_plan(root, step_id="train")
 
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
@@ -382,8 +383,8 @@ def test_experiment_status_rejects_coherent_registered_plan_experiment_drift(tmp
 
 def test_experiment_status_rejects_plan_registered_by_multiple_steps(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    plan_dir, _canonical = add_plan(root, step_id="train")
     second_step = root / "steps" / "evaluate"
     second_step.mkdir(parents=True)
     (second_step / "step.yaml").write_text(

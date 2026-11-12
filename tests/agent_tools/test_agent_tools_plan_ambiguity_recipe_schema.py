@@ -4,29 +4,36 @@ import json
 from pathlib import Path
 from shlex import quote as shlex_quote
 
-from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    plan_first_run,
+    run_cli,
+    tree_files,
+    write_finetune_recipe,
+    write_variant_hparam_recipe,
+    write_yaml,
+)
 import pytest
-from test_agent_plan_blocks_on_ambiguity import _first_run, _hparam_recipe
-from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
 from agent_tools import plan_context, plans
 from agent_tools.run_artifacts import read_hparam_plan
 
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
+
 
 def test_hparam_recipe_cannot_inherit_experiment_and_step_from_base(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload.pop("experiment")
     payload.pop("step")
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
 
     plan = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(tmp_path / "plan"))
 
     assert plan.returncode == 2
     assert "experiment" in plan.stdout
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 def test_effective_user_config_fails_before_workspace_mutation(tmp_path: Path):
@@ -40,7 +47,7 @@ def test_effective_user_config_fails_before_workspace_mutation(tmp_path: Path):
         decisions.write_text(
             yaml.safe_dump({"decisions": {"config": {"value": str(selected_config), "source": "explicit_user"}}})
         )
-        before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        before = tree_files(root)
 
         result = run_cli(
             "plan",
@@ -54,7 +61,7 @@ def test_effective_user_config_fails_before_workspace_mutation(tmp_path: Path):
 
         assert result.returncode == 1
         assert "config" in result.stdout.lower()
-        assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+        assert tree_files(root) == before
 
 
 def test_unresolved_effective_user_config_fails_before_workspace_mutation(tmp_path: Path):
@@ -63,7 +70,7 @@ def test_unresolved_effective_user_config_fails_before_workspace_mutation(tmp_pa
         recipe = write_finetune_recipe(root)
         decisions = root / "decisions.yaml"
         decisions.write_text(yaml.safe_dump({"decisions": {"config": {"value": value, "source": "explicit_user"}}}))
-        before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        before = tree_files(root)
 
         result = run_cli(
             "plan",
@@ -77,16 +84,16 @@ def test_unresolved_effective_user_config_fails_before_workspace_mutation(tmp_pa
 
         assert result.returncode == 2
         assert "config" in result.stdout.lower()
-        assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+        assert tree_files(root) == before
 
 
 def test_unresolved_hparam_user_config_fails_before_workspace_mutation(tmp_path: Path):
     for case, value in (("null", None), ("empty", ""), ("ask", "ASK_USER")):
         root = tmp_path / case
-        recipe = _hparam_recipe(root)
+        recipe = write_variant_hparam_recipe(root)
         decisions = root / "decisions.yaml"
         decisions.write_text(yaml.safe_dump({"decisions": {"config": {"value": value, "source": "explicit_user"}}}))
-        before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        before = tree_files(root)
 
         result = run_cli(
             "plan",
@@ -100,11 +107,11 @@ def test_unresolved_hparam_user_config_fails_before_workspace_mutation(tmp_path:
 
         assert result.returncode == 2
         assert "config" in result.stdout.lower()
-        assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+        assert tree_files(root) == before
 
 
 def test_resolved_hparam_user_config_owns_consultation_and_snapshot(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     recipe_payload = yaml.safe_load(recipe.read_text())
     base_recipe = yaml.safe_load(Path(recipe_payload["base_recipe"]).read_text())
     base_config = yaml.safe_load(Path(base_recipe["inputs"]["config"]).read_text())
@@ -127,7 +134,7 @@ def test_resolved_hparam_user_config_owns_consultation_and_snapshot(tmp_path: Pa
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
-    run = _first_run(tmp_path / "plan")
+    run = plan_first_run(tmp_path / "plan")
     assert yaml.safe_load(Path(run["config"]).read_text())["data"]["max_tokens"] == 5
     plan = json.loads((tmp_path / "plan" / "plan.json").read_text())
     assert plan["recipe"]["inputs"]["config"] == str(selected_config)
@@ -135,7 +142,7 @@ def test_resolved_hparam_user_config_owns_consultation_and_snapshot(tmp_path: Pa
 
 
 def test_hparam_user_decisions_freeze_one_effective_recipe(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"]["selection_metric"] = "val_wrong"
     payload["decisions"]["selection_metric"] = {"value": "val_wrong", "source": "explicit_recipe"}
@@ -185,7 +192,7 @@ def test_hparam_user_decisions_freeze_one_effective_recipe(tmp_path: Path):
 
 
 def test_hparam_user_selection_metric_rechecks_config_monitor(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
         {
@@ -212,7 +219,7 @@ def test_hparam_user_selection_metric_rechecks_config_monitor(tmp_path: Path):
 
 
 def test_resolved_hparam_user_config_rechecks_base_consultation(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     recipe_payload = yaml.safe_load(recipe.read_text())
     base_recipe = yaml.safe_load(Path(recipe_payload["base_recipe"]).read_text())
     base_config = yaml.safe_load(Path(base_recipe["inputs"]["config"]).read_text())
@@ -249,14 +256,14 @@ def test_missing_or_unsupported_task_without_workspace_returns_report(tmp_path: 
             payload["task"] = task
         recipe = root / "recipe.yaml"
         recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-        before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        before = tree_files(root)
 
         result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(root / "plan"))
 
         assert result.returncode == expected_returncode
         assert "task" in result.stdout.lower()
         assert not result.stderr
-        assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+        assert tree_files(root) == before
 
 
 @pytest.mark.parametrize("value", [None, "", "ASK_USER", "false", "true", 0, 1, [], {}])
@@ -510,14 +517,14 @@ def test_plan_blocks_unresolved_recipe_label_before_workspace_mutation(tmp_path:
     payload["decisions"]["label_name"] = {"value": value, "source": "explicit_recipe"}
     write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "label_name decision is unresolved" in result.stdout
     assert not output_dir.exists()
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 def test_plan_materializes_recipe_decisions_before_rendering(tmp_path: Path):
@@ -570,7 +577,7 @@ def test_plan_materializes_recipe_decisions_before_rendering(tmp_path: Path):
 
 
 def test_hparam_rejects_bare_search_parameter(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, parameters={"lr": [1e-6]})
+    recipe = write_variant_hparam_recipe(tmp_path, parameters={"lr": [1e-6]})
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -580,7 +587,7 @@ def test_hparam_rejects_bare_search_parameter(tmp_path: Path):
 
 
 def test_hparam_rejects_non_positive_max_runs(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, max_runs=0)
+    recipe = write_variant_hparam_recipe(tmp_path, max_runs=0)
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -591,7 +598,7 @@ def test_hparam_rejects_non_positive_max_runs(tmp_path: Path):
 
 
 def test_hparam_rejects_removed_max_trials_field(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_trials"] = payload["search"].pop("max_runs")
     recipe.write_text(yaml.safe_dump(payload))
@@ -611,7 +618,7 @@ def test_hparam_rejects_unknown_execution_and_evaluation_fields(
     section: str,
     field: str,
 ):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload.setdefault(section, {})[field] = 1
     recipe.write_text(yaml.safe_dump(payload))
@@ -625,13 +632,13 @@ def test_hparam_rejects_unknown_execution_and_evaluation_fields(
 
 
 def test_hparam_yaml_parameter_updates_run_config(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, parameters={"yaml:/finetune/task/output_dim": [31]})
+    recipe = write_variant_hparam_recipe(tmp_path, parameters={"yaml:/finetune/task/output_dim": [31]})
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    run_config = yaml.safe_load(Path(_first_run(output_dir)["config"]).read_text())
+    run_config = yaml.safe_load(Path(plan_first_run(output_dir)["config"]).read_text())
     assert run_config["finetune"]["task"]["output_dim"] == 31
 
 
@@ -663,7 +670,7 @@ def test_hparam_yaml_override_can_match_explicit_decision_when_base_differs(
     value: str,
     config_path: tuple[str, ...],
 ):
-    recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
+    recipe = write_variant_hparam_recipe(tmp_path, parameters={parameter: [value]})
     payload = yaml.safe_load(recipe.read_text())
     payload[section][field] = value
     write_yaml(recipe, payload)
@@ -672,7 +679,7 @@ def test_hparam_yaml_override_can_match_explicit_decision_when_base_differs(
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0, result.stderr or result.stdout
-    run_config = yaml.safe_load(Path(_first_run(output_dir)["config"]).read_text())
+    run_config = yaml.safe_load(Path(plan_first_run(output_dir)["config"]).read_text())
     configured = run_config
     for key in config_path:
         configured = configured[key]
@@ -680,7 +687,7 @@ def test_hparam_yaml_override_can_match_explicit_decision_when_base_differs(
 
 
 def test_hparam_yaml_backend_override_rejects_any_combo_conflicting_with_explicit_decision(tmp_path: Path):
-    recipe = _hparam_recipe(
+    recipe = write_variant_hparam_recipe(
         tmp_path,
         parameters={"yaml:/data/backend": ["kaldi", "npz"]},
         max_runs=2,
@@ -698,7 +705,7 @@ def test_hparam_yaml_backend_override_rejects_any_combo_conflicting_with_explici
 
 
 def test_hparam_backend_decision_must_match_base_without_yaml_override(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["data_backend"] = "kaldi"
     write_yaml(recipe, payload)
@@ -725,7 +732,7 @@ def test_hparam_yaml_parameter_cannot_conflict_with_decision_contract(
     value: str,
     field: str,
 ):
-    recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
+    recipe = write_variant_hparam_recipe(tmp_path, parameters={parameter: [value]})
     output_dir = tmp_path / "plan"
     manifest = tmp_path / "run_manifest.tsv"
     manifest_before = manifest.read_bytes() if manifest.exists() else None
@@ -781,7 +788,7 @@ def test_hparam_yaml_parameter_handles_empty_recipe_semantics(
     value: object,
     expected_message: str,
 ):
-    recipe = _hparam_recipe(tmp_path, parameters={parameter: [value]})
+    recipe = write_variant_hparam_recipe(tmp_path, parameters={parameter: [value]})
     payload = yaml.safe_load(recipe.read_text())
     payload[section][key] = recipe_value
     write_yaml(recipe, payload)
@@ -803,7 +810,7 @@ def test_hparam_yaml_parameter_handles_empty_recipe_semantics(
 
 
 def test_hparam_yaml_parameter_rejects_ask_user_backend_after_null_input(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, parameters={"yaml:/data/backend": ["kaldi"]})
+    recipe = write_variant_hparam_recipe(tmp_path, parameters={"yaml:/data/backend": ["kaldi"]})
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["data_backend"] = None
     payload.setdefault("runtime", {})["data_backend"] = "ASK_USER"
@@ -826,7 +833,7 @@ def test_hparam_yaml_parameter_rejects_ask_user_backend_after_null_input(tmp_pat
 
 
 def test_hparam_yaml_parameter_rejects_negative_list_index(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, parameters={"yaml:/model/channels/-1/input_dim": [9]})
+    recipe = write_variant_hparam_recipe(tmp_path, parameters={"yaml:/model/channels/-1/input_dim": [9]})
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))

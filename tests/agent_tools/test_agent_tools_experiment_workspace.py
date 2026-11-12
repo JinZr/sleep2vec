@@ -17,7 +17,9 @@ from agent_tool_test_helpers import (
     call_while_run_lock_holder_commits,
     run_cli,
     run_cli_subprocess,
+    tree_files,
     write_finetune_recipe,
+    write_hparam_recipe,
     write_yaml,
 )
 import pytest
@@ -54,33 +56,11 @@ from agent_tools.experiment_workspace import (
 
 
 def _hparam_recipe(tmp_path: Path) -> Path:
-    base = write_finetune_recipe(tmp_path)
-    return write_yaml(
+    return write_hparam_recipe(
         tmp_path / "tune.yaml",
-        {
-            "name": "managed_tune",
-            "task": "hparam_tune",
-            "variant": "sleep2vec",
-            "base_recipe": str(base),
-            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [2e-6]}},
-            "evaluation_policy": {
-                "selection_metric": "val_ahi_pearson",
-                "selection_mode": "max",
-                "selection_split": "val",
-                "external_test_locked": True,
-                "test_after_fit": False,
-                "final_eval_split": "test",
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
+        write_finetune_recipe(tmp_path),
+        name="managed_tune",
+        search={"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [2e-6]}},
     )
 
 
@@ -1764,7 +1744,7 @@ def test_planner_rejects_corrupt_existing_step_manifest_without_writing(tmp_path
     payload = json.loads((first / "plan.json").read_text())["recipe"]
     target = tmp_path / "steps" / payload["step"]["id"] / "step.yaml"
     target.write_text(existing)
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
     plan_dir = tmp_path / "plans" / "corrupt-step"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
@@ -1772,7 +1752,7 @@ def test_planner_rejects_corrupt_existing_step_manifest_without_writing(tmp_path
     assert result.returncode == 1
     assert "step manifest" in result.stderr
     assert not plan_dir.exists()
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 def test_new_plan_continues_run_ids_within_the_same_step(tmp_path: Path):
@@ -1795,13 +1775,13 @@ def test_missing_canonical_manifest_never_resets_run_identity(tmp_path: Path):
     second = tmp_path / "plans" / "second"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(first)).returncode == 0
     (tmp_path / "run_manifest.tsv").unlink()
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(second))
 
     assert result.returncode == 1
     assert "run_manifest.tsv" in result.stderr
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
     assert not second.exists()
 
 
@@ -1814,14 +1794,14 @@ def test_planner_rejects_duplicate_workspace_ownership_without_writing(tmp_path:
     manifest.write_text(
         manifest.read_text().replace("  id: unit-experiment\n", "  id: foreign\n  id: unit-experiment\n")
     )
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(second))
 
     assert result.returncode == 1
     assert "Status: FAIL" in result.stdout
     assert "duplicate key" in result.stdout
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
     assert not second.exists()
 
 
@@ -1920,9 +1900,7 @@ def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: 
     first = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert first.returncode == 0, first.stderr
     first_run_dir = plan_dir / "runs" / "run-000--unit"
-    first_run_bytes = {
-        path.relative_to(first_run_dir): path.read_bytes() for path in first_run_dir.rglob("*") if path.is_file()
-    }
+    first_run_bytes = tree_files(first_run_dir)
     first_plan_bytes = (plan_dir / "plan.json").read_bytes()
     if change_step:
         payload["step"] = {
@@ -1937,9 +1915,7 @@ def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: 
 
     assert second.returncode == 1
     assert "Registered plan directories are immutable" in second.stdout
-    assert {
-        path.relative_to(first_run_dir): path.read_bytes() for path in first_run_dir.rglob("*") if path.is_file()
-    } == first_run_bytes
+    assert tree_files(first_run_dir) == first_run_bytes
     assert (plan_dir / "plan.json").read_bytes() == first_plan_bytes
     assert not (plan_dir / "runs" / "run-001--unit").exists()
     assert [row["run_id"] for row in read_run_manifest(tmp_path)] == ["run-000"]

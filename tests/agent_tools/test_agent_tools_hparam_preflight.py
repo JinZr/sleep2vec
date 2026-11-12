@@ -9,10 +9,14 @@ from pathlib import Path
 import shlex
 import shutil
 import subprocess
-import sys
 import threading
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    checkout_commit,
+    fake_execution_snapshot,
+    workspace_files,
+    write_preflight_hparam_recipe,
+)
 import pytest
 import yaml
 
@@ -23,93 +27,8 @@ from agent_tools.experiment_workspace import (
     merge_run_manifest,
     read_run_manifest,
 )
-from agent_tools.models import REPO_ROOT
 
-_RUNTIME_COMMIT = subprocess.run(
-    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
-).stdout.strip()
 _PREFLIGHT_CARD_HEADING = "## Hparam Registration Preflight Provenance"
-
-
-def _recipe(tmp_path: Path, *, task: str = "hparam_tune") -> tuple[Path, Path]:
-    base = write_finetune_recipe(tmp_path / "source")
-    if task != "hparam_tune":
-        recipe_path = base
-    else:
-        recipe_path = write_yaml(
-            tmp_path / "tune.yaml",
-            {
-                "name": "preflight_hparam",
-                "task": "hparam_tune",
-                "variant": "sleep2vec",
-                "base_recipe": str(base),
-                "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
-                "execution": {
-                    "workdir": str(tmp_path / "runtime"),
-                    "python": sys.executable,
-                    "runtime_commit": _RUNTIME_COMMIT,
-                },
-                "evaluation_policy": {
-                    "selection_metric": "val_ahi_pearson",
-                    "selection_mode": "max",
-                    "selection_split": "val",
-                    "final_eval_split": "test",
-                    "external_test_locked": True,
-                    "test_after_fit": False,
-                    "final_test_unlocked": False,
-                    "require_manual_unlock_for_final_test": True,
-                },
-                "decisions": {
-                    "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                    "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                    "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                    "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                    "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-                },
-            },
-        )
-    effective, _summary, _report = plans.evaluate_recipe(recipe_path)
-    return recipe_path, Path(effective["experiment"]["root"])
-
-
-def _snapshot(execution: dict, runs: list[dict]) -> dict:
-    planned_argv = []
-    modules = set()
-    for run in runs:
-        tokens = shlex.split(run["command"])
-        module_index = tokens.index("-m") + 1
-        modules.add(tokens[module_index])
-        planned_argv.append({"run_id": run["run_id"], "args": tokens[module_index + 1 :]})
-    module = modules.pop()
-    return {
-        "workdir": str(execution.get("workdir") or REPO_ROOT),
-        "conda_env": str(execution.get("conda_env") or ""),
-        "python_command": execution["python"],
-        "expected_runtime_commit": execution["runtime_commit"],
-        "execution_env_sha256": hashlib.sha256(b"{}").hexdigest(),
-        "python": execution["python"],
-        "python_version": "3.10.0",
-        "runtime_commit": execution["runtime_commit"],
-        "runtime_repo_root": str(REPO_ROOT),
-        "runtime_hostname": "unit-host",
-        "module": module,
-        "module_origin": str(REPO_ROOT / Path(*module.split(".")).with_suffix(".py")),
-        "required_options": [],
-        "supported_options": [],
-        "cli_options_sha256": hashlib.sha256(b"[]").hexdigest(),
-        "validated_argv_sha256": hashlib.sha256(
-            json.dumps(planned_argv, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
-    }
-
-
-def _workspace_files(workspace: Path) -> dict[Path, bytes]:
-    # Registration reads run_manifest.tsv under the run lock, which creates the empty lock file; it holds no state.
-    return {
-        path.relative_to(workspace): path.read_bytes()
-        for path in workspace.rglob("*")
-        if path.is_file() and path != workspace / "run_manifest.tsv.lock"
-    }
 
 
 def _staging_dirs(workspace: Path, plan_dir: Path) -> list[Path]:
@@ -179,7 +98,7 @@ def test_hparam_output_inventory_rejects_duplicate_run_paths(tmp_path: Path):
 
 
 def test_hparam_plan_preflights_before_registration(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     calls = []
 
@@ -187,7 +106,7 @@ def test_hparam_plan_preflights_before_registration(tmp_path: Path, monkeypatch)
         calls.append((execution, runs, plan_label))
         assert all(Path(run["script"]).name == "launch.sh" for run in runs)
         assert all(str(plan_dir) in run["command"] for run in runs)
-        return _snapshot(execution, runs)
+        return fake_execution_snapshot(execution, runs)
 
     monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
 
@@ -203,14 +122,14 @@ def test_hparam_plan_preflights_before_registration(tmp_path: Path, monkeypatch)
 
 
 def test_hparam_plan_rejects_a_directory_results_path_before_registration(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     results_path = tmp_path / "unsafe-results" / "results.csv"
     results_path.mkdir(parents=True)
     payload = yaml.safe_load(recipe.read_text())
     payload["artifacts"] = {**payload.get("artifacts", {}), "results_csv_path": str(results_path)}
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    before = _workspace_files(workspace)
+    before = workspace_files(workspace)
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",
@@ -221,14 +140,14 @@ def test_hparam_plan_rejects_a_directory_results_path_before_registration(tmp_pa
 
     assert report.exit_code == 1
     assert "Managed output paths must be independent regular files" in report.blocking_issues()[0].message
-    assert _workspace_files(workspace) == before
+    assert workspace_files(workspace) == before
     assert read_run_manifest(workspace) == []
     assert not plan_dir.exists()
     assert _staging_dirs(workspace, plan_dir) == []
 
 
 def test_hparam_preflight_does_not_probe_storage_capacity(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(os, "statvfs", lambda *_args, **_kwargs: pytest.fail("statvfs must not be called"))
     monkeypatch.setattr(
@@ -248,7 +167,7 @@ def test_hparam_preflight_does_not_probe_storage_capacity(tmp_path: Path, monkey
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",
-        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -259,7 +178,7 @@ def test_hparam_preflight_does_not_probe_storage_capacity(tmp_path: Path, monkey
 
 
 def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path: Path, monkeypatch, capsys):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"] = {
         "method": "grid",
@@ -277,13 +196,13 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = workspace / "plans" / "tune"
     calls = []
-    before = _workspace_files(workspace)
+    before = workspace_files(workspace)
 
-    live_runtime_commit = "b" * 40 if _RUNTIME_COMMIT != "b" * 40 else "c" * 40
+    live_runtime_commit = "b" * 40 if checkout_commit() != "b" * 40 else "c" * 40
 
     def inspect(execution, runs, *, plan_label):
         calls.append(plan_label)
-        return {**_snapshot(execution, runs), "runtime_commit": live_runtime_commit}
+        return {**fake_execution_snapshot(execution, runs), "runtime_commit": live_runtime_commit}
 
     monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
 
@@ -292,7 +211,7 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
 
     assert exit_code == 0
     assert calls == ["hparam"]
-    assert _workspace_files(workspace) == before
+    assert workspace_files(workspace) == before
     assert not plan_dir.exists()
     assert _staging_dirs(workspace, plan_dir) == []
 
@@ -329,12 +248,12 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
 
     assert modules == {"sleep2vec.finetune"}
     assert snapshot["module"] == "sleep2vec.finetune"
-    assert snapshot["expected_runtime_commit"] == _RUNTIME_COMMIT
+    assert snapshot["expected_runtime_commit"] == checkout_commit()
     assert snapshot["runtime_commit"] == live_runtime_commit
     assert snapshot["validated_argv_sha256"] == expected_argv_sha256
     assert snapshot["python"] in validate_only_card
     assert snapshot["module_origin"] in validate_only_card
-    assert f"Planned runtime baseline commit: `{_RUNTIME_COMMIT}`" in validate_only_card
+    assert f"Planned runtime baseline commit: `{checkout_commit()}`" in validate_only_card
     assert f"Target runtime commit observed at preflight: `{live_runtime_commit}`" in validate_only_card
     assert snapshot["validated_argv_sha256"] in validate_only_card
     assert "Total planned runs: 3" in validate_only_card
@@ -347,7 +266,7 @@ def test_hparam_validate_only_uses_same_provenance_card_without_writes(tmp_path:
 
 
 def test_hparam_validate_only_needs_user_input_without_writes(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     effective, config, _report = plans.evaluate_recipe(recipe)
     unresolved = plans.DecisionReport(
@@ -364,20 +283,20 @@ def test_hparam_validate_only_needs_user_input_without_writes(tmp_path: Path, mo
         decisions={},
     )
     monkeypatch.setattr(plans, "preflight_plan", lambda **_kwargs: (effective, config, unresolved))
-    before = _workspace_files(workspace)
+    before = workspace_files(workspace)
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir, validate_only=True)
 
     assert report.exit_code == 2
-    assert _workspace_files(workspace) == before
+    assert workspace_files(workspace) == before
     assert not plan_dir.exists()
     assert _staging_dirs(workspace, plan_dir) == []
 
 
 def test_hparam_preflight_failure_leaves_no_plan_or_workspace(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
-    before = _workspace_files(workspace)
+    before = workspace_files(workspace)
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",
@@ -388,14 +307,14 @@ def test_hparam_preflight_failure_leaves_no_plan_or_workspace(tmp_path: Path, mo
 
     assert report.exit_code == 1
     assert "target argv rejected" in report.blocking_issues()[0].message
-    assert _workspace_files(workspace) == before
+    assert workspace_files(workspace) == before
     assert not plan_dir.exists()
 
 
 def test_hparam_validate_only_failure_leaves_no_staging_or_canonical_state(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
-    before = _workspace_files(workspace)
+    before = workspace_files(workspace)
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",
@@ -406,7 +325,7 @@ def test_hparam_validate_only_failure_leaves_no_staging_or_canonical_state(tmp_p
 
     assert report.exit_code == 1
     assert "target argv rejected" in report.blocking_issues()[0].message
-    assert _workspace_files(workspace) == before
+    assert workspace_files(workspace) == before
     assert not plan_dir.exists()
     assert _staging_dirs(workspace, plan_dir) == []
 
@@ -455,7 +374,7 @@ def test_hparam_validate_only_holds_publication_lock(tmp_path: Path, monkeypatch
 
 
 def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_writes(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"] = {
         "method": "grid",
@@ -481,7 +400,7 @@ def test_hparam_registration_rejects_partial_canonical_rows_before_workspace_wri
             run["script"] = str(plan_dir / script.relative_to(staging_dir))
             row = plan_hparam.hparam_manifest_rows({"runs": [run]})[0]
             merge_run_manifest(workspace, [row])
-        return _snapshot(execution, runs)
+        return fake_execution_snapshot(execution, runs)
 
     monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inject_partial_registration)
 
@@ -505,7 +424,7 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
     failure_stage: str,
     root_resident: bool,
 ):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"] = {
         "method": "grid",
@@ -519,7 +438,9 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = workspace if root_resident else workspace / "plans" / "tune"
     monkeypatch.setattr(
-        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
 
     if failure_stage == "rows":
@@ -573,7 +494,7 @@ def test_hparam_plan_recovers_exact_registered_plan_after_canonical_failure(
 
 
 def test_root_hparam_registration_recovery_rejects_plan_drift(tmp_path: Path, monkeypatch):
-    recipe, _workspace = _recipe(tmp_path)
+    recipe, _workspace = write_preflight_hparam_recipe(tmp_path)
     workspace = tmp_path / "workspace"
     payload = yaml.safe_load(recipe.read_text())
     payload["experiment"]["root"] = str(workspace)
@@ -582,7 +503,7 @@ def test_root_hparam_registration_recovery_rejects_plan_drift(tmp_path: Path, mo
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",
-        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
     real_merge = run_artifacts.merge_run_manifest
     monkeypatch.setattr(
@@ -613,10 +534,12 @@ def test_hparam_plan_handles_unowned_publication(
     monkeypatch,
     mutate: bool,
 ):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
-        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
     real_publish = plans.publish_staged_plan_locked
 
@@ -656,10 +579,12 @@ def test_hparam_plan_handles_unowned_publication(
 
 @pytest.mark.parametrize("field", ["config", "runtime.foreign"])
 def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, monkeypatch, field: str):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
-        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     manifest_path = workspace / "run_manifest.tsv"
@@ -681,7 +606,7 @@ def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, 
 
 
 def test_hparam_staging_uses_destination_filesystem_ancestor(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     real_replace = Path.replace
 
@@ -694,7 +619,7 @@ def test_hparam_staging_uses_destination_filesystem_ancestor(tmp_path: Path, mon
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",
-        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -705,7 +630,7 @@ def test_hparam_staging_uses_destination_filesystem_ancestor(tmp_path: Path, mon
 
 
 def test_hparam_plan_directory_may_equal_experiment_root(tmp_path: Path, monkeypatch):
-    recipe, _workspace = _recipe(tmp_path)
+    recipe, _workspace = write_preflight_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     workspace = tmp_path / "workspace"
     payload["experiment"]["root"] = str(workspace)
@@ -714,7 +639,7 @@ def test_hparam_plan_directory_may_equal_experiment_root(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",
-        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
 
     report = plans.build_plan(recipe_path=recipe, output_dir=workspace)
@@ -738,12 +663,12 @@ def test_staged_plan_publish_rejects_existing_run_directory(tmp_path: Path):
     (existing_run / "run.json").write_text('{"old": true}\n')
     (staging_dir / "plan.json").write_text('{"new": true}\n')
     (staged_run / "run.json").write_text('{"new": true}\n')
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
 
     with pytest.raises(ValueError, match="Published run directories are immutable: run-000--unit"):
         plans.publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=True)
 
-    assert _workspace_files(tmp_path) == before
+    assert workspace_files(tmp_path) == before
     assert not list(tmp_path.rglob(".plan.*.backup"))
 
 
@@ -756,7 +681,7 @@ def test_unowned_plan_replacement_failure_restores_existing_runs(tmp_path: Path,
         (root / "plan.json").write_text(f'{{"plan": "{marker}"}}\n')
         (root / "plan.md").write_text(f"{marker} plan\n")
         (run_dir / "run.json").write_text(f'{{"run": "{marker}"}}\n')
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
     real_replace = Path.replace
 
     def fail_final_manifest(path, target):
@@ -774,7 +699,7 @@ def test_unowned_plan_replacement_failure_restores_existing_runs(tmp_path: Path,
             replace_unowned_plan=True,
         )
 
-    assert _workspace_files(tmp_path) == before
+    assert workspace_files(tmp_path) == before
     assert not list(tmp_path.rglob(".plan.*.backup"))
 
 
@@ -792,7 +717,7 @@ def test_staged_plan_publish_failure_restores_appended_runs(tmp_path: Path, monk
         (run_dir / "run.json").write_text(f'{{"run": "{run_name}"}}\n')
     (staging_dir / "plan.json").write_text('{"new": true}\n')
     (staging_dir / "plan.md").write_text("new plan\n")
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
     real_replace = Path.replace
 
     def fail_second_run(path, target):
@@ -805,7 +730,7 @@ def test_staged_plan_publish_failure_restores_appended_runs(tmp_path: Path, monk
     with pytest.raises(OSError, match="injected run publish failure"):
         plans.publish_staged_plan_locked(staging_dir, plan_dir, out_preexisted=True)
 
-    assert _workspace_files(tmp_path) == before
+    assert workspace_files(tmp_path) == before
     assert not list(tmp_path.rglob(".plan.*.backup"))
 
 
@@ -815,7 +740,7 @@ def test_hparam_plan_rolls_back_blocked_artifact_created_after_final_guard(
     monkeypatch,
     competitor_kind: str,
 ):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     effective, _cfg, _report = plans.evaluate_recipe(recipe)
     ensure_experiment_workspace(effective, plan_dir, register_step=False)
@@ -841,7 +766,7 @@ def test_hparam_plan_rolls_back_blocked_artifact_created_after_final_guard(
     monkeypatch.setattr(
         execution_snapshot,
         "inspect_execution_target",
-        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
 
     with pytest.raises(ValueError, match="planning artifacts|Managed output paths"):
@@ -855,15 +780,15 @@ def test_hparam_plan_rolls_back_blocked_artifact_created_after_final_guard(
 
 
 def test_validate_only_rejects_non_hparam_without_writes(tmp_path: Path):
-    recipe, workspace = _recipe(tmp_path, task="finetune")
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path, task="finetune")
     plan_dir = workspace / "plans" / "finetune"
-    before = _workspace_files(workspace)
+    before = workspace_files(workspace)
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir, validate_only=True)
 
     assert report.exit_code == 1
     assert any(issue.field == "validate_only" for issue in report.blocking_issues())
-    assert _workspace_files(workspace) == before
+    assert workspace_files(workspace) == before
     assert not plan_dir.exists()
 
 
@@ -872,10 +797,12 @@ def test_validate_only_rejects_non_hparam_without_writes(tmp_path: Path):
 def test_hparam_reader_preserves_full_mapping_and_read_modes(
     tmp_path: Path, monkeypatch, static_contract: bool, workspace_state: bool
 ):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
-        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     plan_path = plan_dir / "plan.json"
@@ -891,7 +818,7 @@ def test_hparam_reader_preserves_full_mapping_and_read_modes(
         resolved_path.write_text(yaml.safe_dump(resolved, sort_keys=False))
         payload["resolved_recipe_sha256"] = file_sha256(resolved_path)
     plan_path.write_text(json.dumps(payload))
-    before = _workspace_files(workspace)
+    before = workspace_files(workspace)
     documents = []
     read_documents = run_artifacts._read_plan_documents
 
@@ -908,23 +835,25 @@ def test_hparam_reader_preserves_full_mapping_and_read_modes(
     assert result["runs"] is documents[0]["runs"]
     assert result["runs"][0] is documents[0]["runs"][0]
     assert result["extra_evidence"] is documents[0]["extra_evidence"]
-    assert _workspace_files(workspace) == before
+    assert workspace_files(workspace) == before
 
 
 def test_hparam_reader_skips_missing_workspace_registration_when_disabled(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
+    recipe, workspace = write_preflight_hparam_recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
-        execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
+        execution_snapshot,
+        "inspect_execution_target",
+        lambda execution, runs, **_kwargs: fake_execution_snapshot(execution, runs),
     )
     assert plans.build_plan(recipe_path=recipe, output_dir=plan_dir).exit_code == 0
     (workspace / "run_manifest.tsv").unlink()
-    before = _workspace_files(workspace)
+    before = workspace_files(workspace)
 
     result = run_artifacts.read_hparam_plan(plan_dir, require_workspace_state=False)
 
     assert result["runs"]
-    assert _workspace_files(workspace) == before
+    assert workspace_files(workspace) == before
     with pytest.raises(FileNotFoundError, match="run manifest is missing"):
         run_artifacts.read_hparam_plan(plan_dir)
-    assert _workspace_files(workspace) == before
+    assert workspace_files(workspace) == before
