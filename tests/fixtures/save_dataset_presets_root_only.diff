@@ -1,0 +1,150 @@
+@@
++from datetime import datetime, timezone
++import json
+@@
++import pickle
+@@
+-from preprocess.split_index_by_dataset import normalize_mask_frame
+@@
++    )
++    parser.add_argument(
++        "--manifest-output",
++        type=Path,
++        default=None,
++        help="Optional aggregate JSON manifest path for generated presets.",
++    )
++    parser.add_argument(
++        "--write-sidecar-manifest",
++        action=argparse.BooleanOptionalAction,
++        default=True,
++        help="Write <preset>.manifest.json next to each generated preset.",
+@@
++    from preprocess.split_index_by_dataset import normalize_mask_frame
++
+@@
++def _summarize_preset_items(output_path: Path) -> tuple[dict[str, int], dict[str, int]]:
++    if not output_path.exists():
++        return {}, {}
++    with output_path.open("rb") as file_obj:
++        items = pickle.load(file_obj)
++    available_channels_counts: dict[str, int] = {}
++    source_counts: dict[str, int] = {}
++    for item in items if isinstance(items, list) else []:
++        payload = getattr(item, "payload", {})
++        if isinstance(payload, dict):
++            for channel in payload.get("available_channels", []) or []:
++                available_channels_counts[str(channel)] = available_channels_counts.get(str(channel), 0) + 1
++        metadata = getattr(item, "metadata", {})
++        if isinstance(metadata, dict):
++            source = metadata.get("source")
++            if source not in (None, ""):
++                source_counts[str(source)] = source_counts.get(str(source), 0) + 1
++    return available_channels_counts, source_counts
++
++
++def _preset_manifest_payload(
++    *,
++    output_path: Path,
++    config_path: Path,
++    index_paths: list[Path],
++    dataset_name: str,
++    split: str,
++    n_tokens: int,
++    stride_tokens: int,
++    channels: list[str],
++    allow_missing_channels: bool,
++    min_channels: int,
++    meta_data_name: str | None,
++    sample_count: int,
++) -> dict[str, t.Any]:
++    available_counts, source_counts = _summarize_preset_items(output_path)
++    return {
++        "kind": "sleep2vec_preset",
++        "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
++        "script": "preprocess/save_dataset_presets.py",
++        "config_path": str(config_path),
++        "index_paths": [str(path) for path in index_paths],
++        "dataset_name": dataset_name,
++        "split": split,
++        "n_tokens": n_tokens,
++        "stride_tokens": stride_tokens,
++        "channels": channels,
++        "allow_missing_channels": allow_missing_channels,
++        "min_channels": min_channels,
++        "meta_data_name": meta_data_name,
++        "output_path": str(output_path),
++        "sample_count": sample_count,
++        "available_channels_counts": available_counts,
++        "source_counts": source_counts,
++        "warnings": [],
++    }
++
++
++def _write_json(path: Path, payload: t.Any) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
++
++
+@@
++    manifests: list[dict[str, t.Any]] = []
+@@
++                    "dataset_name": dataset_name,
++                    "config_path": args.config,
+@@
+-        progress_dir = planned_output_paths[0].parent if planned_output_paths else Path.cwd()
++        progress_dir = (
++            args.manifest_output.expanduser().parent
++            if args.manifest_output is not None
++            else (planned_output_paths[0].parent if planned_output_paths else Path.cwd())
++        )
+@@
++                    build_job = dict(job)
++                    dataset_name_for_manifest = t.cast(str, build_job.pop("dataset_name"))
++                    config_path_for_manifest = t.cast(Path, build_job.pop("config_path"))
+@@
+-                        **job,
++                        **build_job,
+@@
++                    manifest = _preset_manifest_payload(
++                        output_path=output_path,
++                        config_path=config_path_for_manifest,
++                        index_paths=index_paths,
++                        dataset_name=dataset_name_for_manifest,
++                        split=t.cast(str, job["split"]),
++                        n_tokens=t.cast(int, job["n_tokens"]),
++                        stride_tokens=t.cast(int, job["stride_tokens"]),
++                        channels=t.cast(list[str], job["channel_names"]),
++                        allow_missing_channels=t.cast(bool, job["allow_missing_channels"]),
++                        min_channels=t.cast(int, job["min_channels"]),
++                        meta_data_name=t.cast(str | None, job["meta_data_name"]),
++                        sample_count=sample_count,
++                    )
++                    manifests.append(manifest)
++                    if args.write_sidecar_manifest:
++                        _write_json(output_path.with_name(f"{output_path.name}.manifest.json"), manifest)
+@@
+-                            **job,
++                            **{key: value for key, value in job.items() if key not in {"dataset_name", "config_path"}},
+@@
++                        job = future_to_job[future]
+@@
++                        manifest = _preset_manifest_payload(
++                            output_path=output_path,
++                            config_path=t.cast(Path, job["config_path"]),
++                            index_paths=index_paths,
++                            dataset_name=t.cast(str, job["dataset_name"]),
++                            split=t.cast(str, job["split"]),
++                            n_tokens=t.cast(int, job["n_tokens"]),
++                            stride_tokens=t.cast(int, job["stride_tokens"]),
++                            channels=t.cast(list[str], job["channel_names"]),
++                            allow_missing_channels=t.cast(bool, job["allow_missing_channels"]),
++                            min_channels=t.cast(int, job["min_channels"]),
++                            meta_data_name=t.cast(str | None, job["meta_data_name"]),
++                            sample_count=sample_count,
++                        )
++                        manifests.append(manifest)
++                        if args.write_sidecar_manifest:
++                            _write_json(output_path.with_name(f"{output_path.name}.manifest.json"), manifest)
+@@
++            if args.manifest_output is not None:
++                _write_json(args.manifest_output.expanduser(), {"presets": manifests})

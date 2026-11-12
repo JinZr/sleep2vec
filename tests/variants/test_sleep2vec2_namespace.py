@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import difflib
 import importlib
 from pathlib import Path
 import pickle
@@ -12,6 +13,16 @@ import yaml
 from sleep2vec2.config import load_finetune_config, load_pretrain_config, validate_model_config
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Variants carry only the preprocessing modules their runtime imports. Each copy must equal root once its
+# package-local imports are rewritten to root form. The only allowed drift is the root-only preset manifest
+# feature (--manifest-output, --write-sidecar-manifest, <preset>.manifest.json; doc/agent_contracts/task_recipe.md)
+# plus root's in-function normalize_mask_frame import, pinned hunk by hunk in the fixture diff.
+VARIANT_PREPROCESS_ROOT_ONLY_HUNKS = {
+    "convert_npz_to_kaldi.py": None,
+    "save_dataset_presets.py": REPO_ROOT / "tests" / "fixtures" / "save_dataset_presets_root_only.diff",
+    "split_index_by_dataset.py": None,
+}
+PARENTHESIZED_IMPORT = re.compile(r"^([ \t]*from \S+ import )\(([^)]*)\)", re.MULTILINE)
 
 
 def test_sleep2vec2_copied_runtime_uses_local_namespace():
@@ -31,6 +42,39 @@ def test_sleep2vec2_copied_runtime_uses_local_namespace():
             offenders.append(relative_path)
 
     assert offenders == []
+
+
+def _join_parenthesized_imports(source: str) -> str:
+    # Black wraps the longer variant import lines; joining them keeps line wrapping from reading as drift.
+    return PARENTHESIZED_IMPORT.sub(
+        lambda match: match.group(1) + ", ".join(name.strip() for name in match.group(2).split(",") if name.strip()),
+        source,
+    )
+
+
+def _variant_source_as_root(source: str, package: str) -> str:
+    source = re.sub(rf"\b{package}\.(data|preprocess)\.", r"\1.", source)
+    source = source.replace(f"{package}.", "sleep2vec.").replace("parents[2]", "parents[1]")
+    return _join_parenthesized_imports(source)
+
+
+def _hunks(source: str, target: str) -> str:
+    # Zero-context hunks without line numbers, so an edit made to every copy leaves the pinned hunks unchanged.
+    diff = list(difflib.unified_diff(source.splitlines(), target.splitlines(), lineterm="", n=0))[2:]
+    return "".join(("@@" if line.startswith("@@") else line) + "\n" for line in diff)
+
+
+@pytest.mark.parametrize("filename", sorted(VARIANT_PREPROCESS_ROOT_ONLY_HUNKS))
+def test_variant_preprocess_copies_match_root(filename: str):
+    sleep2vec2_source = (REPO_ROOT / "sleep2vec2" / "preprocess" / filename).read_text()
+    sleep2expert_source = (REPO_ROOT / "sleep2expert" / "preprocess" / filename).read_text()
+    root_source = _join_parenthesized_imports((REPO_ROOT / "preprocess" / filename).read_text())
+    root_only_hunks = VARIANT_PREPROCESS_ROOT_ONLY_HUNKS[filename]
+
+    assert _hunks(sleep2expert_source.replace("sleep2expert", "sleep2vec2"), sleep2vec2_source) == ""
+    assert _hunks(_variant_source_as_root(sleep2vec2_source, "sleep2vec2"), root_source) == (
+        "" if root_only_hunks is None else root_only_hunks.read_text()
+    )
 
 
 def test_sleep2vec2_data_and_preprocess_modules_import_independently():
