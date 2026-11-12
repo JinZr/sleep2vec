@@ -399,7 +399,6 @@ def test_experiment_status_rejects_plan_registered_by_multiple_steps(tmp_path):
             {
                 "step": {"id": "evaluate", "phase": "evaluate", "purpose": "Evaluate."},
                 "experiment_id": "status-unit",
-                "plan_controller": "ordinary",
                 "recipe_path": "",
                 "plans": [str(plan_dir)],
             },

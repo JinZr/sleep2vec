@@ -33,7 +33,6 @@ def test_experiment_finalize_rejects_unmaterialized_step(tmp_path):
             {
                 "step": {"id": "evaluate", "phase": "evaluate", "purpose": "Run external evaluation."},
                 "experiment_id": "status-unit",
-                "plan_controller": "ordinary",
                 "recipe_path": "",
                 "plans": [],
             },
@@ -243,7 +242,6 @@ def test_hparam_selection_lifecycle_rejects_misowned_metadata_in_mixed_step(tmp_
         {
             "manifest": {
                 "step": {"id": "mixed", "phase": "train", "purpose": "mixed plan types"},
-                "plan_controller": "ordinary",
             },
             "plans": [
                 {

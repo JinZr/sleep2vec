@@ -365,11 +365,9 @@ diagnostic evidence, but it cannot erase or bypass the canonical stop intent.
 
 ## Consumer requirements
 
-`experiment-status` consumes lifecycle only from this canonical table. Step
-controller classification belongs to `steps/<step.id>/step.yaml.plan_controller`,
-not a duplicate table field. The complete
+`experiment-status` consumes lifecycle only from this canonical table. The complete
 [read-only status contract](experiment_workspace.md#read-only-status)
-owns registered-plan binding checks, controller blockers, and the distinction
+owns registered-plan binding checks and the distinction
 from non-launching monitors that write fresh observations.
 
 Every hparam mutation first validates workspace ownership, step registration, frozen run hashes, the independent `recipe.resolved.yaml` byte digest recorded by `plan.json`, and equality between the two complete effective recipe copies. Missing or partial canonical state fails rather than being repaired by launch, selection, or collection.

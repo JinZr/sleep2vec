@@ -46,10 +46,9 @@ Read by question:
 explicit baseline. Experiment and step ids use lowercase letters, digits,
 hyphens, and underscores. Step phase is one of `prepare`, `train`, `evaluate`,
 or `analyze`. Every step file uses the shared
-`{step, experiment_id, plan_controller, recipe_path, plans}` envelope.
-`plan_controller` is the only owner of whether the step has a plan owner.
-The first planner creates the step and binds it to `ordinary`, the only
-controller; a step manifest with any other controller is rejected.
+`{step, experiment_id, recipe_path, plans}` envelope; any other field is
+rejected. The first planner creates the step, and each published plan registers
+its absolute path in `plans`.
 
 Existing experiment and step metadata are read through the workspace owner and
 merged through their reducers. Missing files may be created only by their
@@ -97,7 +96,7 @@ canonical manifest establishes the recorded lifecycle, not the other way round.
 
 | Question | Authoritative input | Use |
 | --- | --- | --- |
-| Which experiment and declared work? | `experiment.yaml`, registered `steps/<step.id>/step.yaml` | Confirm root, objective, step and controller ownership. |
+| Which experiment and declared work? | `experiment.yaml`, registered `steps/<step.id>/step.yaml` | Confirm root, objective and step ownership. |
 | What is registered, active or terminal? | Canonical `run_manifest.tsv` | Read current lifecycle and frozen execution identity. |
 | What will run, or already ran? | Registered frozen recipe, plan, configs, scripts and identity records | Verify exact execution content; do not reconstruct it from chat. |
 | Are required results complete? | Task-required runtime/result manifests and metrics | Decide selection and finalization eligibility. |
@@ -424,8 +423,8 @@ config and script hashes before running, and the launch paths verify what they
 start or submit. `infer-launch`, `preset-launch` and their `run-stop` paths read
 only the plan they name.
 
-Step output projects registered `plan_controller`; run output projects canonical
-execution target and recorded Slurm node separately. The snapshot reports facts
+Step output projects registered step metadata, plans and status counts; run
+output projects canonical execution target and recorded Slurm node separately. The snapshot reports facts
 only: a lifecycle `state` and blockers (code, message, step and run ids). It
 names no command to run; `ready_to_launch` means a registered plan has launchable
 runs that no live queue runner owns, and authorizes no launch or mutation.
@@ -439,8 +438,7 @@ workspace siblings are outside that envelope. Physical publication/validation
 precedes step ownership. Historical blocked plans without `decisions.yaml`
 remain readable. Plans bind the registered step's `id`, `phase`, and `purpose`.
 
-A registered plan's step must have the `ordinary` `plan_controller`. A
-registered step with no materialized plan and no canonical rows blocks
+A registered step with no materialized plan and no canonical rows blocks
 finalization; completed metadata cannot prove the declared work was absent or
 finished. The direct finalizer independently rejects unmaterialized steps.
 A canonical `stopped` row without non-empty `stop_reason` is a `missing_stop_reason` blocker

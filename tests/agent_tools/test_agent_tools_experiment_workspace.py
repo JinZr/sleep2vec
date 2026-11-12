@@ -866,17 +866,14 @@ def test_read_run_manifest_distinguishes_missing_from_valid_header_only(tmp_path
 
 
 @pytest.mark.parametrize(
-    ("phase", "controller", "match"),
+    ("phase", "extra", "match"),
     [
-        ("invalid", "ordinary", "step.phase"),
-        ("train", "unassigned", "invalid plan_controller: unassigned"),
-        ("train", "pipeline", "invalid plan_controller: pipeline"),
-        ("train", "adaptive", "invalid plan_controller: adaptive"),
+        ("invalid", "", "step.phase"),
+        # The removed step plan_controller field is no longer part of the envelope.
+        ("train", "plan_controller: ordinary\n", "Unexpected existing step manifest fields: plan_controller"),
     ],
 )
-def test_read_step_manifest_rejects_invalid_phase_or_controller(
-    tmp_path: Path, phase: str, controller: str, match: str
-):
+def test_read_step_manifest_rejects_invalid_phase_or_removed_field(tmp_path: Path, phase: str, extra: str, match: str):
     path = tmp_path / "steps" / "train" / "step.yaml"
     path.parent.mkdir(parents=True)
     path.write_text(
@@ -885,7 +882,7 @@ def test_read_step_manifest_rejects_invalid_phase_or_controller(
         f"  phase: {phase}\n"
         "  purpose: Train the model.\n"
         "experiment_id: unit\n"
-        f"plan_controller: {controller}\n"
+        f"{extra}"
         "recipe_path: ''\n"
         "plans: []\n"
     )
@@ -1658,7 +1655,6 @@ def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():
     existing = {
         "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
         "experiment_id": "experiment",
-        "plan_controller": "ordinary",
         "recipe_path": "recipes/first.yaml",
         "plans": ["/workspace/plan-a"],
     }
@@ -1668,7 +1664,6 @@ def test_step_manifest_merge_preserves_registered_fields_and_appends_plans():
         {
             "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
             "experiment_id": "experiment",
-            "plan_controller": "ordinary",
             "recipe_path": "recipes/second.yaml",
             "plans": ["/workspace/plan-a", "/workspace/plan-b"],
         },
@@ -1683,7 +1678,6 @@ def test_concurrent_step_manifest_commits_preserve_both_plans(tmp_path: Path, mo
     base_payload = {
         "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
         "experiment_id": "experiment",
-        "plan_controller": "ordinary",
         "recipe_path": "/workspace/recipe.yaml",
         "plans": ["/workspace/plan-base"],
     }
@@ -1715,7 +1709,6 @@ def test_concurrent_step_manifest_commits_preserve_both_plans(tmp_path: Path, mo
                 {
                     "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
                     "experiment_id": "experiment",
-                    "plan_controller": "ordinary",
                     "recipe_path": "/workspace/recipe.yaml",
                     "plans": [plan],
                 },
@@ -1743,7 +1736,6 @@ def test_step_manifest_merge_rejects_metadata_drift():
     existing = {
         "step": {"id": "train", "phase": "train", "purpose": "Tune the model."},
         "experiment_id": "experiment",
-        "plan_controller": "ordinary",
         "recipe_path": "",
         "plans": [],
     }
@@ -1752,7 +1744,7 @@ def test_step_manifest_merge_rejects_metadata_drift():
         merge_step_manifest(existing, {"step": {"phase": "analyze"}})
 
 
-def test_step_manifest_commit_rejects_missing_controller_without_writing(tmp_path: Path):
+def test_step_manifest_commit_rejects_incomplete_existing_envelope_without_writing(tmp_path: Path):
     step = {"id": "train", "phase": "train", "purpose": "Tune the model."}
     step_dir = tmp_path / "steps" / "train"
     step_dir.mkdir(parents=True)
@@ -1762,7 +1754,6 @@ def test_step_manifest_commit_rejects_missing_controller_without_writing(tmp_pat
             {
                 "step": step,
                 "experiment_id": "experiment",
-                "recipe_path": "",
                 "plans": [],
             },
             sort_keys=False,
@@ -1776,7 +1767,6 @@ def test_step_manifest_commit_rejects_missing_controller_without_writing(tmp_pat
             {
                 "step": step,
                 "experiment_id": "experiment",
-                "plan_controller": "ordinary",
                 "recipe_path": "/workspace/recipe.yaml",
                 "plans": ["/workspace/plan"],
             },

@@ -171,7 +171,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
   selected variant's argument validator through `plan_rendering`, including
   every effective hparam candidate before publication. The same bridge resolves
   built-in task flags when a frozen config omits an explicit task block.
-- Keep manifest commits and `plan_controller` binding in `experiment_workspace`, and checkpoint evidence validation
+- Keep manifest commits and step plan registration in `experiment_workspace`, and checkpoint evidence validation
   and projections/status in `experiment_tracking` behind `experiments`;
   see [canonical state](../agent_contracts/run_manifest.md#canonical-state-and-projections)
   and the [status read-set](../agent_contracts/experiment_workspace.md#read-only-status).

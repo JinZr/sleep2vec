@@ -96,7 +96,6 @@ class ExperimentStatusStep(TypedDict):
     id: str
     phase: str
     purpose: str
-    plan_controller: str
     plans: list[str]
     status_counts: dict[str, int]
 
@@ -503,7 +502,6 @@ def experiment_status_snapshot(
                 "id": step_id,
                 "phase": str(manifest["step"]["phase"]),
                 "purpose": str(manifest["step"]["purpose"]),
-                "plan_controller": str(manifest["plan_controller"]),
                 "plans": sorted(plan["path"] for plan in registered["plans"]),
                 "status_counts": _status_counts(step_rows),
             }
@@ -843,17 +841,16 @@ def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
     if snapshot["steps"]:
         lines.extend(
             [
-                "| Step | Phase | Plan controller | Status counts |",
-                "|---|---|---|---|",
+                "| Step | Phase | Status counts |",
+                "|---|---|---|",
             ]
         )
         for step in snapshot["steps"]:
             counts = ", ".join(f"{status}={count}" for status, count in sorted(step["status_counts"].items()))
             lines.append(
-                "| {step} | {phase} | {controller} | {counts} |".format(
+                "| {step} | {phase} | {counts} |".format(
                     step=_table_text(step["id"]),
                     phase=_table_text(step["phase"]),
-                    controller=_table_text(step["plan_controller"]),
                     counts=_table_text(counts),
                 )
             )

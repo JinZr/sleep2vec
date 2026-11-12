@@ -440,7 +440,6 @@ def test_result_types_reach_callers(tmp_path: Path):
             status_step = status_snapshot["steps"][0]
             status_plans: list[str] = status_step["plans"]
             step_status_counts: dict[str, int] = status_step["status_counts"]
-            status_step["plan_controller"] = 1  # type: ignore[typeddict-item]
             status_step["plans"] = [1]  # type: ignore[list-item]
             status_step["status_counts"]["completed"] = "1"  # type: ignore[assignment]
             status_run = status_snapshot["runs"][0]
