@@ -324,13 +324,17 @@ this is a point-in-time launch observation, not a promise that checkout code
 bytes remain unchanged throughout the job. Commit and derived CLI-option
 inventory may advance with a rolling checkout; launch records the actual commit.
 The registered plan and `execution_snapshot.json` bytes are never rewritten to
-match a later checkout. The leaf launch script checks its frozen input
+match a later checkout. Every launch pass, dry run included, first checks that
+`execution_snapshot.json` still has the SHA-256 recorded in
+`plan.json["execution_snapshot"]` and fails before any launch when it differs,
+because every launch-time check compares the live target against that file.
+The leaf launch script checks its frozen input
 snapshots, such as an init checkpoint, before training.
 Direct execution needs a capacity-eligible candidate and no missing-PID blocker;
 Slurm needs launchable rows. Output topology is rechecked for the runs about to
-start or be submitted. Dry-run and monitor do not probe, create or compare the
-execution snapshot and do not hash frozen files, so a dry run does not report
-byte drift. External datasets, drivers, and environment outside explicit
+start or be submitted. Apart from that snapshot digest, dry-run and monitor do
+not probe, create or compare the execution snapshot and do not hash frozen
+files, so a dry run does not report byte drift. External datasets, drivers, and environment outside explicit
 `execution.env` remain operational dependencies rather than snapshot contents.
 A Slurm job takes no lock: it writes
 `git rev-parse HEAD` to `run_dir/runtime_commit` and checks its frozen config

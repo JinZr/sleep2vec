@@ -414,7 +414,10 @@ A registered plan is read for its binding only: its step registers it,
 `plan.json`'s recipe equals `recipe.resolved.yaml` (and, for an hparam plan,
 the digest of that file recorded in `plan.json`), its experiment and step
 metadata equal the workspace and its step, and every plan run has a canonical
-row, with each step's plan run keys equal to its canonical keys. Status and
+row, with each step's plan run keys equal to its canonical keys. Each run's
+non-empty `runtime.*` and `yaml:/` parameter cells in `run_manifest.tsv` must
+equal that plan run's parameters, because selection reports read them from the
+manifest; empty cells belong to other steps' columns in the shared header. Status and
 finalization do not re-run recipe structure checks, recompile plans, or reread
 frozen configs and scripts, so a later edit to a finished run's frozen files is
 not reported here; the recorded hashes remain the record. Frozen bytes are
