@@ -17,15 +17,7 @@ from test_agent_preset_runtime_identity import (
     preset_runtime as preset_runtime_fixture,
 )
 
-from agent_tools import (
-    cli,
-    execution_snapshot,
-    experiment_workspace,
-    experiments,
-    managed_scheduler,
-    plans,
-    run_evidence,
-)
+from agent_tools import cli, experiment_workspace, experiments, managed_scheduler, plans, run_evidence
 from agent_tools.experiment_workspace import (
     PROCESS_IDENTITY_FIELDS,
     has_managed_launch_evidence,
@@ -221,36 +213,38 @@ def test_preset_detached_worker_commits_terminal_after_launcher_exits(
     assert status["runs"][0]["status"] == row["status"]
 
 
-# The start command itself verifies artifact drift; test_preset_launch_rechecks_artifacts_in_the_actual_start_command
-# covers that guard.
-@pytest.mark.parametrize("failure", ["missing_python", "runtime_preflight"])
-def test_preset_launch_guard_failure_does_not_claim_attempt(tmp_path, preset_runtime, monkeypatch, failure):
+# The launch command verifies the runtime right before process start; artifact drift is covered by
+# test_preset_launch_rechecks_artifacts_in_the_actual_start_command.
+@pytest.mark.parametrize("failure", ["missing_python", "dirty_runtime"])
+def test_preset_launch_command_failure_is_recorded_launch_failed(tmp_path, preset_runtime, monkeypatch, failure):
     if failure == "missing_python":
         preset_runtime["execution"]["python"] = str(tmp_path / "missing-python")
-    plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
-    if failure == "runtime_preflight":
-        monkeypatch.setattr(
-            execution_snapshot,
-            "run_execution_command",
-            lambda _execution, command: subprocess.CompletedProcess(command, 2, "", "Target runtime preflight failed"),
-        )
-    with pytest.raises((ValueError, RuntimeError)):
-        experiments.launch_preset_run(plan_dir, dry_run=False)
+    plan_dir, plan = _plan(tmp_path, preset_runtime, monkeypatch)
+    for name, value in preset_runtime["env"].items():
+        monkeypatch.setenv(name, value)
+    if failure == "dirty_runtime":
+        tracked = Path(preset_runtime["execution"]["workdir"]) / _PRESET_SCRIPTS["sleep2vec"]
+        tracked.write_text(tracked.read_text() + "# uncommitted runtime change\n")
+
+    result = experiments.launch_preset_run(plan_dir, dry_run=False)
+
+    assert not result.started_keys
     (row,) = read_run_manifest(preset_runtime["workspace"])
     assert row["status"] == "launch_failed"
-    assert row["scheduler_reason"].startswith("Pre-launch guard failed: Preset runtime preflight failed:")
-    assert not has_managed_launch_evidence(row)
+    expected_reason = {
+        "missing_python": str(tmp_path / "missing-python"),
+        "dirty_runtime": "Target runtime has tracked worktree changes; launch requires a clean commit.",
+    }[failure]
+    assert row["scheduler_reason"].startswith("launch exit ")
+    assert expected_reason in row["scheduler_reason"]
     assert not experiments.launch_preset_run(plan_dir, dry_run=False).started_keys
     assert not preset_runtime["payload"].exists()
+    assert not (Path(plan["runs"][0]["run_dir"]) / "pid").exists()
 
 
-def test_preset_runtime_preflight_claim_and_start_run_in_order(tmp_path, preset_runtime, monkeypatch):
+def test_preset_claim_and_start_run_in_order(tmp_path, preset_runtime, monkeypatch):
     plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
     events = []
-
-    def probe(_execution, command):
-        events.append("probe")
-        return subprocess.CompletedProcess(command, 0, "{}\n", "")
 
     original_merge = experiments.merge_run_manifest
 
@@ -263,7 +257,6 @@ def test_preset_runtime_preflight_claim_and_start_run_in_order(tmp_path, preset_
         events.append("start")
         return "launched", ""
 
-    monkeypatch.setattr(execution_snapshot, "run_execution_command", probe)
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
     monkeypatch.setattr(managed_scheduler, "start_process", start)
     workspace = preset_runtime["workspace"]
@@ -279,7 +272,7 @@ def test_preset_runtime_preflight_claim_and_start_run_in_order(tmp_path, preset_
     assert result.launch_rows == [row]
     assert row["status"] == "launched"
     assert row["planned_runtime_commit"] == preset_runtime["execution"]["runtime_commit"]
-    assert events == ["probe", "claim", "start"]
+    assert events == ["claim", "start"]
     # The scheduler reports a started run as run_launched, not as a run_status_changed transition.
     new_events = read_experiment_events(workspace)[len(prior_events) :]
     assert [(event["event_type"], event["run_id"], event["gpus"]) for event in new_events] == [
@@ -287,7 +280,7 @@ def test_preset_runtime_preflight_claim_and_start_run_in_order(tmp_path, preset_
     ]
 
 
-@pytest.mark.parametrize("mutation_phase", ["probe", "claim", "start"])
+@pytest.mark.parametrize("mutation_phase", ["claim", "start"])
 @pytest.mark.parametrize("artifact", ["script", "config"])
 def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     tmp_path, preset_runtime, monkeypatch, mutation_phase, artifact
@@ -298,16 +291,9 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
     original_bytes = artifact_path.read_bytes()
     for name, value in preset_runtime["env"].items():
         monkeypatch.setenv(name, value)
-    original_probe = execution_snapshot.run_execution_command
     original_merge = experiments.merge_run_manifest
     original_start = managed_scheduler.start_process
     start_commands = []
-
-    def probe(execution, command):
-        result = original_probe(execution, command)
-        if mutation_phase == "probe":
-            artifact_path.write_bytes(original_bytes + b"\n# changed during runtime preflight\n")
-        return result
 
     def merge(workspace, rows, **kwargs):
         result = original_merge(workspace, rows, **kwargs)
@@ -322,7 +308,6 @@ def test_preset_launch_rechecks_artifacts_in_the_actual_start_command(
             artifact_path.write_bytes(original_bytes + b"\n# changed immediately before start\n")
         return original_start(execution, command, **kwargs)
 
-    monkeypatch.setattr(execution_snapshot, "run_execution_command", probe)
     monkeypatch.setattr(experiments, "merge_run_manifest", merge)
     monkeypatch.setattr(managed_scheduler, "start_process", start)
     pid_path = Path(run["run_dir"]) / "pid"
