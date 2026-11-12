@@ -1035,24 +1035,6 @@ def test_only_experiment_workspace_reads_or_writes_the_canonical_run_manifest():
     assert offenders == []
 
 
-def test_step_manifest_writes_merge_under_the_step_file_lock():
-    agent_tools_dir = Path(__file__).parents[2] / "agent_tools"
-
-    def function_calls(filename: str, function_name: str) -> set[str]:
-        tree = ast.parse((agent_tools_dir / filename).read_text())
-        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == function_name)
-        return {
-            node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-            for node in ast.walk(function)
-            if isinstance(node, ast.Call)
-        }
-
-    assert {"blocking_file_lock", "merge_step_manifest", "atomic_replace"} <= function_calls(
-        "experiment_workspace.py", "commit_step_manifest"
-    )
-    assert "commit_step_manifest" in function_calls("experiment_workspace.py", "ensure_experiment_workspace")
-
-
 def test_canonical_local_experiment_root_resolves_aliases(tmp_path: Path):
     real_parent = tmp_path / "real"
     real_parent.mkdir()

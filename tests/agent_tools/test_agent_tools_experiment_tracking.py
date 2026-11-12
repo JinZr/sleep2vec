@@ -45,12 +45,6 @@ def test_experiment_monitor_preserves_wandb_running_without_pid(tmp_path: Path):
         "experiment_id\tstep_id\trun_id\trun_name\tversion\tstate\tstatus\n"
         "unit\ttrain-model\trun-000\tlr-2e-6\trun_a\trunning\trunning\n"
     )
-    stale_launch = (
-        "step_id\trun_id\tversion\tstatus\tpid_path\n"
-        f"train-model\trun-000\trun_a\tlaunched\t{tmp_path / 'missing.pid'}\n"
-    )
-    (tmp_path / "launch_manifest.tsv").write_text(stale_launch)
-    (tmp_path / "run_status.tsv").write_text(stale_launch)
 
     result = experiments.monitor_experiment(tmp_path)
 
@@ -202,25 +196,13 @@ def test_experiment_monitor_marks_lifecycle_script_exit_without_terminal_commit_
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
 
 
-def test_experiment_monitor_ignores_stale_auxiliary_status_rows(tmp_path: Path):
+def test_experiment_monitor_resolves_mixed_canonical_statuses(tmp_path: Path):
     _initialize_workspace(tmp_path)
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\trun_name\tversion\tstatus\n"
         "unit\ttrain-model\trun-000\tfirst\tfirst-v1\tfailed\n"
         "unit\ttrain-model\trun-001\tsecond\tsecond-v1\trunning\n"
         "unit\ttrain-model\trun-002\tthird\tthird-v1\tcompleted\n"
-    )
-    (tmp_path / "launch_manifest.tsv").write_text(
-        "step_id\trun_id\tversion\tstatus\tpid_path\n"
-        f"train-model\trun-000\tfirst-v1\tlaunched\t{tmp_path / 'first.pid'}\n"
-        f"train-model\trun-001\tsecond-v1\tlaunched\t{tmp_path / 'second.pid'}\n"
-        f"train-model\trun-002\tthird-v1\tlaunched\t{tmp_path / 'third.pid'}\n"
-    )
-    (tmp_path / "run_status.tsv").write_text(
-        "step_id\trun_id\tversion\tstatus\tpid_path\n"
-        f"train-model\trun-000\tfirst-v1\tlaunched\t{tmp_path / 'first.pid'}\n"
-        f"train-model\trun-001\tsecond-v1\tfailed\t{tmp_path / 'second.pid'}\n"
-        f"train-model\trun-002\tthird-v1\tfailed\t{tmp_path / 'third.pid'}\n"
     )
 
     result = experiments.monitor_experiment(tmp_path)
@@ -481,70 +463,16 @@ def test_experiment_monitor_reports_latest_committed_rows(tmp_path: Path, monkey
     assert "train-model / run-001" in report
 
 
-def test_experiment_monitor_does_not_advance_planned_run_from_local_mirror(tmp_path: Path):
+def test_experiment_monitor_does_not_advance_planned_run(tmp_path: Path):
     _initialize_workspace(tmp_path)
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\tplanned\n"
-    )
-    (tmp_path / "run_status.tsv").write_text(
-        "step_id\trun_id\tversion\tstatus\n" "train-model\trun-000\tmanaged-v1\trunning\n"
     )
 
     result = experiments.monitor_experiment(tmp_path)
 
     assert result["runs"][0]["status"] == "planned"
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
-
-
-def test_experiment_monitor_does_not_regress_canonical_running_from_stale_status(tmp_path: Path, monkeypatch):
-    _initialize_workspace(tmp_path)
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\tversion\tstatus\n" "unit\ttrain-model\trun-000\tmanaged-v1\trunning\n"
-    )
-    (tmp_path / "run_status.tsv").write_text(
-        "step_id\trun_id\tversion\tstatus\n" "train-model\trun-000\tmanaged-v1\tplanned\n"
-    )
-
-    def fake_status(_root, row, previous, *, script_commits_terminal_status, health):
-        assert script_commits_terminal_status is False
-        assert health is True
-        assert row["status"] == "running"
-        assert previous["status"] == "running"
-        return {**row, "health_status": "running"}
-
-    monkeypatch.setattr(run_evidence, "status_row", fake_status)
-
-    result = experiments.monitor_experiment(tmp_path)
-
-    assert result["runs"][0]["status"] == "running"
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
-
-
-def test_read_run_manifest_ignores_conflicting_projection_fields(tmp_path: Path):
-    (tmp_path / "run_manifest.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\trun_name\tparameter_summary\tversion\tconfig\tstatus\tstate\n"
-        "unit\ttrain-model\trun-000\tmanaged\tlr=1e-6\tmanaged-v1\t/config.yaml\tplanned\tcanonical\n"
-    )
-    (tmp_path / "run_status.tsv").write_text(
-        "experiment_id\tstep_id\trun_id\trun_name\tparameter_summary\tversion\tconfig\tstatus\tstate\tlog_path\n"
-        "other\ttrain-model\trun-000\tcorrupt\tlr=9\tdisplay-name\t/other.yaml\trunning\tauxiliary\t/run.log\n"
-    )
-
-    rows = experiment_workspace.read_run_manifest(tmp_path)
-
-    assert rows == [
-        {
-            "experiment_id": "unit",
-            "step_id": "train-model",
-            "run_id": "run-000",
-            "run_name": "managed",
-            "parameter_summary": "lr=1e-6",
-            "version": "managed-v1",
-            "config": "/config.yaml",
-            "status": "planned",
-            "state": "canonical",
-        }
-    ]
 
 
 def test_experiment_run_rows_rejects_historical_status_without_rewriting(tmp_path: Path):

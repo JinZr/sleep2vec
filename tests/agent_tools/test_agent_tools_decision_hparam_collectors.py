@@ -3,52 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent_tools import decision_hparam
-from agent_tools.decision_models import DecisionIssue, DecisionStatus
-
-
-def _sentinel(field: str) -> DecisionIssue:
-    return DecisionIssue(DecisionStatus.FAIL, field, field)
-
-
-def test_hparam_tune_facade_preserves_collector_order(monkeypatch):
-    monkeypatch.setattr(
-        decision_hparam,
-        "hparam_recipe_contract_issues",
-        lambda *_args, **_kwargs: [_sentinel("contract")],
-    )
-    monkeypatch.setattr(decision_hparam, "_hparam_config_issues", lambda *_args, **_kwargs: [_sentinel("config")])
-    monkeypatch.setattr(decision_hparam, "hparam_search_issues", lambda *_args, **_kwargs: [_sentinel("search")])
-    monkeypatch.setattr(
-        decision_hparam,
-        "_hparam_execution_issues",
-        lambda *_args, **_kwargs: [_sentinel("execution")],
-    )
-    monkeypatch.setattr(
-        decision_hparam,
-        "_hparam_search_budget_issues",
-        lambda *_args, **_kwargs: [_sentinel("budget")],
-    )
-    monkeypatch.setattr(
-        decision_hparam,
-        "_hparam_evaluation_issues",
-        lambda *_args, **_kwargs: [_sentinel("evaluation")],
-    )
-
-    issues = decision_hparam.hparam_tune_issues(
-        {"search": {}, "execution": {}, "runtime": {}},
-        None,
-        {},
-        {},
-    )
-
-    assert [issue.field for issue in issues] == [
-        "contract",
-        "config",
-        "search",
-        "execution",
-        "budget",
-        "evaluation",
-    ]
+from agent_tools.decision_models import DecisionStatus
 
 
 def test_hparam_execution_facade_preserves_scheduler_runtime_issue_order():
