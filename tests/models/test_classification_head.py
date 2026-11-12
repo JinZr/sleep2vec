@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 
-@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 @pytest.mark.parametrize("is_sequence", [False, True])
 def test_concat_projects_each_channel_and_preserves_order(package_name: str, is_sequence: bool):
     module = importlib.import_module(f"{package_name}.downstreams.channel_aggregation")

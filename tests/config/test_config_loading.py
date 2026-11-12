@@ -382,7 +382,7 @@ def test_load_finetune_config_parses_valid_yaml(tmp_path: Path):
     assert bundle.finetune.tuning.lora.use_dora is False
 
 
-@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 @pytest.mark.parametrize(
     ("target", "output_dim", "projection_dim"),
     [("stage5", 5, None), ("stage5", 5, 3), ("ahi", 30, 3)],
@@ -437,7 +437,7 @@ def test_concat_projection_preserves_sequence_predictions(
         assert weight.grad is not None and torch.count_nonzero(weight.grad) > 0
 
 
-@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 @pytest.mark.parametrize(
     ("aggregation", "projection_dim"),
     [("mean", 3), ("concat", 0), ("concat", 8), ("concat", True), ("concat", 2.5), ("concat", None)],
@@ -453,7 +453,7 @@ def test_load_finetune_config_rejects_invalid_concat_projection(
         loader(_write_yaml(tmp_path, payload))
 
 
-@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 @pytest.mark.parametrize(
     ("head_kwargs", "error"),
     [
