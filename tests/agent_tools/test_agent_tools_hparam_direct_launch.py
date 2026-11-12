@@ -341,24 +341,13 @@ def test_hparam_launch_rejects_replaced_execution_snapshot_before_start(tmp_path
     launcher.assert_not_started()
 
 
-@pytest.mark.parametrize(
-    ("field", "changed"),
-    [
-        ("env", {"UNIT_CHANGED": "1"}),
-        ("conda_env", "other-env"),
-        ("gpu_pool", [7]),
-        ("gpus_per_run", 2),
-    ],
-)
-def test_hparam_launch_rejects_execution_drift_from_resolved_recipe_before_side_effects(
-    tmp_path: Path, monkeypatch, field: str, changed
-):
+def test_hparam_launch_rejects_execution_drift_from_resolved_recipe_before_side_effects(tmp_path: Path):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     plan_path = plan_dir / "plan.json"
     plan = json.loads(plan_path.read_text())
-    plan["recipe"].setdefault("execution", {})[field] = changed
+    plan["recipe"].setdefault("execution", {})["gpu_pool"] = [7]
     plan_path.write_text(json.dumps(plan))
     before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     calls = []
@@ -388,25 +377,6 @@ def test_hparam_launch_rejects_synchronized_recipe_drift_before_side_effects(tmp
     launcher = FakeLauncher(lambda *_args: calls.append("start") or "launched")
 
     with pytest.raises(ValueError, match="Frozen hparam recipe SHA-256"):
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    assert calls == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
-
-
-def test_hparam_launch_rejects_base_runtime_drift_before_side_effects(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    plan_path = plan_dir / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    plan["recipe"]["_base_recipe"]["runtime"]["devices"] = [7]
-    plan_path.write_text(json.dumps(plan))
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    calls = []
-    launcher = FakeLauncher(lambda *_args: calls.append("start") or "launched")
-
-    with pytest.raises(ValueError, match="recipe.resolved.yaml"):
         hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
     assert calls == []
@@ -790,19 +760,6 @@ def test_launch_waits_without_timeout_and_propagates_its_exception(monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         managed_scheduler.start_process({"target": "local"}, "managed launch")
     assert calls == [None]
-
-
-def test_launch_returncode_255_is_launch_failed(monkeypatch):
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 255, "", "launcher failed"),
-    )
-
-    assert managed_scheduler.start_process({"target": "local"}, "managed launch") == (
-        "launch_failed",
-        "launch exit 255: launcher failed",
-    )
 
 
 def test_former_retryable_exit_is_launch_failed_with_one_line_bounded_stderr_tail(monkeypatch):

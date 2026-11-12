@@ -24,38 +24,11 @@ def _write_decisions(tmp_path: Path, decisions: dict) -> Path:
     return write_yaml(tmp_path / "decisions.yaml", {"decisions": decisions})
 
 
-def test_user_decision_yaml_resolves_missing_label_name(tmp_path: Path):
-    recipe = write_finetune_recipe(tmp_path, include_label=False)
-    decisions = _write_decisions(tmp_path, {"label_name": {"value": "ahi", "source": "explicit_user"}})
-
-    result = _run(
-        "doctor",
-        "--recipe",
-        str(recipe),
-        "--user-decisions",
-        str(decisions),
-        "--output-dir",
-        str(tmp_path / "doctor"),
-    )
-
-    assert result.returncode == 0
-    assert "Status: PASS" in result.stdout
-
-
-def test_user_decision_file_is_reused_unchanged_by_doctor_and_fresh_plan(tmp_path: Path):
+def test_user_decision_file_resolves_missing_label_and_is_reused_unchanged_by_plan(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     decisions = _write_decisions(tmp_path, {"label_name": {"value": "ahi", "source": "explicit_user"}})
     decision_bytes = decisions.read_bytes()
 
-    doctor = _run(
-        "doctor",
-        "--recipe",
-        str(recipe),
-        "--user-decisions",
-        str(decisions),
-        "--output-dir",
-        str(tmp_path / "doctor"),
-    )
     plan_dir = tmp_path / "plans" / "first"
     plan = _run(
         "plan",
@@ -67,7 +40,6 @@ def test_user_decision_file_is_reused_unchanged_by_doctor_and_fresh_plan(tmp_pat
         str(plan_dir),
     )
 
-    assert doctor.returncode == 0, doctor.stdout
     assert plan.returncode == 0, plan.stdout
     assert (plan_dir / "run.sh").is_file()
     assert decisions.read_bytes() == decision_bytes

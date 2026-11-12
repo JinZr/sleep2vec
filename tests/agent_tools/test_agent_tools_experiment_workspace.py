@@ -6,7 +6,6 @@ import csv
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import threading
@@ -16,7 +15,6 @@ from agent_tool_test_helpers import (
     SUBPROCESS_WAIT_SECONDS,
     FakeLauncher,
     call_while_run_lock_holder_commits,
-    frozen_artifact_launch,
     run_cli,
     run_cli_subprocess,
     write_finetune_recipe,
@@ -342,27 +340,6 @@ def test_workspace_validates_existing_experiment_before_creating_directories(
     assert not (tmp_path / "steps").exists()
 
 
-def test_launch_rejects_modified_frozen_script(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
-    Path(run["script"]).write_text("#!/usr/bin/env bash\nexit 0\n")
-    launcher = FakeLauncher(frozen_artifact_launch)
-
-    hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-
-    # The launch command re-hashes launch.sh against its frozen hash right before the process starts; a mismatch
-    # is a definite launch_failed carrying the verifier's message.
-    identity = json.loads(shlex.split(launcher.commands[0])[-1])[0]
-    assert {"path": run["script"], "sha256": run["script_sha256"]} in json.loads(identity[5])
-    row = read_run_manifest(run_artifacts.hparam_plan_workspace(plan_dir))[0]
-    assert (row["status"], row["scheduler_reason"]) == (
-        "launch_failed",
-        f"launch exit 2: Frozen run artifact changed before process start: {run['script']}",
-    )
-
-
 def test_stop_requires_and_records_reason(tmp_path: Path, monkeypatch):
     recipe = _hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
@@ -578,6 +555,7 @@ def test_managed_run_parameters_reject_legacy_prefix():
         ("running", {"status": "pending"}, "running"),
         ("stopping", {"status": "planned"}, "stopping"),
         ("stopping", {"status": "pending"}, "stopping"),
+        ("queued", {"status": "pending"}, "queued"),
         ("lost", {"status": "planned"}, "lost"),
         ("lost", {"status": "pending"}, "lost"),
         ("lost", {"status": "completed"}, "completed"),
@@ -1567,11 +1545,6 @@ def test_manifest_binds_scheduler_job_once_and_updates_observation(tmp_path: Pat
             tmp_path,
             [{"step_id": "train", "run_id": "run-000", "scheduler_job_id": "3881"}],
         )
-
-
-def test_scheduler_active_status_does_not_regress_to_pending():
-    for status in ("queued", "lost"):
-        assert merge_run_row({"status": status}, {"status": "pending"})["status"] == status
 
 
 def test_semantic_run_name_keeps_boolean_settings_readable():

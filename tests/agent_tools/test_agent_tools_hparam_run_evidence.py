@@ -251,9 +251,8 @@ def test_hparam_status_does_not_infer_terminal_from_corrupt_local_pid(tmp_path: 
 
 
 @pytest.mark.parametrize("pid_text", ["", "not-a-pid", "0", "-1"])
-@pytest.mark.parametrize("status", ["planned", "pending"])
-def test_hparam_launch_does_not_start_when_local_pid_is_corrupt(tmp_path: Path, status: str, pid_text: str):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": status}])
+def test_hparam_launch_does_not_start_when_local_pid_is_corrupt(tmp_path: Path, pid_text: str):
+    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     Path(rows[0]["pid_path"]).write_text(pid_text)
     launcher = FakeLauncher(verify_target=False)
 

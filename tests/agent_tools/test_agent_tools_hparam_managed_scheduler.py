@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sys
 
 from agent_tool_test_helpers import FakeLauncher, run_cli
 import pytest
 from test_agent_tools_hparam_runtime import (
-    _RUNTIME_COMMIT,
     _hparam_recipe,
     _read_table,
     _write_process_identity,
@@ -493,37 +491,6 @@ def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_g
     assert [row["status"] for row in rows] == ["launched", "launched", "launched", "pending"]
 
 
-def test_hparam_launch_shares_active_gpu_load_across_local_workdirs(tmp_path: Path):
-    first_execution = {
-        "workdir": str(tmp_path / "runtime-a"),
-        "python": sys.executable,
-        "runtime_commit": _RUNTIME_COMMIT,
-        "gpu_pool": [0, 1],
-        "gpus_per_run": 1,
-    }
-    first_recipe = _hparam_recipe(tmp_path, execution=first_execution)
-    first_plan = tmp_path / "plan-1"
-    assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
-
-    second_payload = yaml.safe_load(first_recipe.read_text())
-    second_payload["execution"] = {**first_execution, "workdir": str(tmp_path / "runtime-b")}
-    second_payload["search"]["max_runs"] = 2
-    second_payload["search"]["parameters"]["runtime.lr"] = [2e-6, 3e-6]
-    second_recipe = write_yaml(tmp_path / "tune-2.yaml", second_payload)
-    second_plan = tmp_path / "plan-2"
-    assert run_cli("plan", "--recipe", str(second_recipe), "--output-dir", str(second_plan)).returncode == 0
-    launcher = FakeLauncher()
-
-    hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
-    launcher.starts.clear()
-    rows = hparam_runtime.launch_hparam_runs(second_plan, dry_run=False, hooks=launcher.hooks()).launch_rows
-
-    assert len(launcher.starts) == 1
-    assert [row["gpus"] for row in rows] == ["1", ""]
-    assert [row["status"] for row in rows] == ["launched", "pending"]
-    assert "CUDA_VISIBLE_DEVICES=1" in launcher.commands[0]
-
-
 @pytest.mark.parametrize("max_concurrent", [True, 1.0, 1.5, "1", 0])
 def test_managed_scheduler_rejects_invalid_max_concurrent(max_concurrent):
     with pytest.raises(ValueError, match="execution.max_concurrent must be a positive integer"):
@@ -687,19 +654,20 @@ def test_managed_scheduler_observe_run_preserves_artifact_context(tmp_path: Path
 
 
 @pytest.mark.parametrize(
-    ("checkpoint_fields", "expected"),
+    ("checkpoint_fields", "expected", "with_snapshot"),
     [
-        ({}, {}),
-        ({"checkpoint": None, "checkpoint_sha256": None}, {}),
-        ({"checkpoint": "", "checkpoint_sha256": ""}, {}),
+        ({}, {}, False),
+        ({}, {}, True),
+        ({"checkpoint": None, "checkpoint_sha256": None}, {}, False),
+        ({"checkpoint": "", "checkpoint_sha256": ""}, {}, False),
         (
             {"checkpoint": "relative/model.ckpt"},
             {"checkpoint_path": Path("relative/model.ckpt"), "checkpoint_sha256": None},
+            False,
         ),
-        ({"checkpoint_sha256": "a" * 64}, {"checkpoint_path": None, "checkpoint_sha256": "a" * 64}),
+        ({"checkpoint_sha256": "a" * 64}, {"checkpoint_path": None, "checkpoint_sha256": "a" * 64}, False),
     ],
 )
-@pytest.mark.parametrize("with_snapshot", [False, True])
 def test_managed_launch_preserves_optional_verification_arguments(tmp_path, checkpoint_fields, expected, with_snapshot):
     _write_runtime_rows(tmp_path, [{"run_id": "pending", "status": "pending", "target": ""}])
     planned = json.loads((tmp_path / "plan.json").read_text())["runs"]

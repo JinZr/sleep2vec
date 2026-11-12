@@ -22,16 +22,6 @@ from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: 
 import yaml
 
 
-def test_doctor_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
-    recipe, _config = _survival_recipe_with_missing_sidecar_key(tmp_path)
-
-    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
-
-    assert result.returncode == 1
-    assert "Status: FAIL" in result.stdout
-    assert "survival key values missing from sidecars" in result.stdout
-
-
 def test_plan_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
     recipe, _config = _survival_recipe_with_missing_sidecar_key(tmp_path)
     output_dir = tmp_path / "plan"

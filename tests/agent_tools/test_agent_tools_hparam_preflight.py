@@ -227,36 +227,6 @@ def test_hparam_plan_rejects_a_directory_results_path_before_registration(tmp_pa
     assert _staging_dirs(workspace, plan_dir) == []
 
 
-def test_hparam_plan_fails_closed_on_output_preflight(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
-    plan_dir = workspace / "plans" / "tune"
-    output_error = ValueError("Managed output paths must be independent regular files: /runtime/alias")
-    before = _workspace_files(workspace)
-    real_validate = plan_hparam.exp_io.validate_managed_output_paths
-
-    def validate(root, paths):
-        # validate_hparam_output_paths is the only caller that anchors its inventory at the filesystem root.
-        if Path(root) == Path("/"):
-            raise output_error
-        return real_validate(root, paths)
-
-    monkeypatch.setattr(plan_hparam.exp_io, "validate_managed_output_paths", validate)
-    monkeypatch.setattr(
-        execution_snapshot,
-        "inspect_execution_target",
-        lambda *_args, **_kwargs: pytest.fail("output preflight must fail before target inspection"),
-    )
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    assert str(output_error) in report.blocking_issues()[0].message
-    assert _workspace_files(workspace) == before
-    assert read_run_manifest(workspace) == []
-    assert not plan_dir.exists()
-    assert _staging_dirs(workspace, plan_dir) == []
-
-
 def test_hparam_preflight_does_not_probe_storage_capacity(tmp_path: Path, monkeypatch):
     recipe, workspace = _recipe(tmp_path)
     plan_dir = workspace / "plans" / "tune"

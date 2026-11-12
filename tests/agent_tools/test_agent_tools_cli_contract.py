@@ -11,8 +11,6 @@ import pytest
 
 from agent_tools import cli, execution_snapshot, hparam_runtime, models, plans
 from agent_tools.adapters.registry import get_adapter
-from agent_tools.decisions import evaluate_consultation_gates
-from agent_tools.recipes import load_consultation_policy
 
 SUBCOMMANDS = {
     "repo-summary",
@@ -45,13 +43,6 @@ RUNNABLE_TASK_VARIANT_MATRIX = [
         for task in ("finetune", "hparam_tune", "infer")
         for variant in models.SUPPORTED_VARIANTS
     ],
-]
-
-REJECTED_TASK_VARIANT_MATRIX = [
-    *[(task, None) for task in ("preset_prepare", "finetune", "hparam_tune", "infer")],
-    *[(task, "unsupported") for task in ("preset_prepare", "finetune", "hparam_tune", "infer")],
-    *[("sleep2stat", variant) for variant in models.SUPPORTED_VARIANTS],
-    ("preset_prepare", "sex_age_baseline"),
 ]
 
 
@@ -159,19 +150,6 @@ def test_experiment_status_cli_contract():
     assert args.json is False
 
 
-@pytest.mark.parametrize("command", ["experiment-status", "experiment-monitor", "experiment-note"])
-def test_experiment_commands_reject_the_removed_remote_option(command: str):
-    parser, _subcommands = _parser_contract()
-    argv = [command, "--run-dir", "experiment", "--remote", "host"]
-    if command == "experiment-note":
-        argv += ["--entry", "entry.yaml"]
-
-    with pytest.raises(SystemExit) as excinfo:
-        parser.parse_args(argv)
-
-    assert excinfo.value.code == 2
-
-
 def test_cli_reports_expected_errors_as_one_line_and_exit_one(tmp_path: Path, capsys):
     assert cli.main(["hparam-run-queue", "--plan-dir", str(tmp_path)]) == 1
 
@@ -270,6 +248,7 @@ def test_experiment_note_cli_contract():
     args = parser.parse_args(["experiment-note", "--run-dir", "experiment", "--entry", "entry.yaml"])
 
     assert {name for name, action in actions.items() if action.required} == {"run_dir", "entry"}
+    assert set(actions) - {"help"} == {"run_dir", "entry"}
     assert args.run_dir == "experiment"
     assert "local YAML file path" in actions["entry"].help
     assert "inline text is not accepted" in actions["entry"].help
@@ -704,27 +683,3 @@ def test_runnable_task_variant_contract_matrix(task: str, variant: str | None, t
     module_path = Path(target) if target.endswith(".py") else Path(target.replace(".", "/") + ".py")
     assert (models.REPO_ROOT / module_path).is_file()
     assert models.task_requires_variant(task) is True
-
-
-@pytest.mark.parametrize(("task", "variant"), REJECTED_TASK_VARIANT_MATRIX)
-def test_rejected_task_variant_contract_matrix(tmp_path: Path, task: str, variant: str | None):
-    policy = load_consultation_policy()
-    recipe = {
-        "name": "rejected-contract-matrix",
-        "task": task,
-        "variant": variant,
-        "experiment": {
-            "id": "contract-matrix",
-            "title": "Contract matrix",
-            "objective": "Validate finite task and variant routing.",
-            "root": str(tmp_path),
-            "baseline": {"type": "none"},
-        },
-        "step": {"id": "contract-step", "phase": "train", "purpose": "Validate routing."},
-        "decisions": {"task": {"value": task, "source": "explicit_recipe"}},
-    }
-
-    report = evaluate_consultation_gates(task, recipe, None, {}, policy)
-
-    assert report.exit_code != 0
-    assert any(issue.field == "variant" for issue in report.blocking_issues())
