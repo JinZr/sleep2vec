@@ -176,11 +176,6 @@ class CapacityState:
     allow_gpu_oversubscription: bool
     external_missing_pid: list[RunKey]
 
-    def preview_group(self) -> int | None:
-        if not self.gpu_groups:
-            return None
-        return min(range(len(self.gpu_groups)), key=lambda index: (self.group_loads[index], index))
-
     def next_allocation(
         self,
         candidates: Sequence[tuple[int, dict[str, JsonValue]]],
