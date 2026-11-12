@@ -26,10 +26,12 @@ search:
       runtime.weight_decay: 1.0e-5
       runtime.epochs: 30
       yaml:/model/head/dropout: 0.1
+      yaml:/model/head/channel_agg: {name: concat, kwargs: {projection_dim: 128}}
     - runtime.lr: 3.0e-6
       runtime.weight_decay: 1.0e-5
       runtime.epochs: 30
       yaml:/model/head/dropout: 0.1
+      yaml:/model/head/channel_agg: {name: concat, kwargs: {projection_dim: 128}}
 
 evaluation_policy:
   selection_metric: val_ahi_pearson
