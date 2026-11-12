@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import shlex
 import subprocess
 import sys
 
-from agent_tool_test_helpers import write_finetune_recipe
+from agent_tool_test_helpers import PRESET_SCRIPTS, make_preset_runtime, workspace_files, write_preset_runtime_recipe
 import pytest
-from test_agent_plan_blocks_on_ambiguity import _write_preset_recipe
-from test_agent_tools_experiment_status import _workspace_files
 import yaml
 
 from agent_tools import cli, experiments, plans
@@ -19,106 +16,17 @@ from agent_tools.experiment_workspace import file_sha256, read_run_manifest
 from agent_tools.manifests import write_rows
 from agent_tools.models import REPO_ROOT
 
-_PRESET_SCRIPTS = {
-    "sleep2vec": "preprocess/save_dataset_presets.py",
-    "sleep2vec2": "sleep2vec2/preprocess/save_dataset_presets.py",
-    "sleep2expert": "sleep2expert/preprocess/save_dataset_presets.py",
-}
-
 
 @pytest.fixture
 def preset_runtime(tmp_path: Path):
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    (runtime / "agent_tools").symlink_to(REPO_ROOT / "agent_tools", target_is_directory=True)
-    for script in _PRESET_SCRIPTS.values():
-        entrypoint = runtime / script
-        entrypoint.parent.mkdir(parents=True, exist_ok=True)
-        entrypoint.write_text(
-            "import json, os, sys\n"
-            "from pathlib import Path\n"
-            "from agent_tools.experiment_workspace import read_run_manifest\n"
-            "payload = {'python': sys.executable, 'cwd': str(Path.cwd()), 'argv': sys.argv,\n"
-            "           'status': read_run_manifest(os.environ['PRESET_TEST_WORKSPACE'])[0]['status']}\n"
-            "Path(os.environ['PRESET_TEST_PAYLOAD']).write_text(json.dumps(payload))\n"
-        )
-    subprocess.run(["git", "init", "--quiet", str(runtime)], check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Preset runtime test",
-            "-c",
-            "user.email=preset-test@example.invalid",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "--allow-empty",
-            "-m",
-            "Initialize test runtime",
-        ],
-        cwd=runtime,
-        check=True,
-    )
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=runtime, text=True).strip()
-    calls = tmp_path / "python-calls.txt"
-    runtime_python = runtime / "python-runtime"
-    runtime_python.write_text(
-        "#!/bin/sh\n"
-        f"printf '%s\\n' \"$1\" >> {shlex.quote(str(calls))}\n"
-        f'exec {shlex.quote(sys.executable)} "$@"\n'
-    )
-    runtime_python.chmod(0o755)
-    poison = tmp_path / "poison"
-    poison.mkdir()
-    poison_marker = tmp_path / "poison-ran.txt"
-    poison_python = poison / "python"
-    poison_python.write_text(f"#!/bin/sh\nprintf poison > {shlex.quote(str(poison_marker))}\nexit 97\n")
-    poison_python.chmod(0o755)
-    workspace = tmp_path / "workspace"
-    payload = tmp_path / "payload.json"
-    return {
-        "execution": {
-            "workdir": str(runtime),
-            "python": str(runtime_python),
-            "runtime_commit": commit,
-        },
-        "workspace": workspace,
-        "payload": payload,
-        "calls": calls,
-        "poison_marker": poison_marker,
-        "env": {
-            **os.environ,
-            "PATH": str(poison) + os.pathsep + os.environ["PATH"],
-            "PRESET_TEST_WORKSPACE": str(workspace),
-            "PRESET_TEST_PAYLOAD": str(payload),
-        },
-    }
+    return make_preset_runtime(tmp_path)
 
 
-def _runtime_recipe(tmp_path: Path, preset_runtime: dict, variant: str = "sleep2vec") -> Path:
-    source = tmp_path / "source"
-    base = write_finetune_recipe(source, variant=variant)
-    config = yaml.safe_load(base.read_text())["inputs"]["config"]
-    recipe = _write_preset_recipe(
-        source,
-        config=config,
-        index=source / "index.csv",
-        variant=variant,
-        execution=preset_runtime["execution"],
-    )
-    payload = yaml.safe_load(recipe.read_text())
-    payload["experiment"]["root"] = str(preset_runtime["workspace"])
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    return recipe
-
-
-@pytest.mark.parametrize("variant", _PRESET_SCRIPTS)
+@pytest.mark.parametrize("variant", PRESET_SCRIPTS)
 def test_preset_explicit_identity_runs_real_generated_command_despite_path_change(
     tmp_path: Path, preset_runtime, variant
 ):
-    recipe = _runtime_recipe(tmp_path, preset_runtime, variant)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime, variant)
     plan_dir = preset_runtime["workspace"] / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -129,7 +37,7 @@ def test_preset_explicit_identity_runs_real_generated_command_despite_path_chang
     assert plan["recipe"]["execution"] == expected_execution
     assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == expected_execution
     command = plan["commands"][0]
-    assert shlex.split(command)[:2] == [preset_runtime["execution"]["python"], _PRESET_SCRIPTS[variant]]
+    assert shlex.split(command)[:2] == [preset_runtime["execution"]["python"], PRESET_SCRIPTS[variant]]
     assert plan["runs"][0]["command"] == command
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "planned"
     result = subprocess.run(
@@ -143,19 +51,19 @@ def test_preset_explicit_identity_runs_real_generated_command_despite_path_chang
     assert payload["argv"] == shlex.split(command)[1:]
     assert payload["status"] == "running"
     # Frozen-config verification, the running commit, the workload, then the terminal commit.
-    assert preset_runtime["calls"].read_text().splitlines() == ["-c", "-c", _PRESET_SCRIPTS[variant], "-c"]
+    assert preset_runtime["calls"].read_text().splitlines() == ["-c", "-c", PRESET_SCRIPTS[variant], "-c"]
     assert not preset_runtime["poison_marker"].exists()
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "completed"
 
 
 def test_preset_missing_python_precedes_lifecycle_and_payload(tmp_path: Path, preset_runtime):
     preset_runtime["execution"]["python"] = str(tmp_path / "missing-python")
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
     plan = json.loads((plan_dir / "plan.json").read_text())
-    before = _workspace_files(preset_runtime["workspace"])
+    before = workspace_files(preset_runtime["workspace"])
 
     result = subprocess.run(
         ["bash", plan["runs"][0]["script"]], cwd=tmp_path, env=preset_runtime["env"], text=True, capture_output=True
@@ -166,12 +74,12 @@ def test_preset_missing_python_precedes_lifecycle_and_payload(tmp_path: Path, pr
     assert not preset_runtime["payload"].exists()
     assert not preset_runtime["poison_marker"].exists()
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "planned"
-    assert _workspace_files(preset_runtime["workspace"]) == before
+    assert workspace_files(preset_runtime["workspace"]) == before
 
 
 def test_preset_runtime_commit_mismatch_runs_and_records_both_commits(tmp_path: Path, preset_runtime):
     preset_runtime["execution"]["runtime_commit"] = "0" * 40
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
@@ -198,7 +106,7 @@ def test_preset_runtime_commit_mismatch_runs_and_records_both_commits(tmp_path: 
 
 def test_preset_explicit_executable_name_is_preserved(tmp_path: Path, preset_runtime):
     preset_runtime["execution"]["python"] = "python"
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -212,7 +120,7 @@ def test_preset_explicit_executable_name_is_preserved(tmp_path: Path, preset_run
 def test_preset_authored_runtime_commit_is_frozen_lowercase(tmp_path: Path, preset_runtime):
     runtime_commit = "A" * 40
     preset_runtime["execution"]["runtime_commit"] = runtime_commit
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -227,7 +135,7 @@ def test_preset_authored_runtime_commit_is_frozen_lowercase(tmp_path: Path, pres
 @pytest.mark.parametrize("missing_field", ["python", "runtime_commit", "workdir"])
 def test_preset_partial_identity_fails_before_workspace_creation(tmp_path: Path, preset_runtime, missing_field):
     preset_runtime["execution"].pop(missing_field)
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -259,7 +167,7 @@ def test_preset_partial_identity_fails_before_workspace_creation(tmp_path: Path,
 )
 def test_preset_invalid_identity_fails_before_workspace_creation(tmp_path: Path, preset_runtime, field, value):
     preset_runtime["execution"][field] = value
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -270,10 +178,10 @@ def test_preset_invalid_identity_fails_before_workspace_creation(tmp_path: Path,
     assert not preset_runtime["workspace"].exists()
 
 
-@pytest.mark.parametrize("variant", _PRESET_SCRIPTS)
+@pytest.mark.parametrize("variant", PRESET_SCRIPTS)
 def test_preset_manager_defaults_freeze_actual_python_commit_and_workdir(tmp_path: Path, preset_runtime, variant):
     preset_runtime["execution"] = {}
-    recipe = _runtime_recipe(tmp_path, preset_runtime, variant)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime, variant)
     plan_dir = preset_runtime["workspace"] / "plan"
     expected = {
         "python": sys.executable,
@@ -288,14 +196,14 @@ def test_preset_manager_defaults_freeze_actual_python_commit_and_workdir(tmp_pat
     plan = json.loads((plan_dir / "plan.json").read_text())
     assert plan["recipe"]["execution"] == expected
     assert yaml.safe_load((plan_dir / "recipe.resolved.yaml").read_text())["execution"] == expected
-    assert shlex.split(plan["commands"][0])[:2] == [sys.executable, _PRESET_SCRIPTS[variant]]
+    assert shlex.split(plan["commands"][0])[:2] == [sys.executable, PRESET_SCRIPTS[variant]]
     script = Path(plan["runs"][0]["script"]).read_text()
     assert f"cd {shlex.quote(str(REPO_ROOT))}\n" in script
     assert f"{shlex.quote(sys.executable)} -c " in script
     assert expected["runtime_commit"] in script
 
 
-@pytest.mark.parametrize("variant", _PRESET_SCRIPTS)
+@pytest.mark.parametrize("variant", PRESET_SCRIPTS)
 def test_preset_default_generated_command_ignores_path_python_in_simulated_manager_repo(
     tmp_path: Path, preset_runtime, monkeypatch, variant
 ):
@@ -305,7 +213,7 @@ def test_preset_default_generated_command_ignores_path_python_in_simulated_manag
     monkeypatch.setattr(preset_adapter, "REPO_ROOT", manager_root)
     monkeypatch.setattr(preset_adapter, "repo_summary", lambda: {"git": {"available": True, "commit": manager_commit}})
     preset_runtime["execution"] = {}
-    recipe = _runtime_recipe(tmp_path, preset_runtime, variant)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime, variant)
     plan_dir = preset_runtime["workspace"] / "plan"
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
@@ -317,7 +225,7 @@ def test_preset_default_generated_command_ignores_path_python_in_simulated_manag
         "scheduler": {"type": "direct"},
     }
     command = plan["commands"][0]
-    assert shlex.split(command)[:2] == [sys.executable, _PRESET_SCRIPTS[variant]]
+    assert shlex.split(command)[:2] == [sys.executable, PRESET_SCRIPTS[variant]]
 
     result = subprocess.run(
         ["bash", plan["runs"][0]["script"]], cwd=tmp_path, env=preset_runtime["env"], text=True, capture_output=True
@@ -338,7 +246,7 @@ def test_preset_default_generated_command_ignores_path_python_in_simulated_manag
 
 def test_preset_default_identity_is_bound_without_preset_build(tmp_path: Path, preset_runtime):
     preset_runtime["execution"] = {}
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     payload = yaml.safe_load(recipe.read_text())
     config_path = Path(payload["inputs"]["config"])
     config = yaml.safe_load(config_path.read_text())
@@ -362,7 +270,7 @@ def test_preset_default_identity_is_bound_without_preset_build(tmp_path: Path, p
 def test_preset_manager_defaults_preserve_authored_execution_metadata(tmp_path: Path, preset_runtime):
     metadata = {"workdir": str(REPO_ROOT)}
     preset_runtime["execution"] = dict(metadata)
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -376,7 +284,7 @@ def test_preset_manager_defaults_preserve_authored_execution_metadata(tmp_path: 
 
 def test_preset_nonmanager_context_requires_explicit_identity_before_workspace_creation(tmp_path: Path, preset_runtime):
     preset_runtime["execution"] = {"workdir": preset_runtime["execution"]["workdir"]}
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -397,7 +305,7 @@ def test_preset_missing_manager_commit_fails_before_workspace_creation(
 ):
     monkeypatch.setattr(preset_adapter, "repo_summary", lambda: {"git": git_state})
     preset_runtime["execution"] = {}
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
 
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
@@ -411,7 +319,7 @@ def test_preset_missing_manager_commit_fails_before_workspace_creation(
 def test_preset_auto_bound_runtime_commit_is_frozen_lowercase(tmp_path: Path, preset_runtime, monkeypatch):
     runtime_commit = "A" * 40
     preset_runtime["execution"] = {}
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     monkeypatch.setattr(
         preset_adapter,
         "repo_summary",
@@ -447,7 +355,7 @@ def test_preset_invalid_auto_bound_identity_fails_before_workspace_creation(
     tmp_path: Path, preset_runtime, monkeypatch, capsys, entrypoint, has_preset_build, field, value
 ):
     preset_runtime["execution"] = {}
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     if not has_preset_build:
         payload = yaml.safe_load(recipe.read_text())
         config_path = Path(payload["inputs"]["config"])
@@ -487,7 +395,7 @@ def test_preset_registered_reader_never_rebinds_default_or_historical_identity(
     tmp_path: Path, preset_runtime, monkeypatch, historical
 ):
     preset_runtime["execution"] = {}
-    recipe = _runtime_recipe(tmp_path, preset_runtime)
+    recipe = write_preset_runtime_recipe(tmp_path, preset_runtime)
     plan_dir = preset_runtime["workspace"] / "plan"
     report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
     assert report.exit_code == 0, [issue.message for issue in report.blocking_issues()]
@@ -522,7 +430,7 @@ def test_preset_registered_reader_never_rebinds_default_or_historical_identity(
         for field in ("scheduler_type", "terminal_status_owner"):
             rows[0].pop(field)
         write_rows(preset_runtime["workspace"] / "run_manifest.tsv", rows)
-    before = _workspace_files(preset_runtime["workspace"])
+    before = workspace_files(preset_runtime["workspace"])
 
     def unexpected_binding(*_args, **_kwargs):
         raise AssertionError("Registered readers must not bind current runtime defaults.")
@@ -545,4 +453,4 @@ def test_preset_registered_reader_never_rebinds_default_or_historical_identity(
             )
             with pytest.raises(ValueError, match="new local managed direct preset"):
                 operation(plan_dir, **kwargs)
-    assert _workspace_files(preset_runtime["workspace"]) == before
+    assert workspace_files(preset_runtime["workspace"]) == before

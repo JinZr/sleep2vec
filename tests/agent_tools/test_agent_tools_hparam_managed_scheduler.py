@@ -3,31 +3,34 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_tool_test_helpers import FakeLauncher, run_cli
-import pytest
-from test_agent_tools_hparam_runtime import (
-    _hparam_recipe,
-    _read_table,
-    _write_process_identity,
-    _write_runtime_rows,
+from agent_tool_test_helpers import (
+    FakeLauncher,
+    read_table,
+    run_cli,
+    tree_files,
+    write_fake_process_identity,
+    write_local_hparam_recipe,
+    write_runtime_rows,
     write_yaml,
 )
-from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
+import pytest
 import yaml
 
 from agent_tools import hparam_runtime, managed_scheduler, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
 
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
+
 
 def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspace_creation(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "gpus_per_run": 2})
+    recipe = write_local_hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "gpus_per_run": 2})
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
     base_payload = yaml.safe_load(base_recipe.read_text())
     base_payload["runtime"].pop("devices")
     write_yaml(base_recipe, base_payload)
     plan_dir = tmp_path / "plan"
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
 
     doctor = run_cli("doctor", "--recipe", str(recipe))
     planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
@@ -38,7 +41,7 @@ def test_hparam_plan_rejects_gpus_per_run_without_a_physical_pool_before_workspa
     assert planned.returncode == 1
     assert message in planned.stdout
     assert not plan_dir.exists()
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 def test_managed_scheduler_rejects_gpus_per_run_without_a_physical_pool():
@@ -50,7 +53,7 @@ def test_managed_scheduler_rejects_gpus_per_run_without_a_physical_pool():
 
 
 def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group(tmp_path: Path):
-    recipe = _hparam_recipe(
+    recipe = write_local_hparam_recipe(
         tmp_path,
         execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1},
     )
@@ -83,7 +86,7 @@ def test_hparam_launch_defaults_to_one_run_per_gpu_group_and_uses_the_free_group
 
 
 def test_hparam_run_queue_dry_run_returns_after_one_preview(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     calls = []
@@ -98,7 +101,7 @@ def test_hparam_run_queue_dry_run_returns_after_one_preview(tmp_path: Path, monk
 
     rows = hparam_runtime.run_hparam_queue(plan_dir)
 
-    canonical = _read_table(tmp_path / "run_manifest.tsv")
+    canonical = read_table(tmp_path / "run_manifest.tsv")
     assert [row["status"] for row in rows] == [row["status"] for row in canonical] == ["planned"]
     # The preview carries the prospective launch identity; the canonical row stays unbound.
     assert rows[0]["target"] == "local"
@@ -108,7 +111,7 @@ def test_hparam_run_queue_dry_run_returns_after_one_preview(tmp_path: Path, monk
 
 
 def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "max_concurrent": 1})
+    recipe = write_local_hparam_recipe(tmp_path, execution={"workdir": str(tmp_path), "max_concurrent": 1})
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_runs"] = 3
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6, 3e-6]
@@ -138,13 +141,13 @@ def test_hparam_run_queue_executes_each_wave_until_all_runs_are_terminal(tmp_pat
     assert len(started) == 3
     assert sleeps == [0.25, 0.25, 0.25]
     assert {row["status"] for row in rows} == {"finished"}
-    assert rows == _read_table(tmp_path / "run_manifest.tsv")
+    assert rows == read_table(tmp_path / "run_manifest.tsv")
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert sum(event["event_type"] == "run_status_changed" for event in events) == 3
 
 
 def test_hparam_run_queue_returns_terminal_plan_without_launch(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
@@ -157,7 +160,7 @@ def test_hparam_run_queue_returns_terminal_plan_without_launch(tmp_path: Path, m
 
 
 def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
@@ -173,8 +176,8 @@ def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path
 
 
 def test_hparam_run_queue_blocks_after_unsafe_process_identity(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    _write_process_identity(rows[0]["pid_path"])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    write_fake_process_identity(rows[0]["pid_path"])
 
     def reject_identity(*_args, **_kwargs):
         raise run_evidence.ProcessIdentityError("PID 123 was reused by a different process")
@@ -186,13 +189,13 @@ def test_hparam_run_queue_blocks_after_unsafe_process_identity(tmp_path: Path, m
     with pytest.raises(managed_scheduler.MissingPidCapacityError, match="run-000 has status missing_pid"):
         hparam_runtime.run_hparam_queue(tmp_path, dry_run=False)
 
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "missing_pid"
     assert "reused by a different process" in canonical["process_identity_error"]
 
 
 def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
     launcher = FakeLauncher()
@@ -223,7 +226,7 @@ def test_hparam_run_queue_records_transition_observed_during_launch(tmp_path: Pa
 
 def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path: Path, monkeypatch):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0], "gpus_per_run": 1}
-    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_recipe = write_local_hparam_recipe(tmp_path, execution=execution)
     first_plan = tmp_path / "plan-1"
     assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=FakeLauncher().hooks())
@@ -247,7 +250,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
     )
 
     def start_process(_execution, command):
-        rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+        rows = {row["run_id"]: row for row in read_table(tmp_path / "run_manifest.tsv")}
         assert rows[first_run["run_id"]]["status"] == "finished"
         events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
         assert any(
@@ -265,7 +268,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
 
     hparam_runtime.run_hparam_queue(second_plan, dry_run=False)
 
-    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    rows = {row["run_id"]: row for row in read_table(tmp_path / "run_manifest.tsv")}
     assert rows[first_run["run_id"]]["status"] == "finished"
     assert rows[second_run["run_id"]]["status"] == "launch_failed"
     assert len(started) == 1
@@ -279,7 +282,7 @@ def test_hparam_run_queue_refreshes_capacity_blocker_from_another_plan(tmp_path:
 
 
 def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_is_unknown(tmp_path: Path):
-    recipe = _hparam_recipe(
+    recipe = write_local_hparam_recipe(
         tmp_path,
         execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1},
     )
@@ -309,7 +312,7 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_current_active_identity_
 
 def test_hparam_launch_blocks_default_gpu_capacity_when_other_active_identity_is_unknown(tmp_path: Path):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
-    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_recipe = write_local_hparam_recipe(tmp_path, execution=execution)
     first_plan = tmp_path / "plan-1"
     assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
     first_run = json.loads((first_plan / "plan.json").read_text())["runs"][0]
@@ -341,7 +344,7 @@ def test_hparam_launch_blocks_default_gpu_capacity_when_other_active_identity_is
 
 def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
-    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_recipe = write_local_hparam_recipe(tmp_path, execution=execution)
     first_plan = tmp_path / "plan-1"
     assert run_cli("plan", "--recipe", str(first_recipe), "--output-dir", str(first_plan)).returncode == 0
 
@@ -360,7 +363,7 @@ def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path)
     }
     assert all(
         row["target"] == "" and row["gpus"] == "" and row["command"] == ""
-        for row in _read_table(tmp_path / "run_manifest.tsv")
+        for row in read_table(tmp_path / "run_manifest.tsv")
         if (row["step_id"], row["run_id"]) in second_keys
     )
     hparam_runtime.launch_hparam_runs(first_plan, dry_run=False, hooks=launcher.hooks())
@@ -375,7 +378,7 @@ def test_hparam_launch_counts_active_gpu_load_from_previous_plan(tmp_path: Path)
 
 def test_hparam_launch_full_previous_plan_keeps_replacement_pending(tmp_path: Path):
     execution = {"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 1}
-    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_recipe = write_local_hparam_recipe(tmp_path, execution=execution)
     first_payload = yaml.safe_load(first_recipe.read_text())
     first_payload["search"]["max_runs"] = 2
     first_payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
@@ -404,7 +407,7 @@ def test_hparam_launch_full_previous_plan_keeps_replacement_pending(tmp_path: Pa
 
 def test_hparam_launch_keeps_cpu_only_concurrency_plan_local(tmp_path: Path):
     execution = {"workdir": str(tmp_path)}
-    first_recipe = _hparam_recipe(tmp_path, execution=execution)
+    first_recipe = write_local_hparam_recipe(tmp_path, execution=execution)
     first_payload = yaml.safe_load(first_recipe.read_text())
     first_payload["runtime"] = {"devices": []}
     write_yaml(first_recipe, first_payload)
@@ -428,7 +431,7 @@ def test_hparam_launch_keeps_cpu_only_concurrency_plan_local(tmp_path: Path):
 
 
 def test_hparam_launch_explicit_gpu_oversubscription_warns_and_balances_groups(tmp_path: Path):
-    recipe = _hparam_recipe(
+    recipe = write_local_hparam_recipe(
         tmp_path,
         execution={
             "workdir": str(tmp_path),
@@ -458,7 +461,7 @@ def test_hparam_launch_explicit_gpu_oversubscription_warns_and_balances_groups(t
 
 
 def test_hparam_launch_explicit_oversubscription_balances_overlapping_previous_group(tmp_path: Path):
-    first_recipe = _hparam_recipe(
+    first_recipe = write_local_hparam_recipe(
         tmp_path,
         execution={"workdir": str(tmp_path), "gpu_pool": [0, 1], "gpus_per_run": 2},
     )
@@ -573,7 +576,7 @@ def test_direct_gpu_capacity_does_not_count_active_slurm_allocations():
 
 
 def test_managed_scheduler_ignores_external_missing_pid_when_expected_runs_are_terminal(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(
+    rows = write_runtime_rows(
         tmp_path,
         [
             {"run_id": "complete", "status": "finished", "gpus": "0"},
@@ -633,7 +636,7 @@ def test_managed_scheduler_row_terminal_owner_overrides_monitor_default(tmp_path
 
 
 def test_managed_scheduler_observe_run_preserves_artifact_context(tmp_path: Path, monkeypatch):
-    row = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])[0]
+    row = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])[0]
     runtime_dir = Path(row["runtime_dir"])
     checkpoint_dir = Path(row["checkpoint_dir"])
     checkpoint_dir.mkdir(parents=True)
@@ -669,7 +672,7 @@ def test_managed_scheduler_observe_run_preserves_artifact_context(tmp_path: Path
     ],
 )
 def test_managed_launch_preserves_optional_verification_arguments(tmp_path, checkpoint_fields, expected, with_snapshot):
-    _write_runtime_rows(tmp_path, [{"run_id": "pending", "status": "pending", "target": ""}])
+    write_runtime_rows(tmp_path, [{"run_id": "pending", "status": "pending", "target": ""}])
     planned = json.loads((tmp_path / "plan.json").read_text())["runs"]
     planned[0].update(checkpoint_fields, command="python -m sleep2vec.finetune")
     snapshot = {"runtime_commit": "a" * 40, "extra_identity": {"raw": [None, 17]}} if with_snapshot else None

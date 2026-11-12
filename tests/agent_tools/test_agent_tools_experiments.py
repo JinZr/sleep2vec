@@ -1,26 +1,13 @@
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
-import subprocess
-import sys
 import threading
 
-from agent_tool_test_helpers import call_while_run_lock_holder_commits
+from agent_tool_test_helpers import call_while_run_lock_holder_commits, read_table, run_cli, tree_files, workspace_files
 import pytest
 
 from agent_tools import experiment_io, experiments
-
-
-def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
-
-
-def _read_table(path: Path) -> list[dict[str, str]]:
-    delimiter = "\t" if path.suffix == ".tsv" else ","
-    with path.open(newline="") as file_obj:
-        return list(csv.DictReader(file_obj, delimiter=delimiter))
 
 
 def _experiment_spec(tmp_path: Path) -> Path:
@@ -49,15 +36,6 @@ def _write_step(root: Path) -> None:
             }
         )
     )
-
-
-def _workspace_files(root: Path) -> dict[Path, bytes]:
-    # Workspace reads take the run lock, which creates the empty lock file; it holds no state.
-    return {
-        path.relative_to(root): path.read_bytes()
-        for path in root.rglob("*")
-        if path.is_file() and path != root / "run_manifest.tsv.lock"
-    }
 
 
 def _research_entry(
@@ -93,10 +71,10 @@ def _research_entry(
 
 def test_experiment_init_creates_manifest(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
-    result = _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec))
+    result = run_cli("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec))
 
     assert result.returncode == 0, result.stderr
-    rows = _read_table(tmp_path / "experiment_manifest.tsv")
+    rows = read_table(tmp_path / "experiment_manifest.tsv")
     assert rows[0]["experiment_id"] == "unit"
     assert "remote_host" not in rows[0]
     assert (tmp_path / "reports").exists()
@@ -133,8 +111,8 @@ def test_experiment_note_cli_reports_append_and_idempotent_retry(tmp_path: Path)
     experiments.init_experiment(root, _experiment_spec(tmp_path))
     entry = _research_entry(tmp_path, "obs-cli")
 
-    first = _run("experiment-note", "--run-dir", str(root), "--entry", str(entry))
-    second = _run("experiment-note", "--run-dir", str(root), "--entry", str(entry))
+    first = run_cli("experiment-note", "--run-dir", str(root), "--entry", str(entry))
+    second = run_cli("experiment-note", "--run-dir", str(root), "--entry", str(entry))
 
     assert first.returncode == 0, first.stderr
     assert f"Research log {root / 'RESEARCH_LOG.md'}: obs-cli appended" in first.stdout
@@ -146,20 +124,20 @@ def test_experiment_note_cli_reports_append_and_idempotent_retry(tmp_path: Path)
 def test_experiment_note_cli_rejects_non_file_entry_without_mutation(tmp_path: Path, entry_kind: str):
     root = tmp_path / "workspace"
     experiments.init_experiment(root, _experiment_spec(tmp_path))
-    before = _workspace_files(root)
+    before = workspace_files(root)
     entry = {
         "missing": str(tmp_path / "missing-entry.yaml"),
         "inline": "id: obs-inline",
         "directory": str(tmp_path),
         "stdin": "-",
     }[entry_kind]
-    result = _run("experiment-note", "--run-dir", str(root), "--entry", entry)
+    result = run_cli("experiment-note", "--run-dir", str(root), "--entry", entry)
 
     assert result.returncode == 1
     assert "--entry must be an existing local YAML file path" in result.stderr
     assert "Traceback" not in result.stdout
     assert "Traceback" not in result.stderr
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
 
 
 def test_experiment_note_rejects_same_id_with_different_content_without_writing(tmp_path: Path):
@@ -495,7 +473,7 @@ def test_experiment_init_and_mutation_share_canonical_relative_root(tmp_path: Pa
 
 def test_experiment_init_rejects_metadata_drift_for_existing_id(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
-    assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
+    assert run_cli("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
     changed = tmp_path.parent / "changed_experiment_spec.yaml"
     changed.write_text(
         "id: unit\n"
@@ -506,7 +484,7 @@ def test_experiment_init_rejects_metadata_drift_for_existing_id(tmp_path: Path):
         "  rationale: Changed baseline.\n"
     )
 
-    result = _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(changed))
+    result = run_cli("experiment-init", "--run-dir", str(tmp_path), "--spec", str(changed))
 
     assert result.returncode == 1
     assert "differs from the existing experiment manifest" in result.stderr
@@ -522,12 +500,12 @@ def test_experiment_init_failure_leaves_workspace_unchanged(tmp_path: Path):
         "  root: placeholder\n"
         "  baseline: {type: none}\n"
     )
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
 
     with pytest.raises(ValueError, match="different experiment"):
         experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
 
-    after = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    after = tree_files(tmp_path)
     assert after == before
     assert not (tmp_path / "reports").exists()
     assert not (tmp_path / "wandb").exists()
@@ -545,12 +523,12 @@ def test_experiment_init_rejects_existing_root_drift_without_writing(tmp_path: P
         "    type: none\n"
         "    rationale: Unit fixture.\n"
     )
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
 
     with pytest.raises(ValueError, match="experiment.root differs"):
         experiments.init_experiment(tmp_path, spec)
 
-    assert _workspace_files(tmp_path) == before
+    assert workspace_files(tmp_path) == before
     assert not (tmp_path / "reports").exists()
 
 
@@ -577,7 +555,7 @@ def test_experiment_mutation_rejects_duplicate_workspace_ownership_without_writi
     experiments.init_experiment(tmp_path, spec)
     manifest = tmp_path / "experiment.yaml"
     manifest.write_text(manifest.read_text().replace("  id: unit\n", "  id: foreign\n  id: unit\n"))
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
 
     with pytest.raises(ValueError, match="duplicate key"):
         if operation == "init":
@@ -585,7 +563,7 @@ def test_experiment_mutation_rejects_duplicate_workspace_ownership_without_writi
         else:
             experiments.monitor_experiment(tmp_path)
 
-    assert _workspace_files(tmp_path) == before
+    assert workspace_files(tmp_path) == before
 
 
 def test_experiment_init_validates_existing_tables_before_writing(tmp_path: Path):
@@ -594,12 +572,12 @@ def test_experiment_init_validates_existing_tables_before_writing(tmp_path: Path
     manifest = tmp_path / "experiment_manifest.tsv"
     lines = manifest.read_text().splitlines()
     manifest.write_text("\n".join([lines[0], lines[1], lines[1]]) + "\n")
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
 
     with pytest.raises(ValueError, match="exactly one row"):
         experiments.init_experiment(tmp_path, spec)
 
-    assert _workspace_files(tmp_path) == before
+    assert workspace_files(tmp_path) == before
 
 
 def test_experiment_monitor_delegates_manifest_validation_before_mutation(tmp_path: Path):
@@ -608,24 +586,24 @@ def test_experiment_monitor_delegates_manifest_validation_before_mutation(tmp_pa
     manifest = tmp_path / "experiment_manifest.tsv"
     header, row = manifest.read_text().splitlines()
     manifest.write_text(f"{header}\n{row}\textra\n")
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
 
     with pytest.raises(ValueError):
         experiments.monitor_experiment(tmp_path)
 
-    assert _workspace_files(tmp_path) == before
+    assert workspace_files(tmp_path) == before
 
 
 def test_experiment_finalizes_completed_workspace(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
-    assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
+    assert run_cli("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
     (tmp_path / "run_manifest.tsv").write_text(
         "experiment_id\tstep_id\trun_id\tstatus\nunit\ttrain\trun-000\tfinished\n"
     )
     report = tmp_path.parent / "final.md"
     report.write_text("# Final\n\nValidation-selected result.\n")
 
-    finalized = _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
+    finalized = run_cli("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
 
     assert finalized.returncode == 0, finalized.stderr
     assert (tmp_path / "reports" / "final.md").read_text() == report.read_text()
@@ -698,13 +676,13 @@ def test_experiment_finalize_requires_stop_reason_before_writing(tmp_path: Path)
     run_manifest.write_text("experiment_id\tstep_id\trun_id\tstatus\tstop_reason\n" "unit\ttrain\trun-000\tstopped\t\n")
     report = tmp_path.parent / "stopped_final.md"
     report.write_text("# Final\n")
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
 
     with pytest.raises(ValueError, match="missing required stop_reason"):
         experiments.finalize_experiment(tmp_path, report)
 
-    assert _workspace_files(tmp_path) == before
-    rows = _read_table(run_manifest)
+    assert workspace_files(tmp_path) == before
+    rows = read_table(run_manifest)
     rows[0]["stop_reason"] = "manual stop after invalid labels"
     experiment_io.write_rows_at(run_manifest, rows)
     target = experiments.finalize_experiment(tmp_path, report)
@@ -714,11 +692,11 @@ def test_experiment_finalize_requires_stop_reason_before_writing(tmp_path: Path)
 
 def test_experiment_finalize_rejects_workspace_without_managed_runs(tmp_path: Path):
     spec = _experiment_spec(tmp_path.parent)
-    assert _run("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
+    assert run_cli("experiment-init", "--run-dir", str(tmp_path), "--spec", str(spec)).returncode == 0
     report = tmp_path.parent / "empty_final.md"
     report.write_text("# Final\n")
 
-    result = _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
+    result = run_cli("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
 
     assert result.returncode == 1
     assert "no managed runs" in result.stderr
@@ -734,30 +712,30 @@ def test_experiment_mutations_require_initialized_workspace_before_side_effects(
     for index, action in enumerate(actions):
         root = tmp_path / str(index)
         root.mkdir()
-        before = _workspace_files(root)
+        before = workspace_files(root)
         with pytest.raises(ValueError, match="experiment.yaml is missing"):
             action(root)
-        assert _workspace_files(root) == before
+        assert workspace_files(root) == before
 
 
 def test_experiment_mutation_rejects_empty_legacy_table_without_writing(tmp_path: Path):
     experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
     (tmp_path / "trial_status.tsv").touch()
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
 
     with pytest.raises(ValueError, match="read-only"):
         experiments.monitor_experiment(tmp_path)
 
-    assert _workspace_files(tmp_path) == before
+    assert workspace_files(tmp_path) == before
 
 
 def test_experiment_mutation_rejects_manifest_root_drift_without_writing(tmp_path: Path):
     experiments.init_experiment(tmp_path, _experiment_spec(tmp_path.parent))
     manifest = tmp_path / "experiment_manifest.tsv"
     manifest.write_text(manifest.read_text().replace(str(tmp_path), "/different/root"))
-    before = _workspace_files(tmp_path)
+    before = workspace_files(tmp_path)
 
     with pytest.raises(ValueError, match="root differs"):
         experiments.monitor_experiment(tmp_path)
 
-    assert _workspace_files(tmp_path) == before
+    assert workspace_files(tmp_path) == before

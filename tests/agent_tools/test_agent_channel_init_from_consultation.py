@@ -3,9 +3,14 @@ import hashlib
 from pathlib import Path
 import sys
 
-from agent_tool_test_helpers import config_payload, run_cli, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    config_payload,
+    run_cli,
+    write_finetune_recipe,
+    write_variant_hparam_recipe,
+    write_yaml,
+)
 import pytest
-from test_agent_plan_blocks_on_ambiguity import _hparam_recipe
 import yaml
 
 from agent_tools import plan_contract, plan_hparam
@@ -148,7 +153,7 @@ def test_helper_skips_hparam_recipes():
 
 
 def test_hparam_doctor_blocks_scratch_init_from(tmp_path):
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    recipe = write_variant_hparam_recipe(tmp_path, variant="sleep2vec2")
     _add_init_from(tmp_path / "config.yaml")
 
     result = run_cli("doctor", "--recipe", str(recipe))
@@ -162,7 +167,7 @@ def test_hparam_doctor_blocks_scratch_init_from(tmp_path):
 def test_hparam_doctor_ignores_final_evaluation_ckpt_path_as_init_from_source(tmp_path):
     ckpt = tmp_path / "final.ckpt"
     ckpt.write_bytes(b"")
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2", ckpt_path=ckpt)
+    recipe = write_variant_hparam_recipe(tmp_path, variant="sleep2vec2", ckpt_path=ckpt)
     _add_init_from(tmp_path / "config.yaml")
 
     result = run_cli("doctor", "--recipe", str(recipe))
@@ -176,7 +181,7 @@ def test_hparam_doctor_ignores_final_evaluation_ckpt_path_as_init_from_source(tm
 def _hparam_recipe_with_init_from_override(tmp_path: Path) -> Path:
     base_channel = config_payload(tmp_path / "index.csv")["model"]["channels"][0]
     parameters = {"yaml:/model/channels/0": [base_channel, {**base_channel, "init_from": "eeg_original"}]}
-    return _hparam_recipe(tmp_path, variant="sleep2vec2", parameters=parameters, max_runs=2)
+    return write_variant_hparam_recipe(tmp_path, variant="sleep2vec2", parameters=parameters, max_runs=2)
 
 
 def test_hparam_override_adding_init_from_without_source_fails_doctor(tmp_path):
@@ -224,7 +229,7 @@ def test_compile_hparam_run_contracts_rejects_init_from_candidate_without_source
 
 
 def test_hparam_pending_backbone_with_base_init_from_reports_both(tmp_path):
-    recipe_path = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    recipe_path = write_variant_hparam_recipe(tmp_path, variant="sleep2vec2")
     _add_init_from(tmp_path / "config.yaml")
     base_path = Path(yaml.safe_load(recipe_path.read_text())["base_recipe"])
     base = yaml.safe_load(base_path.read_text())
@@ -242,7 +247,7 @@ def test_hparam_pending_backbone_with_base_init_from_reports_both(tmp_path):
 
 def test_hparam_candidates_removing_init_from_need_no_source(tmp_path):
     base_channel = config_payload(tmp_path / "index.csv")["model"]["channels"][0]
-    recipe = _hparam_recipe(
+    recipe = write_variant_hparam_recipe(
         tmp_path, variant="sleep2vec2", parameters={"yaml:/model/channels/0": [base_channel]}, max_runs=1
     )
     _add_init_from(tmp_path / "config.yaml")

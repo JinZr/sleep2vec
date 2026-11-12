@@ -3,9 +3,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_survival_sidecars, write_yaml
+from agent_tool_test_helpers import (
+    run_cli,
+    tree_files,
+    write_finetune_recipe,
+    write_hparam_recipe,
+    write_preset_recipe,
+    write_survival_sidecars,
+    write_yaml,
+)
 import pytest
-from test_agent_plan_blocks_on_ambiguity import _write_preset_recipe
 import yaml
 
 from agent_tools import decision_rules
@@ -49,10 +56,6 @@ def test_recipe_structure_rejects_static_contract_errors(task, recipe, field):
     assert any(issue.field == field for issue in issues)
 
 
-def _snapshot(root: Path) -> dict[Path, bytes]:
-    return {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
-
-
 def _set_path(payload: dict, path: tuple[str, ...], value: object) -> None:
     owner = payload
     for part in path[:-1]:
@@ -61,33 +64,11 @@ def _set_path(payload: dict, path: tuple[str, ...], value: object) -> None:
 
 
 def _write_hparam_recipe(tmp_path: Path) -> Path:
-    base = write_finetune_recipe(tmp_path / "base")
-    return write_yaml(
+    return write_hparam_recipe(
         tmp_path / "tune.yaml",
-        {
-            "name": "unit_recipe_closure_hparam",
-            "task": "hparam_tune",
-            "variant": "sleep2vec",
-            "base_recipe": str(base),
-            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
-            "evaluation_policy": {
-                "selection_metric": "val_ahi_pearson",
-                "selection_mode": "max",
-                "selection_split": "val",
-                "external_test_locked": True,
-                "test_after_fit": False,
-                "final_eval_split": "test",
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
+        write_finetune_recipe(tmp_path / "base"),
+        name="unit_recipe_closure_hparam",
+        search={"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
     )
 
 
@@ -199,7 +180,7 @@ def test_recipe_rejects_removed_overwrite_fields(
         index = tmp_path / "index.csv"
         index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
         config = yaml.safe_load(write_finetune_recipe(tmp_path).read_text())["inputs"]["config"]
-        recipe = _write_preset_recipe(tmp_path, config=config, index=index)
+        recipe = write_preset_recipe(tmp_path, config=config, index=index)
     else:
         recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
@@ -958,13 +939,13 @@ def test_plan_closure_failure_does_not_create_or_mutate_workspace(tmp_path: Path
     payload["experiment"]["root"] = str(workspace)
     payload["inputs"]["confg"] = payload["inputs"]["config"]
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    before = _snapshot(source)
+    before = tree_files(source)
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(workspace / "plans" / "closure"))
 
     assert result.returncode == 1
     assert "inputs.confg" in result.stdout + result.stderr
-    assert _snapshot(source) == before
+    assert tree_files(source) == before
     assert not workspace.exists()
 
 
@@ -976,13 +957,13 @@ def test_hparam_base_closure_failure_does_not_mutate_existing_workspace(tmp_path
     base_payload = yaml.safe_load(base.read_text())
     base_payload["runtime"]["lrr"] = 1e-6
     base.write_text(yaml.safe_dump(base_payload, sort_keys=False))
-    before = _snapshot(source)
+    before = tree_files(source)
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(source / "plans" / "closure"))
 
     assert result.returncode == 1
     assert "runtime.lrr" in result.stdout + result.stderr
-    assert _snapshot(source) == before
+    assert tree_files(source) == before
     assert not (source / "plans").exists()
 
 

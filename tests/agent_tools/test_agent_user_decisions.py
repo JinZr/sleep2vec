@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import subprocess
-import sys
 
-from agent_tool_test_helpers import write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import hparam_recipe_payload, run_cli, tree_files, write_finetune_recipe, write_yaml
 import pytest
 import yaml
 
@@ -14,10 +12,6 @@ from agent_tools.decision_models import DecisionIssue, DecisionReport, DecisionS
 from agent_tools.decisions import user_decision_template
 from agent_tools.plans import evaluate_recipe, write_user_decision_template
 from agent_tools.recipes import load_consultation_policy
-
-
-def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
 
 
 def _write_decisions(tmp_path: Path, decisions: dict) -> Path:
@@ -30,7 +24,7 @@ def test_user_decision_file_resolves_missing_label_and_is_reused_unchanged_by_pl
     decision_bytes = decisions.read_bytes()
 
     plan_dir = tmp_path / "plans" / "first"
-    plan = _run(
+    plan = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -47,34 +41,16 @@ def test_user_decision_file_resolves_missing_label_and_is_reused_unchanged_by_pl
 
 def test_user_decision_yaml_resolves_external_test_locked(tmp_path: Path):
     base = write_finetune_recipe(tmp_path)
-    recipe = write_yaml(
-        tmp_path / "tune.yaml",
-        {
-            "name": "unit_tune",
-            "task": "hparam_tune",
-            "variant": "sleep2vec",
-            "base_recipe": str(base),
-            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}},
-            "evaluation_policy": {
-                "selection_metric": "val_ahi_pearson",
-                "selection_mode": "max",
-                "selection_split": "val",
-                "test_after_fit": False,
-                "final_eval_split": "validation",
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
+    payload = hparam_recipe_payload(
+        base, name="unit_tune", search={"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-6]}}
     )
+    payload["evaluation_policy"]["final_eval_split"] = "validation"
+    del payload["evaluation_policy"]["external_test_locked"]
+    del payload["decisions"]["external_test_locked"]
+    recipe = write_yaml(tmp_path / "tune.yaml", payload)
     decisions = _write_decisions(tmp_path, {"external_test_locked": {"value": True, "source": "explicit_user"}})
 
-    result = _run(
+    result = run_cli(
         "doctor",
         "--recipe",
         str(recipe),
@@ -98,7 +74,7 @@ def test_recipe_ask_user_always_blocks(tmp_path: Path):
     }
     write_yaml(recipe, payload)
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(tmp_path / "doctor"))
 
     assert result.returncode == 2
     assert "ASK_USER" in result.stdout
@@ -108,7 +84,7 @@ def test_doctor_writes_fillable_user_decision_template(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
     output_dir = tmp_path / "doctor"
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     template = output_dir / "decisions.yaml"
     assert result.returncode == 2
@@ -126,14 +102,14 @@ def test_doctor_writes_fillable_user_decision_template(tmp_path: Path):
         }
     }
 
-    unresolved = _run("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
+    unresolved = run_cli("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
     assert unresolved.returncode == 2
     assert "Status: NEEDS_USER_INPUT" in unresolved.stdout
 
     payload = yaml.safe_load(template.read_text())
     payload["decisions"]["label_name"]["value"] = "ahi"
     template.write_text(yaml.safe_dump(payload, sort_keys=False))
-    resolved = _run("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
+    resolved = run_cli("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
     assert resolved.returncode == 0
     assert "Status: PASS" in resolved.stdout
 
@@ -147,7 +123,7 @@ def test_doctor_writes_template_through_output_ancestor_alias(tmp_path: Path):
     output_dir = alias_parent / "doctor"
     physical_template = physical_parent / "doctor" / "decisions.yaml"
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert str(physical_template) in result.stdout
@@ -161,7 +137,7 @@ def test_doctor_rejects_exact_output_symlink(tmp_path: Path):
     output_dir = tmp_path / "doctor"
     output_dir.symlink_to(target, target_is_directory=True)
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "must not be a symlink" in result.stderr
@@ -175,7 +151,7 @@ def test_doctor_template_does_not_promote_scalar_recipe_decision_to_user(tmp_pat
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "doctor"
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     template = yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]
@@ -198,7 +174,7 @@ def test_doctor_template_preserves_explicit_user_decisions_and_metadata(tmp_path
     )
     output_dir = tmp_path / "doctor"
 
-    result = _run(
+    result = run_cli(
         "doctor",
         "--recipe",
         str(recipe),
@@ -230,7 +206,7 @@ def test_doctor_does_not_overwrite_existing_user_decisions_file(tmp_path: Path):
     original = "decisions:\n  label_name:\n    value: ahi\n"
     template.write_text(original)
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert "Preserved existing user decisions file" in result.stdout
@@ -245,7 +221,7 @@ def test_doctor_requires_fresh_output_for_new_decision(tmp_path: Path):
     original = "decisions:\n  selection_mode:\n    value: max\n"
     template.write_text(original)
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "missing newly requested decisions" in result.stderr
@@ -351,20 +327,18 @@ def test_user_decision_template_is_complete_when_published(tmp_path: Path, monke
 def test_doctor_rejects_output_directory_owned_by_pass_plan(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path)
     output_dir = tmp_path / "plan"
-    planned = _run("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    planned = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
     assert planned.returncode == 0
-    before = {path.relative_to(output_dir): path.read_bytes() for path in output_dir.rglob("*") if path.is_file()}
+    before = tree_files(output_dir)
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"].pop("label_name")
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "doctor output requires a fresh --output-dir" in result.stderr
-    assert {
-        path.relative_to(output_dir): path.read_bytes() for path in output_dir.rglob("*") if path.is_file()
-    } == before
+    assert tree_files(output_dir) == before
     assert not (output_dir / "decisions.yaml").exists()
 
 
@@ -372,18 +346,16 @@ def test_doctor_rejects_registered_blocked_plan_directory_without_mutation(tmp_p
     blocked_recipe = write_finetune_recipe(tmp_path / "blocked-source", include_label=False)
     workspace = Path(yaml.safe_load(blocked_recipe.read_text())["experiment"]["root"])
     output_dir = workspace / "plans" / "blocked"
-    blocked = _run("plan", "--recipe", str(blocked_recipe), "--output-dir", str(output_dir))
+    blocked = run_cli("plan", "--recipe", str(blocked_recipe), "--output-dir", str(output_dir))
     assert blocked.returncode == 2, blocked.stderr
-    before = {path.relative_to(output_dir): path.read_bytes() for path in output_dir.rglob("*") if path.is_file()}
+    before = tree_files(output_dir)
     doctor_recipe = write_finetune_recipe(tmp_path / "doctor-source", include_label=False)
 
-    result = _run("doctor", "--recipe", str(doctor_recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(doctor_recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "doctor output requires a fresh --output-dir" in result.stderr
-    assert {
-        path.relative_to(output_dir): path.read_bytes() for path in output_dir.rglob("*") if path.is_file()
-    } == before
+    assert tree_files(output_dir) == before
 
 
 def test_doctor_rejects_unregistered_blocked_plan_marker(tmp_path: Path):
@@ -393,7 +365,7 @@ def test_doctor_rejects_unregistered_blocked_plan_marker(tmp_path: Path):
     marker = output_dir / "plan.blocked.md"
     marker.write_text("user marker\n")
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "doctor output requires a fresh --output-dir" in result.stderr
@@ -410,7 +382,7 @@ def test_doctor_rejects_interrupted_plan_publication(tmp_path: Path, suffix: str
     residue = output_dir / f".{output_dir.name}.interrupted.{suffix}"
     residue.mkdir()
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 1
     assert "doctor output requires a fresh --output-dir" in result.stderr
@@ -472,7 +444,7 @@ def test_user_decision_file_requires_decisions_mapping_before_output(tmp_path: P
     decisions.write_text("label_name: ahi\n")
     output_dir = tmp_path / "doctor"
 
-    result = _run(
+    result = run_cli(
         "doctor",
         "--recipe",
         str(recipe),
@@ -545,7 +517,7 @@ def test_user_task_scopes_contract_before_authored_task_fallback(tmp_path: Path)
     )
     output_dir = tmp_path / "plan"
 
-    result = _run(
+    result = run_cli(
         "plan",
         "--recipe",
         str(recipe),
@@ -568,13 +540,13 @@ def test_generated_task_template_remains_unresolved_until_filled(tmp_path: Path)
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "doctor"
 
-    initial = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    initial = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     template = output_dir / "decisions.yaml"
     assert initial.returncode == 2
     assert yaml.safe_load(template.read_text())["decisions"]["task"]["value"] == "ASK_USER"
 
-    unresolved = _run("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
+    unresolved = run_cli("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
 
     assert unresolved.returncode == 2
     assert "Status: NEEDS_USER_INPUT" in unresolved.stdout
@@ -583,7 +555,7 @@ def test_generated_task_template_remains_unresolved_until_filled(tmp_path: Path)
     decisions = yaml.safe_load(template.read_text())
     decisions["decisions"]["task"]["value"] = "finetune"
     template.write_text(yaml.safe_dump(decisions, sort_keys=False))
-    resolved = _run("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
+    resolved = run_cli("doctor", "--recipe", str(recipe), "--user-decisions", str(template))
 
     assert resolved.returncode == 0
     assert "Status: PASS" in resolved.stdout
@@ -597,7 +569,7 @@ def test_doctor_writes_task_template_for_explicit_ask_user_sentinel(tmp_path: Pa
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "doctor"
 
-    result = _run("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
+    result = run_cli("doctor", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 2
     assert yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]["task"] == {
@@ -623,7 +595,7 @@ def test_task_template_preserves_user_decisions_not_evaluated_after_task_blocker
     )
     output_dir = tmp_path / "doctor"
 
-    result = _run(
+    result = run_cli(
         "doctor",
         "--recipe",
         str(recipe),
@@ -675,7 +647,7 @@ def test_layered_hparam_task_template_preserves_user_decisions(tmp_path: Path):
     )
     output_dir = tmp_path / "doctor"
 
-    result = _run(
+    result = run_cli(
         "doctor",
         "--recipe",
         str(recipe),

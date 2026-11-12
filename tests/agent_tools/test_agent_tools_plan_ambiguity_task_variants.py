@@ -5,19 +5,26 @@ from pathlib import Path
 from shlex import quote as shlex_quote
 import sys
 
-from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
+from agent_tool_test_helpers import (
+    plan_first_run,
+    run_cli,
+    write_finetune_recipe,
+    write_preset_recipe,
+    write_variant_hparam_recipe,
+    write_yaml,
+)
 import pytest
-from test_agent_plan_blocks_on_ambiguity import _first_run, _hparam_recipe, _write_preset_recipe
-from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
 import yaml
 
 from agent_tools import configs, plan_context, plans
 from agent_tools.adapters.preset_prepare import PRESET_PREPARE_ADAPTER
 from agent_tools.models import REPO_ROOT
 
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
+
 
 def test_unlock_final_test_required_for_final_external_script(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     blocked_output = tmp_path / "blocked"
     unlocked_output = tmp_path / "unlocked"
 
@@ -34,7 +41,7 @@ def test_unlock_final_test_required_for_final_external_script(tmp_path: Path):
 def test_unlock_final_test_with_explicit_ckpt_generates_final_script(tmp_path: Path, variant: str):
     ckpt = tmp_path / "best model.ckpt"
     ckpt.write_text("checkpoint")
-    recipe = _hparam_recipe(tmp_path, variant=variant, ckpt_path=ckpt)
+    recipe = write_variant_hparam_recipe(tmp_path, variant=variant, ckpt_path=ckpt)
     output_dir = tmp_path / "unlocked"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
@@ -45,7 +52,7 @@ def test_unlock_final_test_with_explicit_ckpt_generates_final_script(tmp_path: P
     assert shlex_quote(str(ckpt)) in script
     assert "This script evaluates the configured final test split." in script
     assert "Run commands do not evaluate the external test split." not in script
-    trial_script = Path(_first_run(output_dir)["script"]).read_text()
+    trial_script = Path(plan_first_run(output_dir)["script"]).read_text()
     assert f"python -m {variant}.finetune" in trial_script
     assert "--no-test-after-fit" in trial_script
     assert "--test-after-fit" not in trial_script
@@ -54,7 +61,7 @@ def test_unlock_final_test_with_explicit_ckpt_generates_final_script(tmp_path: P
 def test_unlock_final_test_uses_hparam_user_decision_checkpoint(tmp_path: Path):
     ckpt = tmp_path / "selected model.ckpt"
     ckpt.write_text("checkpoint")
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
         {"decisions": {"ckpt_path": {"value": str(ckpt), "source": "explicit_user"}}},
@@ -289,13 +296,13 @@ def test_path_based_variant_guess_does_not_override_recipe_routing(tmp_path: Pat
 
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_model_variant_controls_generated_hparam_module(tmp_path: Path, variant: str):
-    recipe = _hparam_recipe(tmp_path, variant=variant)
+    recipe = write_variant_hparam_recipe(tmp_path, variant=variant)
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    script = Path(_first_run(output_dir)["script"]).read_text()
+    script = Path(plan_first_run(output_dir)["script"]).read_text()
     assert f"cd {shlex_quote(str(REPO_ROOT))}" in script
     assert f"export PYTHONPATH={shlex_quote(str(REPO_ROOT))}" in script
     assert f"python -m {variant}.finetune" in script
@@ -307,7 +314,7 @@ def test_model_variant_controls_generated_hparam_module(tmp_path: Path, variant:
 
 @pytest.mark.parametrize("test_after_fit", [False, True])
 def test_hparam_plan_preflight_uses_resolved_test_after_fit(tmp_path: Path, monkeypatch, test_after_fit: bool):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"]["test_after_fit"] = test_after_fit
     payload["decisions"]["test_after_fit"] = {"value": test_after_fit, "source": "explicit_recipe"}
@@ -335,7 +342,7 @@ def test_hparam_plan_preflight_uses_resolved_test_after_fit(tmp_path: Path, monk
 
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_hparam_plan_materializes_test_after_fit_policy_default(tmp_path: Path, variant: str):
-    recipe = _hparam_recipe(tmp_path, variant=variant)
+    recipe = write_variant_hparam_recipe(tmp_path, variant=variant)
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"]["external_test_locked"] = False
     payload["evaluation_policy"].pop("test_after_fit")
@@ -365,7 +372,7 @@ def test_hparam_plan_materializes_test_after_fit_policy_default(tmp_path: Path, 
 
 
 def test_hparam_scalar_user_test_after_fit_false_overrides_policy_default(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"].pop("test_after_fit")
     write_yaml(recipe, payload)
@@ -391,7 +398,7 @@ def test_hparam_scalar_user_test_after_fit_false_overrides_policy_default(tmp_pa
 
 
 def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    recipe = write_variant_hparam_recipe(tmp_path, variant="sleep2vec2")
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"].update(
         {
@@ -433,7 +440,7 @@ def test_hparam_plan_guards_stale_final_script_when_unlocked_without_ckpt(tmp_pa
 
 
 def test_hparam_plan_skips_final_script_when_unlocked_without_ckpt(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    recipe = write_variant_hparam_recipe(tmp_path, variant="sleep2vec2")
     payload = yaml.safe_load(recipe.read_text())
     payload["evaluation_policy"].update(
         {
@@ -458,7 +465,7 @@ def test_hparam_plan_skips_final_script_when_unlocked_without_ckpt(tmp_path: Pat
     assert result.returncode == 0
     assert not (output_dir / "final_external_test.sh").exists()
     assert not (output_dir / "config.final_eval.yaml").exists()
-    trial_script = Path(_first_run(output_dir)["script"]).read_text()
+    trial_script = Path(plan_first_run(output_dir)["script"]).read_text()
     assert "--no-test-after-fit" in trial_script
     assert "--test-after-fit" not in trial_script
     plan = (output_dir / "plan.md").read_text()
@@ -467,7 +474,7 @@ def test_hparam_plan_skips_final_script_when_unlocked_without_ckpt(tmp_path: Pat
 
 
 def test_hparam_plan_blocks_user_test_after_fit_when_lock_stays_resolved(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    recipe = write_variant_hparam_recipe(tmp_path, variant="sleep2vec2")
     decisions = write_yaml(
         tmp_path / "decisions.yaml",
         {"decisions": {"test_after_fit": {"value": True, "source": "explicit_user"}}},
@@ -530,7 +537,7 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     index.write_text("path,split,duration,ppg_mask,ah_event_mask\nx.npz,train,60,1,1\n")
     output_template = tmp_path / "{dataset}_{split}_{tokens}.pkl"
     manifest_output = tmp_path / "manifest.json"
-    recipe = _write_preset_recipe(
+    recipe = write_preset_recipe(
         tmp_path,
         config=config,
         index=index,
@@ -560,7 +567,7 @@ def test_preset_plan_includes_explicit_preset_args(tmp_path: Path):
     wrapper = (output_dir / "run.sh").read_text()
     assert f'preset-launch --plan-dir {shlex_quote(str(output_dir))} "$@"' in wrapper
     assert "--execute" not in wrapper
-    script = Path(_first_run(output_dir)["script"]).read_text()
+    script = Path(plan_first_run(output_dir)["script"]).read_text()
     assert "--stride-tokens 64" in script
     assert "--channels ppg ahi" in script
     assert "--meta-data-names age" in script
@@ -583,7 +590,7 @@ def test_preset_plan_rejects_existing_preset_outputs(tmp_path: Path, existing: s
     config = yaml.safe_load(base.read_text())["inputs"]["config"]
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
-    recipe = _write_preset_recipe(tmp_path, config=config, index=index)
+    recipe = write_preset_recipe(tmp_path, config=config, index=index)
     preset_path = tmp_path / "presets" / "unit_train_128.pickle"
     target = preset_path if existing == "pickle" else preset_path.with_name(f"{preset_path.name}.manifest.json")
     target.parent.mkdir()
@@ -643,7 +650,7 @@ def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
     write_yaml(Path(config), config_payload)
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask,ah_event_mask,stage_mask\nx.npz,train,60,1,1,1\n")
-    recipe = _write_preset_recipe(
+    recipe = write_preset_recipe(
         tmp_path,
         config=config,
         index=index,
@@ -671,7 +678,7 @@ def test_preset_plan_materializes_rendered_recipe_decisions(tmp_path: Path):
     wrapper = (output_dir / "run.sh").read_text()
     assert f'preset-launch --plan-dir {shlex_quote(str(output_dir))} "$@"' in wrapper
     assert "--execute" not in wrapper
-    script = Path(_first_run(output_dir)["script"]).read_text()
+    script = Path(plan_first_run(output_dir)["script"]).read_text()
     assert "--channels ppg ahi" in script
     assert "--channels stage5" not in script
     assert "--min-channels 2" in script
@@ -693,7 +700,7 @@ def test_preset_plan_routes_to_variant_local_script(tmp_path: Path, variant: str
     config_bytes = Path(config).read_bytes()
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
-    recipe = _write_preset_recipe(
+    recipe = write_preset_recipe(
         tmp_path,
         config=config,
         index=index,
@@ -708,7 +715,7 @@ def test_preset_plan_routes_to_variant_local_script(tmp_path: Path, variant: str
     wrapper = (output_dir / "run.sh").read_text()
     assert f'preset-launch --plan-dir {shlex_quote(str(output_dir))} "$@"' in wrapper
     assert "--execute" not in wrapper
-    script = Path(_first_run(output_dir)["script"]).read_text()
+    script = Path(plan_first_run(output_dir)["script"]).read_text()
     assert expected_script in script
     assert "--channels" not in script
     assert "--min-channels" not in script
@@ -721,7 +728,7 @@ def test_preset_plan_routes_to_variant_local_script(tmp_path: Path, variant: str
     }
     assert resolved["decisions"]["min_channels"] == {"value": 3, "source": "explicit_config"}
     assert Path(config).read_bytes() == config_bytes
-    assert Path(_first_run(output_dir)["config"]).read_bytes() == config_bytes
+    assert Path(plan_first_run(output_dir)["config"]).read_bytes() == config_bytes
 
 
 @pytest.mark.parametrize(
@@ -742,7 +749,7 @@ def test_preset_plan_accepts_config_owned_user_decision_for_ask_user(
     config_value = config_payload["preset_build"][field]
     index = source_dir / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
-    recipe = _write_preset_recipe(source_dir, config=config, index=index)
+    recipe = write_preset_recipe(source_dir, config=config, index=index)
     payload = yaml.safe_load(recipe.read_text())
     if ask_user_source == "preset":
         payload["preset"][preset_field] = "ASK_USER"
@@ -791,7 +798,7 @@ def test_preset_plan_rejects_config_owned_channel_conflict_before_workspace(
     config = yaml.safe_load(base.read_text())["inputs"]["config"]
     index = source_dir / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
-    recipe = _write_preset_recipe(source_dir, config=config, index=index)
+    recipe = write_preset_recipe(source_dir, config=config, index=index)
     payload = yaml.safe_load(recipe.read_text())
     payload["decisions"][field] = {"value": value, "source": "explicit_recipe"}
     write_yaml(recipe, payload)
@@ -822,7 +829,7 @@ def test_preset_plan_rejects_authored_recipe_conflict_when_decision_matches_conf
     config = yaml.safe_load(base.read_text())["inputs"]["config"]
     index = source_dir / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
-    recipe = _write_preset_recipe(source_dir, config=config, index=index)
+    recipe = write_preset_recipe(source_dir, config=config, index=index)
     payload = yaml.safe_load(recipe.read_text())
     payload["preset"][preset_field] = value
     write_yaml(recipe, payload)
@@ -850,7 +857,7 @@ def test_variant_preset_rejects_root_only_manifest_flags_before_writing(
     config = yaml.safe_load(base.read_text())["inputs"]["config"]
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,ppg_mask\nx.npz,train,60,1\n")
-    recipe = _write_preset_recipe(
+    recipe = write_preset_recipe(
         tmp_path,
         config=config,
         index=index,
@@ -868,17 +875,17 @@ def test_variant_preset_rejects_root_only_manifest_flags_before_writing(
 
 
 def test_hparam_runtime_parameter_reaches_run_script(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, parameters={"runtime.lr": [2e-6]})
+    recipe = write_variant_hparam_recipe(tmp_path, parameters={"runtime.lr": [2e-6]})
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    assert "--lr 2e-06" in Path(_first_run(output_dir)["script"]).read_text()
+    assert "--lr 2e-06" in Path(plan_first_run(output_dir)["script"]).read_text()
 
 
 def test_hparam_runtime_training_knobs_reach_run_script(tmp_path: Path):
-    recipe = _hparam_recipe(
+    recipe = write_variant_hparam_recipe(
         tmp_path,
         parameters={
             "runtime.gradient_clip_val": [0.5],
@@ -894,7 +901,7 @@ def test_hparam_runtime_training_knobs_reach_run_script(tmp_path: Path):
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    script = Path(_first_run(output_dir)["script"]).read_text()
+    script = Path(plan_first_run(output_dir)["script"]).read_text()
     assert "--gradient-clip-val 0.5" in script
     assert "--accumulate-grad-batches 2" in script
     assert "--warmup-steps 500" in script
@@ -904,7 +911,7 @@ def test_hparam_runtime_training_knobs_reach_run_script(tmp_path: Path):
 
 
 def test_hparam_run_includes_base_input_and_runtime_args(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
     base_payload = yaml.safe_load(base_recipe.read_text())
@@ -922,7 +929,7 @@ def test_hparam_run_includes_base_input_and_runtime_args(tmp_path: Path):
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
 
     assert result.returncode == 0
-    script = Path(_first_run(output_dir)["script"]).read_text()
+    script = Path(plan_first_run(output_dir)["script"]).read_text()
     assert f"--pretrained-backbone-path {shlex_quote(str(pretrained))}" in script
     assert "--warmup-steps 7" in script
     assert "--gradient-clip-val 0.75" in script
@@ -930,7 +937,7 @@ def test_hparam_run_includes_base_input_and_runtime_args(tmp_path: Path):
 
 
 def test_hparam_blocks_when_base_finetune_pretrained_decision_is_missing(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
     base_payload = yaml.safe_load(base_recipe.read_text())
@@ -946,7 +953,7 @@ def test_hparam_blocks_when_base_finetune_pretrained_decision_is_missing(tmp_pat
 
 
 def test_hparam_local_ask_user_overrides_base_test_after_fit_decision(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     base_recipe = Path(payload["base_recipe"])
     base_payload = yaml.safe_load(base_recipe.read_text())
@@ -986,7 +993,7 @@ def test_hparam_local_ask_user_overrides_base_test_after_fit_decision(tmp_path: 
 
 @pytest.mark.parametrize("variant", ["sleep2vec", "sleep2vec2", "sleep2expert"])
 def test_hparam_joint_schedulers_freeze_and_render_conditional_runtime(tmp_path: Path, variant: str):
-    recipe = _hparam_recipe(tmp_path, variant=variant)
+    recipe = write_variant_hparam_recipe(tmp_path, variant=variant)
     payload = yaml.safe_load(recipe.read_text())
     base_path = Path(payload["base_recipe"])
     base = yaml.safe_load(base_path.read_text())
@@ -1049,7 +1056,7 @@ def test_invalid_managed_scheduler_rejected_before_plan_publication(tmp_path: Pa
         payload = yaml.safe_load(recipe.read_text())
         payload["runtime"].update(runtime)
     else:
-        recipe = _hparam_recipe(tmp_path, variant=variant)
+        recipe = write_variant_hparam_recipe(tmp_path, variant=variant)
         payload = yaml.safe_load(recipe.read_text())
         valid_runtime = dict(runtime)
         valid_runtime["lr_scheduler"] = "plateau" if "lr_plateau_factor" in runtime else "decay"

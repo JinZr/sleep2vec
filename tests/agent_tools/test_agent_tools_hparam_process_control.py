@@ -10,18 +10,20 @@ import sys
 import threading
 from types import SimpleNamespace
 
-from agent_tool_test_helpers import FakeLauncher, call_while_run_lock_holder_commits, run_cli
-import pytest
-from test_agent_tools_hparam_runtime import (
-    _hparam_recipe,
-    _process_identity,
-    _read_table,
-    _write_proc_stat,
-    _write_process_identity,
-    _write_runtime_rows,
-    _write_slurm_plan,
+from agent_tool_test_helpers import (
+    FakeLauncher,
+    call_while_run_lock_holder_commits,
+    fake_process_identity,
+    read_table,
+    run_cli,
+    tree_files,
+    write_fake_process_identity,
+    write_local_hparam_recipe,
+    write_proc_stat,
+    write_runtime_rows,
+    write_slurm_plan,
 )
-from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
+import pytest
 import yaml
 
 from agent_tools import (
@@ -37,10 +39,12 @@ from agent_tools import (
 )
 from agent_tools.experiment_workspace import EXECUTION_IDENTITY_FIELDS, MONITOR_EXIT_CODE_PREFIX, merge_run_manifest
 
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
+
 
 @pytest.mark.parametrize(("status", "dry_run"), [("planned", False), ("pending", True)])
 def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Path, monkeypatch, status, dry_run):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
@@ -51,7 +55,7 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Pat
     merge_run_manifest(tmp_path, [{"step_id": run["step_id"], "run_id": run["run_id"], "status": status}])
     frozen_paths = [plan_dir / "plan.json", plan_dir / "recipe.resolved.yaml", Path(run["script"]), Path(run["config"])]
     frozen = {path: path.read_bytes() for path in frozen_paths}
-    before = _read_table(tmp_path / "run_manifest.tsv")[0]
+    before = read_table(tmp_path / "run_manifest.tsv")[0]
     now = "2026-08-30T04:05:06Z"
     reason = "Cancel before launch: superseded experiment"
     monkeypatch.setattr(hparam_runtime, "utc_now", lambda: now)
@@ -67,7 +71,7 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Pat
 
     assert hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason) == tmp_path / "run_manifest.tsv"
 
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == reason
     assert canonical["stopped_at"] == now
@@ -88,19 +92,19 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Pat
         reason,
     )
     assert not any(event["event_type"] == "run_stop_requested" for event in events)
-    before_repeat = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before_repeat = tree_files(tmp_path)
     with pytest.raises(ValueError, match="already terminal"):
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason)
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before_repeat
+    assert tree_files(tmp_path) == before_repeat
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "stopped"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "stopped"
     monkeypatch.setattr(hparam_runtime, "launch_hparam_runs", lambda *_a, **_k: pytest.fail("no queue launch"))
     assert [row["status"] for row in hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)] == ["stopped"]
     launcher.assert_not_started()
 
 
 def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["search"]["max_runs"] = 2
     payload["search"]["parameters"]["runtime.lr"] = [1e-6, 2e-6]
@@ -118,7 +122,7 @@ def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, mon
     hparam_runtime.stop_hparam_run(plan_dir, cancelled["run_id"], reason="cancel one candidate")
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
 
-    rows = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    rows = {row["run_id"]: row for row in read_table(tmp_path / "run_manifest.tsv")}
     assert rows[cancelled["run_id"]]["status"] == "stopped"
     assert rows[remaining["run_id"]]["status"] == "launched"
     assert len(launcher.starts) == 1
@@ -129,12 +133,12 @@ def test_hparam_unlaunched_stop_leaves_other_runs_launchable(tmp_path: Path, mon
 @pytest.mark.parametrize("backend", ["direct", "slurm"])
 def test_hparam_metadata_stop_event_failure_keeps_terminal_commit(tmp_path: Path, monkeypatch, backend):
     if backend == "slurm":
-        plan_dir, plan = _write_slurm_plan(tmp_path)
+        plan_dir, plan = write_slurm_plan(tmp_path)
         # A launchable Slurm row is looked up by job name first; no job means a metadata-only stop.
         monkeypatch.setattr(slurm, "user_jobs", lambda *_a, **_k: [])
         monkeypatch.setattr(slurm, "cancel", lambda *_a, **_k: pytest.fail("no scheduler cancel"))
     else:
-        recipe = _hparam_recipe(tmp_path)
+        recipe = write_local_hparam_recipe(tmp_path)
         plan_dir = tmp_path / "plan"
         result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
         assert result.returncode == 0, result.stderr
@@ -152,18 +156,18 @@ def test_hparam_metadata_stop_event_failure_keeps_terminal_commit(tmp_path: Path
     with pytest.raises(RuntimeError, match="append_event failed"):
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason)
 
-    canonical = next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    canonical = next(row for row in read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == reason
     assert canonical["stopped_at"] == stopped_at
-    before_retry = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before_retry = tree_files(tmp_path)
     for name in ("merge_run_manifest", "append_event"):
         monkeypatch.setattr(hparam_runtime, name, lambda *_a, **_k: pytest.fail("terminal retry must not write"))
 
     with pytest.raises(ValueError, match="already terminal"):
         hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason)
 
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before_retry
+    assert tree_files(tmp_path) == before_retry
     snapshot = experiments.experiment_status(tmp_path)
     assert next(row for row in snapshot["runs"] if row["run_id"] == run["run_id"])["status"] == "stopped"
     assert snapshot["summary"]["status_counts"] == (
@@ -187,26 +191,26 @@ def test_hparam_metadata_stop_event_failure_keeps_terminal_commit(tmp_path: Path
     ],
 )
 def test_hparam_stop_does_not_metadata_cancel_uncertain_launch(tmp_path: Path, monkeypatch, evidence):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
-    rows = _read_table(tmp_path / "run_manifest.tsv")
+    rows = read_table(tmp_path / "run_manifest.tsv")
     rows[0].update(evidence)
     manifests.write_rows(tmp_path / "run_manifest.tsv", rows)
-    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_a, **_k: pytest.fail("no identity read"))
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
 
     with pytest.raises(ValueError):
         hparam_runtime.stop_hparam_run(plan_dir, rows[0]["run_id"], reason="unconfirmed launch")
 
-    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 @pytest.mark.parametrize("first_operation", ["stop", "launch"])
 def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypatch, first_operation):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
@@ -237,8 +241,8 @@ def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypat
         return real_merge(root, rows, **kwargs)
 
     def start(_execution, _command):
-        canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-        _write_process_identity(canonical["pid_path"])
+        canonical = read_table(tmp_path / "run_manifest.tsv")[0]
+        write_fake_process_identity(canonical["pid_path"])
         first_ready.set()
         assert release_first.wait(timeout=5)
         return "launched"
@@ -277,14 +281,14 @@ def test_hparam_unlaunched_stop_serializes_with_launch(tmp_path: Path, monkeypat
     assert not first.is_alive() and not second.is_alive()
     assert failures == []
     assert len(launcher.starts) == (first_operation == "launch")
-    assert stopped == ([_process_identity()] if first_operation == "launch" else [])
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    assert stopped == ([fake_process_identity()] if first_operation == "launch" else [])
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "cancel race"
 
 
 def test_hparam_unlaunched_stop_survives_stale_monitor_commit(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
@@ -306,7 +310,7 @@ def test_hparam_unlaunched_stop_survives_stale_monitor_commit(tmp_path: Path, mo
 
     experiments.monitor_experiment(tmp_path)
 
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "cancel before launch"
     assert canonical["stopped_at"] == "2026-08-30T04:05:06Z"
@@ -315,7 +319,7 @@ def test_hparam_unlaunched_stop_survives_stale_monitor_commit(tmp_path: Path, mo
 
 
 def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
@@ -327,14 +331,14 @@ def test_hparam_stop_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
         lambda: hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason="cancel during monitor commit"),
     )
 
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     assert manifest_path == tmp_path / "run_manifest.tsv"
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "cancel during monitor commit"
 
 
 def test_hparam_queue_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
@@ -346,11 +350,11 @@ def test_hparam_queue_reads_workspace_state_only_under_run_lock(tmp_path: Path, 
         monkeypatch, tmp_path, lambda: hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
     )
 
-    assert rows == _read_table(tmp_path / "run_manifest.tsv")
+    assert rows == read_table(tmp_path / "run_manifest.tsv")
 
 
 def test_hparam_plan_reads_workspace_state_only_under_run_lock(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr
@@ -363,9 +367,9 @@ def test_hparam_plan_reads_workspace_state_only_under_run_lock(tmp_path: Path, m
 
 
 def test_stop_signal_failure_does_not_commit_stopped_state(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running", **_process_identity()}])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running", **fake_process_identity()}])
     before_manifest = (tmp_path / "run_manifest.tsv").read_bytes()
-    monkeypatch.setattr(run_evidence, "read_process_identity", lambda _path, _row: _process_identity())
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda _path, _row: fake_process_identity())
     monkeypatch.setattr(
         run_evidence,
         "stop_process_group",
@@ -381,9 +385,9 @@ def test_stop_signal_failure_does_not_commit_stopped_state(tmp_path: Path, monke
 
 @pytest.mark.parametrize("pid_text", ["0", "-1"])
 def test_hparam_stop_rejects_nonpositive_pid_before_kill(tmp_path: Path, monkeypatch, pid_text: str):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     Path(rows[0]["pid_path"]).write_text(pid_text)
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
     killed = []
     monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
@@ -391,12 +395,12 @@ def test_hparam_stop_rejects_nonpositive_pid_before_kill(tmp_path: Path, monkeyp
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="invalid PID evidence")
 
     assert killed == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 @pytest.mark.parametrize("failure", ["invalid_utf8", "os_error"])
 def test_hparam_stop_rejects_unreadable_local_pid_before_kill(tmp_path: Path, monkeypatch, failure: str):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     pid_path = Path(rows[0]["pid_path"])
     if failure == "invalid_utf8":
         pid_path.write_bytes(b"\xff")
@@ -410,7 +414,7 @@ def test_hparam_stop_rejects_unreadable_local_pid_before_kill(tmp_path: Path, mo
             return original_read_text(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "read_text", fail_pid_read)
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
     killed = []
     monkeypatch.setattr(run_evidence.os, "kill", lambda pid, sig: killed.append((pid, sig)))
 
@@ -418,11 +422,11 @@ def test_hparam_stop_rejects_unreadable_local_pid_before_kill(tmp_path: Path, mo
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unreadable PID evidence")
 
     assert killed == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 def test_hparam_stop_rejects_a_directory_pid_path_before_read_or_kill(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     Path(rows[0]["pid_path"]).mkdir()
     calls = []
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: calls.append("read"))
@@ -440,14 +444,14 @@ def test_hparam_stop_rejects_partial_canonical_process_identity_before_pid_read_
     monkeypatch,
     missing_field: str,
 ):
-    identity = _process_identity()
+    identity = fake_process_identity()
     identity[missing_field] = ""
-    rows = _write_runtime_rows(
+    rows = write_runtime_rows(
         tmp_path,
         [{"run_id": "run-000", "status": "running", **identity}],
     )
-    _write_process_identity(rows[0]["pid_path"])
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    write_fake_process_identity(rows[0]["pid_path"])
+    before = tree_files(tmp_path)
     calls = []
     monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args, **_kwargs: calls.append("read"))
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_args, **_kwargs: calls.append("signal"))
@@ -456,7 +460,7 @@ def test_hparam_stop_rejects_partial_canonical_process_identity_before_pid_read_
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="partial identity")
 
     assert calls == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 @pytest.mark.parametrize(
@@ -473,8 +477,8 @@ def test_hparam_stop_binds_first_process_identity_to_the_frozen_script(
 ):
     root = tmp_path / "experiment with spaces"
     root.mkdir()
-    rows = _write_runtime_rows(root, [{"run_id": "run-000", "status": "running"}])
-    identity = _write_process_identity(rows[0]["pid_path"])
+    rows = write_runtime_rows(root, [{"run_id": "run-000", "status": "running"}])
+    identity = write_fake_process_identity(rows[0]["pid_path"])
     commands = []
 
     def matched_script(command):
@@ -489,7 +493,7 @@ def test_hparam_stop_binds_first_process_identity_to_the_frozen_script(
 
     assert commands == ["ps -ww -p 123 -o args="]
     assert stopped == [identity]
-    canonical = _read_table(root / "run_manifest.tsv")[0]
+    canonical = read_table(root / "run_manifest.tsv")[0]
     assert canonical["pid"] == "123"
     assert canonical["process_group_id"] == "123"
     assert canonical["process_start_token"] == "proc:unit-start"
@@ -510,9 +514,9 @@ def test_hparam_stop_rejects_unbound_first_process_identity_before_signal_or_com
     monkeypatch,
     process_args: str,
 ):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
-    _write_process_identity(rows[0]["pid_path"])
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    write_fake_process_identity(rows[0]["pid_path"])
+    before = tree_files(tmp_path)
     monkeypatch.setattr(
         run_evidence,
         "run_row_command",
@@ -531,15 +535,15 @@ def test_hparam_stop_rejects_unbound_first_process_identity_before_signal_or_com
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="unbound identity")
 
     assert calls == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 def test_hparam_stop_uses_the_recorded_process_group_identity(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(
+    rows = write_runtime_rows(
         tmp_path,
-        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+        [{"run_id": "run-000", "status": "running", **fake_process_identity()}],
     )
-    identity = _write_process_identity(rows[0]["pid_path"])
+    identity = write_fake_process_identity(rows[0]["pid_path"])
     calls = []
     monkeypatch.setattr(
         run_evidence,
@@ -550,7 +554,7 @@ def test_hparam_stop_uses_the_recorded_process_group_identity(tmp_path: Path, mo
     hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
 
     assert calls == [("run-000", identity)]
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["pid"] == "123"
     assert canonical["process_group_id"] == "123"
@@ -558,11 +562,11 @@ def test_hparam_stop_uses_the_recorded_process_group_identity(tmp_path: Path, mo
 
 
 def test_hparam_stop_rejects_a_reused_process_before_canonical_commit(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(
+    rows = write_runtime_rows(
         tmp_path,
-        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+        [{"run_id": "run-000", "status": "running", **fake_process_identity()}],
     )
-    _write_process_identity(rows[0]["pid_path"])
+    write_fake_process_identity(rows[0]["pid_path"])
     before = (tmp_path / "run_manifest.tsv").read_bytes()
     monkeypatch.setattr(
         run_evidence,
@@ -596,10 +600,10 @@ def test_process_group_probe_requires_a_non_zombie_member(
 ):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
-    _write_proc_stat(proc_root, 123, 123, leader_state)
+    write_proc_stat(proc_root, 123, 123, leader_state)
     if live_child:
-        _write_proc_stat(proc_root, 124, 123, "S")
-    _write_proc_stat(proc_root, 200, 200, "S")
+        write_proc_stat(proc_root, 124, 123, "S")
+    write_proc_stat(proc_root, 200, 200, "S")
 
     assert process_identity.process_group_running(123, str(proc_root)) is expected
 
@@ -607,7 +611,7 @@ def test_process_group_probe_requires_a_non_zombie_member(
 def test_process_group_probe_uses_the_live_leader_fast_path(tmp_path: Path, monkeypatch):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
-    _write_proc_stat(proc_root, 123, 123, "S")
+    write_proc_stat(proc_root, 123, 123, "S")
     monkeypatch.setattr(
         process_identity.os,
         "listdir",
@@ -620,7 +624,7 @@ def test_process_group_probe_uses_the_live_leader_fast_path(tmp_path: Path, monk
 def test_process_group_probe_preserves_uncertainty_from_unreadable_proc_entries(tmp_path: Path):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
-    _write_proc_stat(proc_root, 123, 123, "Z")
+    write_proc_stat(proc_root, 123, 123, "Z")
     (proc_root / "124" / "stat").mkdir(parents=True)
 
     assert process_identity.process_group_running(123, str(proc_root)) is None
@@ -628,14 +632,14 @@ def test_process_group_probe_preserves_uncertainty_from_unreadable_proc_entries(
 
 @pytest.mark.parametrize("group_running", [False, True], ids=["zombie-only", "live-child"])
 def test_process_monitor_uses_group_liveness_for_a_matching_leader(monkeypatch, group_running: bool):
-    identity = _process_identity()
+    identity = fake_process_identity()
     _fake_process_probe(monkeypatch, identity, group_running)
 
     assert run_evidence.process_identity_running({}, identity) is group_running
 
 
 def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
-    identity = _process_identity()
+    identity = fake_process_identity()
     reused = {**identity, "process_start_token": "proc:other-start"}
     _fake_process_probe(monkeypatch, reused, True)
 
@@ -657,7 +661,7 @@ def test_process_monitor_rejects_a_reused_pid_start_token(monkeypatch):
 def test_process_monitor_reports_an_uncertain_probe_as_unknown(
     monkeypatch, leader_error: OSError | None, token: str | None, group_running: bool | None, expected: bool | None
 ):
-    identity = _process_identity()
+    identity = fake_process_identity()
     monkeypatch.setattr(
         run_evidence.os,
         "getpgid",
@@ -672,7 +676,7 @@ def test_process_monitor_reports_an_uncertain_probe_as_unknown(
 @pytest.mark.parametrize("group_running", [False, True])
 def test_process_monitor_treats_a_leader_that_exits_mid_probe_as_gone(monkeypatch, group_running: bool):
     # getpgid sees the leader, then its stat vanishes before the start token is read (a zombie being reaped).
-    identity = _process_identity()
+    identity = fake_process_identity()
     calls = []
 
     def getpgid(_pid):
@@ -691,7 +695,7 @@ def test_process_monitor_treats_a_leader_that_exits_mid_probe_as_gone(monkeypatc
 def test_process_group_probe_reads_members_with_undecodable_names(tmp_path: Path):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
-    _write_proc_stat(proc_root, 123, 123, "Z")
+    write_proc_stat(proc_root, 123, 123, "Z")
     member = proc_root / "124"
     member.mkdir()
     (member / "stat").write_bytes(b"124 (bad\xffname) S 1 123\n")
@@ -702,8 +706,8 @@ def test_process_group_probe_reads_members_with_undecodable_names(tmp_path: Path
 def test_process_group_probe_skips_members_that_exit_mid_scan(tmp_path: Path, monkeypatch):
     proc_root = tmp_path / "proc"
     proc_root.mkdir()
-    _write_proc_stat(proc_root, 123, 123, "Z")
-    _write_proc_stat(proc_root, 124, 123, "S")
+    write_proc_stat(proc_root, 123, 123, "Z")
+    write_proc_stat(proc_root, 124, 123, "S")
     real_open = open
 
     def open_exiting_member(path, *args, **kwargs):
@@ -731,7 +735,7 @@ def test_status_binds_first_process_identity_only_to_the_frozen_script(
     expected_pid: int | str,
 ):
     pid_path = tmp_path / "managed.pid"
-    _write_process_identity(pid_path)
+    write_fake_process_identity(pid_path)
     script = tmp_path / "launch.sh"
     script.write_text("#!/usr/bin/env bash\ntrue\n")
     row = {
@@ -772,7 +776,7 @@ def test_status_keeps_dead_unfrozen_process_identity_unbound(tmp_path: Path, mon
         "pid_path": str(tmp_path / "managed.pid"),
         "status": "launched",
     }
-    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args: _process_identity())
+    monkeypatch.setattr(run_evidence, "read_process_identity", lambda *_args: fake_process_identity())
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
     monkeypatch.setattr(
         run_evidence,
@@ -791,8 +795,8 @@ def test_status_keeps_dead_unfrozen_process_identity_unbound(tmp_path: Path, mon
 
 
 def test_hparam_run_queue_fails_after_dead_unfrozen_process_identity(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "launched"}])
-    _write_process_identity(rows[0]["pid_path"])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "launched"}])
+    write_fake_process_identity(rows[0]["pid_path"])
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
     monkeypatch.setattr(
         run_evidence,
@@ -805,12 +809,12 @@ def test_hparam_run_queue_fails_after_dead_unfrozen_process_identity(tmp_path: P
     with pytest.raises(managed_scheduler.MissingPidCapacityError, match="run-000 has status missing_pid"):
         hparam_runtime.run_hparam_queue(tmp_path, dry_run=False)
 
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "missing_pid"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "missing_pid"
 
 
 def test_status_marks_a_zombie_only_managed_process_finished(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "managed.pid"
-    identity = _write_process_identity(pid_path)
+    identity = write_fake_process_identity(pid_path)
     row = {
         "script": str(tmp_path / "launch.sh"),
         "pid_path": str(pid_path),
@@ -825,7 +829,7 @@ def test_status_marks_a_zombie_only_managed_process_finished(tmp_path: Path, mon
 
 
 def test_local_stop_checks_once_more_at_the_deadline_for_a_zombie_only_group(monkeypatch):
-    identity = _process_identity()
+    identity = fake_process_identity()
     states = iter([True, False])
     clock = iter([0.0, 1.0])
     calls = []
@@ -852,7 +856,7 @@ def test_status_keeps_a_reused_managed_process_identity_capacity_blocking(
     tmp_path: Path, monkeypatch, script_commits_terminal_status: bool
 ):
     pid_path = tmp_path / "managed.pid"
-    identity = _write_process_identity(pid_path)
+    identity = write_fake_process_identity(pid_path)
     reused = {**identity, "process_start_token": "proc:other-start"}
     row = {
         "script": str(tmp_path / "launch.sh"),
@@ -899,7 +903,7 @@ def test_status_keeps_legacy_integer_only_managed_identity_capacity_blocking(
 
 def test_status_marks_lifecycle_owned_script_exit_without_terminal_commit_failed(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "managed.pid"
-    identity = _write_process_identity(pid_path)
+    identity = write_fake_process_identity(pid_path)
     log_path = tmp_path / "managed.log"
     log_path.write_text("training completed\n")
     row = {
@@ -918,7 +922,7 @@ def test_status_marks_lifecycle_owned_script_exit_without_terminal_commit_failed
 
 def test_status_fails_closed_without_monitor_owned_exit_code(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "managed.pid"
-    identity = _write_process_identity(pid_path)
+    identity = write_fake_process_identity(pid_path)
     log_path = tmp_path / "managed.log"
     log_path.write_text("training completed\n")
     row = {
@@ -965,7 +969,7 @@ def test_status_marks_lifecycle_owned_running_run_with_missing_pid_as_missing_pi
         "script": str(tmp_path / "launch.sh"),
         "pid_path": str(tmp_path / "missing.pid"),
         "status": "running",
-        **_process_identity(),
+        **fake_process_identity(),
     }
 
     observed = run_evidence.status_row(tmp_path, row, row, script_commits_terminal_status=True)
@@ -987,12 +991,12 @@ def test_status_marks_lifecycle_owned_script_without_process_identity_exit_faile
 
 @pytest.mark.parametrize("status", ["completed", "superseded"])
 def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Path, monkeypatch, status: str):
-    _write_runtime_rows(
+    write_runtime_rows(
         tmp_path,
         [{"run_id": "run-000", "status": "planned" if status == "superseded" else "running"}],
     )
     merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": status}])
-    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    before = tree_files(tmp_path)
     calls = []
     monkeypatch.setattr(run_evidence, "read_pid", lambda *_args: calls.append("read_pid") or 123)
     monkeypatch.setattr(run_evidence.os, "kill", lambda *_args: calls.append("kill"))
@@ -1003,41 +1007,41 @@ def test_hparam_stop_rejects_terminal_status_before_pid_or_mutation(tmp_path: Pa
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="terminal run")
 
     assert calls == []
-    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert tree_files(tmp_path) == before
 
 
 def test_hparam_stop_commits_one_final_canonical_row(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(
+    rows = write_runtime_rows(
         tmp_path,
-        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+        [{"run_id": "run-000", "status": "running", **fake_process_identity()}],
     )
-    _write_process_identity(rows[0]["pid_path"])
+    write_fake_process_identity(rows[0]["pid_path"])
     stopped = []
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda _row, identity: stopped.append(identity))
 
     hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="manual stop")
 
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "manual stop"
-    assert stopped == [_process_identity()]
+    assert stopped == [fake_process_identity()]
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stopped") == 1
 
     with pytest.raises(ValueError, match="already terminal"):
         hparam_runtime.stop_hparam_run(tmp_path, "run-000", reason="repeat stop")
 
-    assert stopped == [_process_identity()]
+    assert stopped == [fake_process_identity()]
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_stopped") == 1
 
 
 def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(
+    rows = write_runtime_rows(
         tmp_path,
-        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+        [{"run_id": "run-000", "status": "running", **fake_process_identity()}],
     )
-    identity = _write_process_identity(rows[0]["pid_path"])
+    identity = write_fake_process_identity(rows[0]["pid_path"])
     real_merge = merge_run_manifest
     monitor_observing = threading.Event()
     release_monitor_observation = threading.Event()
@@ -1104,7 +1108,7 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
     assert not monitor_thread.is_alive()
     assert monitor_failures == []
     assert stopped == [identity]
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
+    canonical = read_table(tmp_path / "run_manifest.tsv")[0]
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == "manual stop"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
@@ -1117,9 +1121,9 @@ def test_hparam_stop_serializes_process_exit_and_terminal_commit_against_monitor
 
 def _publish_queue_plan(tmp_path: Path, backend: str) -> Path:
     if backend == "slurm":
-        plan_dir, _plan = _write_slurm_plan(tmp_path)
+        plan_dir, _plan = write_slurm_plan(tmp_path)
         return plan_dir
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_local_hparam_recipe(tmp_path)
     plan_dir = tmp_path / "plan"
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
     assert result.returncode == 0, result.stderr

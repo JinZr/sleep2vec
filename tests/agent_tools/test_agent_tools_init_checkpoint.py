@@ -6,9 +6,15 @@ import shlex
 import subprocess
 import sys
 
-from agent_tool_test_helpers import FakeLauncher, prepare_hparam_plan_fixture, run_cli, write_yaml
+from agent_tool_test_helpers import (
+    FakeLauncher,
+    checkout_commit,
+    prepare_hparam_plan_fixture,
+    run_cli,
+    write_variant_hparam_recipe,
+    write_yaml,
+)
 import pytest
-from test_agent_plan_blocks_on_ambiguity import _RUNTIME_COMMIT, _hparam_recipe
 import yaml
 
 from agent_tools import hparam_runtime, hparam_selection, plan_contract, run_artifacts
@@ -23,12 +29,12 @@ def test_hparam_init_checkpoint_is_hashed_and_not_used_for_resume(tmp_path, sche
     checkpoint.write_bytes(b"selected full model")
     final_checkpoint = tmp_path / "final.ckpt"
     final_checkpoint.write_bytes(b"final evaluation checkpoint")
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2", ckpt_path=final_checkpoint)
+    recipe = write_variant_hparam_recipe(tmp_path, variant="sleep2vec2", ckpt_path=final_checkpoint)
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["init_checkpoint_path"] = str(checkpoint)
     payload["execution"] = {
         "python": sys.executable,
-        "runtime_commit": _RUNTIME_COMMIT,
+        "runtime_commit": checkout_commit(),
         "scheduler": {"type": scheduler_type},
     }
     if scheduler_type == "slurm":
@@ -83,10 +89,12 @@ def test_hparam_init_checkpoint_is_hashed_and_not_used_for_resume(tmp_path, sche
 def test_hparam_stop_and_select_work_after_the_init_checkpoint_moves(tmp_path):
     checkpoint = tmp_path / "selected full.ckpt"
     checkpoint.write_bytes(b"selected full model")
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2", parameters={"runtime.lr": [1e-6, 2e-6]}, max_runs=2)
+    recipe = write_variant_hparam_recipe(
+        tmp_path, variant="sleep2vec2", parameters={"runtime.lr": [1e-6, 2e-6]}, max_runs=2
+    )
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["init_checkpoint_path"] = str(checkpoint)
-    payload["execution"] = {"workdir": str(tmp_path), "python": sys.executable, "runtime_commit": _RUNTIME_COMMIT}
+    payload["execution"] = {"workdir": str(tmp_path), "python": sys.executable, "runtime_commit": checkout_commit()}
     write_yaml(recipe, payload)
     out = tmp_path / "plan"
     prepare_hparam_plan_fixture(recipe, out)
@@ -140,7 +148,7 @@ def test_full_init_rejects_direct_finetune_resume_but_allows_hparam_final_checkp
 
 
 def test_doctor_rejects_missing_init_file(tmp_path):
-    recipe = _hparam_recipe(tmp_path, variant="sleep2vec2")
+    recipe = write_variant_hparam_recipe(tmp_path, variant="sleep2vec2")
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["init_checkpoint_path"] = str(tmp_path / "missing.ckpt")
     write_yaml(recipe, payload)

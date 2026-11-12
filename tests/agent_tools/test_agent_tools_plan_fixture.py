@@ -6,9 +6,12 @@ from pathlib import Path
 import subprocess
 import sys
 
-from agent_tool_test_helpers import prepare_hparam_plan_fixture, run_execution_preflight_fixture
+from agent_tool_test_helpers import (
+    prepare_hparam_plan_fixture,
+    run_execution_preflight_fixture,
+    write_local_hparam_recipe,
+)
 import pytest
-from test_agent_tools_hparam_selection import _hparam_recipe
 import yaml
 
 from agent_tools import cli, execution_snapshot, experiment_io
@@ -16,11 +19,11 @@ from agent_tools.experiment_workspace import read_run_manifest
 
 
 def test_plan_fixture_restores_state_after_rejection_then_prepares_a_fresh_plan(tmp_path: Path, monkeypatch):
-    rejected_recipe = _hparam_recipe(tmp_path / "rejected")
+    rejected_recipe = write_local_hparam_recipe(tmp_path / "rejected")
     payload = yaml.safe_load(rejected_recipe.read_text())
     payload.pop("step")
     rejected_recipe.write_text(yaml.safe_dump(payload))
-    valid_recipe = _hparam_recipe(tmp_path / "valid")
+    valid_recipe = write_local_hparam_recipe(tmp_path / "valid")
     execution_command = execution_snapshot.run_execution_command
     output_validator = experiment_io.validate_managed_output_paths
     process_state = (Path.cwd(), dict(os.environ), list(sys.argv), list(sys.path), sys.stdout, sys.stderr)

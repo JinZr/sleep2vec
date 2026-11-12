@@ -4,13 +4,19 @@ import json
 from pathlib import Path
 import subprocess
 
-from agent_tool_test_helpers import FakeLauncher
+from agent_tool_test_helpers import (
+    FakeLauncher,
+    fake_process_identity,
+    read_table,
+    write_fake_process_identity,
+    write_runtime_rows,
+)
 import pytest
-from test_agent_tools_hparam_runtime import _process_identity, _read_table, _write_process_identity, _write_runtime_rows
-from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 
 from agent_tools import experiments, hparam_runtime, managed_scheduler, manifests, run_evidence
 from agent_tools.experiment_workspace import merge_run_manifest
+
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
 
 
 @pytest.mark.parametrize(
@@ -18,7 +24,7 @@ from agent_tools.experiment_workspace import merge_run_manifest
     ["runtime_dir_file", "symlink", "dangling_symlink", "directory", "bad_encoding", "bad_json", "non_object"],
 )
 def test_local_runtime_manifest_corruption_fails_closed(tmp_path: Path, monkeypatch, failure: str):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     runtime_dir = Path(rows[0]["runtime_dir"])
     if failure == "runtime_dir_file":
         runtime_dir.parent.mkdir(parents=True)
@@ -65,13 +71,13 @@ def test_find_run_manifest_distinguishes_missing_and_valid_regular_file(tmp_path
 
 def test_experiment_monitor_handles_running_missing_and_failed_hparam_rows(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
-    _write_process_identity(pid_path, 101)
+    write_fake_process_identity(pid_path, 101)
     missing_pid = tmp_path / "missing.pid"
     fail_pid = tmp_path / "fail.pid"
-    _write_process_identity(fail_pid, 102)
+    write_fake_process_identity(fail_pid, 102)
     fail_log = tmp_path / "fail.log"
     fail_log.write_text("Traceback\nRuntimeError: boom\n")
-    _write_runtime_rows(
+    write_runtime_rows(
         tmp_path,
         [
             {
@@ -79,7 +85,7 @@ def test_experiment_monitor_handles_running_missing_and_failed_hparam_rows(tmp_p
                 "version": "v1",
                 "pid_path": str(pid_path),
                 "status": "launched",
-                **_process_identity(101),
+                **fake_process_identity(101),
             },
             {"run_id": "missing", "version": "v2", "pid_path": str(missing_pid), "status": "launched"},
             {
@@ -88,7 +94,7 @@ def test_experiment_monitor_handles_running_missing_and_failed_hparam_rows(tmp_p
                 "pid_path": str(fail_pid),
                 "log_path": str(fail_log),
                 "status": "launched",
-                **_process_identity(102),
+                **fake_process_identity(102),
             },
         ],
     )
@@ -100,7 +106,7 @@ def test_experiment_monitor_handles_running_missing_and_failed_hparam_rows(tmp_p
 
     experiments.monitor_experiment(tmp_path)
 
-    status = {row["run_id"]: row["status"] for row in _read_table(tmp_path / "run_manifest.tsv")}
+    status = {row["run_id"]: row["status"] for row in read_table(tmp_path / "run_manifest.tsv")}
     assert status["running"] == "running"
     assert status["missing"] == "missing_pid"
     assert status["failed"] == "failed"
@@ -112,7 +118,7 @@ def test_experiment_monitor_handles_running_missing_and_failed_hparam_rows(tmp_p
 
 
 def test_experiment_monitor_reports_the_status_committed_by_the_canonical_owner(tmp_path: Path, monkeypatch):
-    _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": "running"}])
     real_merge = merge_run_manifest
 
@@ -132,7 +138,7 @@ def test_experiment_monitor_reports_the_status_committed_by_the_canonical_owner(
 
     result = experiments.monitor_experiment(tmp_path)
 
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
     assert result["runs"][0]["status"] == "failed"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     status_event = next(event for event in events if event["event_type"] == "run_status_changed")
@@ -141,30 +147,30 @@ def test_experiment_monitor_reports_the_status_committed_by_the_canonical_owner(
 
 
 def test_experiment_monitor_marks_clean_hparam_exit_completed_once(tmp_path: Path, monkeypatch):
-    rows = _write_runtime_rows(
+    rows = write_runtime_rows(
         tmp_path,
-        [{"run_id": "run-000", "status": "running", **_process_identity()}],
+        [{"run_id": "run-000", "status": "running", **fake_process_identity()}],
     )
-    _write_process_identity(rows[0]["pid_path"])
+    write_fake_process_identity(rows[0]["pid_path"])
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
-    workspace_rows = _read_table(tmp_path / "run_manifest.tsv")
+    workspace_rows = read_table(tmp_path / "run_manifest.tsv")
     workspace_rows[0]["status"] = "running"
     manifests.write_rows(tmp_path / "run_manifest.tsv", workspace_rows)
 
     experiments.monitor_experiment(tmp_path)
     experiments.monitor_experiment(tmp_path)
 
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "completed"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "completed"
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [event["event_type"] for event in events].count("run_status_changed") == 1
 
 
 def test_experiment_monitor_keeps_failed_status_after_failure_evidence_disappears(tmp_path: Path, monkeypatch):
     dead_pid = tmp_path / "dead.pid"
-    _write_process_identity(dead_pid)
+    write_fake_process_identity(dead_pid)
     fail_log = tmp_path / "fail.log"
     fail_log.write_text("Traceback\nRuntimeError: boom\n")
-    _write_runtime_rows(
+    write_runtime_rows(
         tmp_path,
         [
             {
@@ -173,25 +179,25 @@ def test_experiment_monitor_keeps_failed_status_after_failure_evidence_disappear
                 "pid_path": str(dead_pid),
                 "log_path": str(fail_log),
                 "status": "launched",
-                **_process_identity(),
+                **fake_process_identity(),
             }
         ],
     )
     monkeypatch.setattr(run_evidence, "process_identity_running", lambda *_args: False)
 
     experiments.monitor_experiment(tmp_path)
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
     fail_log.write_text("")
 
     experiments.monitor_experiment(tmp_path)
 
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
 
 
 def test_experiment_monitor_never_launches_pending_hparam_runs(tmp_path: Path, monkeypatch):
     dead_pid = tmp_path / "dead.pid"
-    _write_process_identity(dead_pid)
-    _write_runtime_rows(
+    write_fake_process_identity(dead_pid)
+    write_runtime_rows(
         tmp_path,
         [
             {
@@ -200,7 +206,7 @@ def test_experiment_monitor_never_launches_pending_hparam_runs(tmp_path: Path, m
                 "pid_path": str(dead_pid),
                 "status": "launched",
                 "launched_at": "2026-01-01T00:00:00Z",
-                **_process_identity(),
+                **fake_process_identity(),
             },
             {"run_id": "run-001", "version": "v1", "status": "pending"},
         ],
@@ -218,7 +224,7 @@ def test_experiment_monitor_never_launches_pending_hparam_runs(tmp_path: Path, m
 
     experiments.monitor_experiment(tmp_path)
 
-    status = {row["run_id"]: row for row in _read_table(tmp_path / "run_manifest.tsv")}
+    status = {row["run_id"]: row for row in read_table(tmp_path / "run_manifest.tsv")}
     assert started == []
     assert status["run-000"]["status"] == "completed"
     assert status["run-001"]["status"] == "pending"
@@ -252,19 +258,19 @@ def test_hparam_status_does_not_infer_terminal_from_corrupt_local_pid(tmp_path: 
 
 @pytest.mark.parametrize("pid_text", ["", "not-a-pid", "0", "-1"])
 def test_hparam_launch_does_not_start_when_local_pid_is_corrupt(tmp_path: Path, pid_text: str):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "planned"}])
     Path(rows[0]["pid_path"]).write_text(pid_text)
     launcher = FakeLauncher(verify_target=False)
 
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "missing_pid"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "missing_pid"
 
 
 @pytest.mark.parametrize("status", ["planned", "pending"])
 def test_hparam_launch_recovers_after_transient_local_pid_read_error(tmp_path: Path, monkeypatch, status: str):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": status}])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": status}])
     merge_run_manifest(tmp_path, [{"step_id": "train-model", "run_id": "run-000", "status": status}])
     pid_path = Path(rows[0]["pid_path"])
     pid_path.write_text("123")
@@ -283,21 +289,21 @@ def test_hparam_launch_recovers_after_transient_local_pid_read_error(tmp_path: P
         hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     launcher.assert_not_started()
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == status
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == status
 
     read_fails["value"] = False
     pid_path.unlink()
     hparam_runtime.launch_hparam_runs(tmp_path, dry_run=False, hooks=launcher.hooks())
 
     assert len(launcher.starts) == 1
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "launched"
 
 
 @pytest.mark.parametrize("failure", ["directory", "invalid_utf8", "os_error", "dangling_symlink"])
 def test_experiment_monitor_preserves_nonterminal_status_for_unreadable_local_pid(
     tmp_path: Path, monkeypatch, failure: str
 ):
-    rows = _write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
+    rows = write_runtime_rows(tmp_path, [{"run_id": "run-000", "status": "running"}])
     pid_path = Path(rows[0]["pid_path"])
     if failure == "directory":
         pid_path.mkdir()
@@ -318,7 +324,7 @@ def test_experiment_monitor_preserves_nonterminal_status_for_unreadable_local_pi
 
     experiments.monitor_experiment(tmp_path)
 
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
 
 def test_gpu_summary_matches_managed_process_group_children(monkeypatch):
@@ -359,8 +365,8 @@ def test_gpu_summary_preserves_process_group_probe_uncertainty(monkeypatch):
 
 def test_experiment_monitor_health_classifies_compute_active(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
-    _write_process_identity(pid_path)
-    _write_runtime_rows(
+    write_fake_process_identity(pid_path)
+    write_runtime_rows(
         tmp_path,
         [
             {
@@ -368,7 +374,7 @@ def test_experiment_monitor_health_classifies_compute_active(tmp_path: Path, mon
                 "version": "v1",
                 "pid_path": str(pid_path),
                 "status": "launched",
-                **_process_identity(),
+                **fake_process_identity(),
             }
         ],
     )
@@ -385,8 +391,8 @@ def test_experiment_monitor_health_classifies_compute_active(tmp_path: Path, mon
 
 def test_experiment_monitor_health_classifies_data_loading_from_io_delta(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
-    _write_process_identity(pid_path)
-    rows = _write_runtime_rows(
+    write_fake_process_identity(pid_path)
+    rows = write_runtime_rows(
         tmp_path,
         [
             {
@@ -394,7 +400,7 @@ def test_experiment_monitor_health_classifies_data_loading_from_io_delta(tmp_pat
                 "version": "v1",
                 "pid_path": str(pid_path),
                 "status": "launched",
-                **_process_identity(),
+                **fake_process_identity(),
             }
         ],
     )
@@ -425,8 +431,8 @@ def test_experiment_monitor_health_classifies_data_loading_from_io_delta(tmp_pat
 
 def test_experiment_monitor_health_classifies_stalled(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
-    _write_process_identity(pid_path)
-    _write_runtime_rows(
+    write_fake_process_identity(pid_path)
+    write_runtime_rows(
         tmp_path,
         [
             {
@@ -434,7 +440,7 @@ def test_experiment_monitor_health_classifies_stalled(tmp_path: Path, monkeypatc
                 "version": "v1",
                 "pid_path": str(pid_path),
                 "status": "launched",
-                **_process_identity(),
+                **fake_process_identity(),
             },
         ],
     )
@@ -527,8 +533,8 @@ def test_process_identity_rejects_malformed_runtime_commit(tmp_path: Path, runti
 
 def test_experiment_monitor_health_requires_fresh_progress(tmp_path: Path, monkeypatch):
     pid_path = tmp_path / "running.pid"
-    _write_process_identity(pid_path)
-    rows = _write_runtime_rows(
+    write_fake_process_identity(pid_path)
+    rows = write_runtime_rows(
         tmp_path,
         [
             {
@@ -536,7 +542,7 @@ def test_experiment_monitor_health_requires_fresh_progress(tmp_path: Path, monke
                 "version": "v1",
                 "pid_path": str(pid_path),
                 "status": "launched",
-                **_process_identity(),
+                **fake_process_identity(),
             }
         ],
     )

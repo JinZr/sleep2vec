@@ -1,242 +1,17 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 
-from agent_tool_test_helpers import (
-    run_cli,
-    run_execution_preflight_fixture,
-    survival_config_payload,
-    write_finetune_recipe,
-    write_survival_sidecars,
-    write_yaml,
-)
+from agent_tool_test_helpers import run_cli, tree_files, write_finetune_recipe, write_variant_hparam_recipe, write_yaml
 import pytest
 import yaml
 
-from agent_tools import execution_snapshot, experiments, plans, run_artifacts
+from agent_tools import experiments, plans, run_artifacts
 from agent_tools.experiment_workspace import ensure_experiment_workspace, read_run_manifest
-from agent_tools.models import REPO_ROOT
 
-_RUNTIME_COMMIT = subprocess.run(
-    ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, check=True, text=True, capture_output=True
-).stdout.strip()
-
-
-@pytest.fixture(autouse=True)
-def _stub_execution_target(monkeypatch):
-    monkeypatch.setattr(execution_snapshot, "run_execution_command", run_execution_preflight_fixture)
-
-
-def _first_run(plan_dir: Path) -> dict:
-    return json.loads((plan_dir / "plan.json").read_text())["runs"][0]
-
-
-def _bound_config_summary(recipe: dict) -> dict:
-    config_bytes = Path(recipe["inputs"]["config"]).read_bytes()
-    return {
-        "_source_config_bytes": config_bytes,
-        "_source_config_sha256": hashlib.sha256(config_bytes).hexdigest(),
-    }
-
-
-def _valid_final_config_bytes(tmp_path: Path) -> bytes:
-    payload = yaml.safe_load((tmp_path / "config.yaml").read_text())
-    payload["model"]["head"].update(
-        {
-            "channel_agg": {"name": "mean"},
-            "temporal_agg": {"name": "mean"},
-        }
-    )
-    return yaml.safe_dump(payload, sort_keys=False).encode()
-
-
-def _hparam_recipe(
-    tmp_path: Path,
-    *,
-    variant: str = "sleep2vec",
-    parameters: dict | None = None,
-    max_runs: int | str = 1,
-    ckpt_path: Path | None = None,
-    final_config_path: Path | None = None,
-    selection_metric: str = "val_ahi_pearson",
-    selection_mode: str = "max",
-) -> Path:
-    base = write_finetune_recipe(tmp_path, variant=variant)
-    inputs = {"ckpt_path": str(ckpt_path)} if ckpt_path else {}
-    if final_config_path is not None:
-        inputs["final_eval_config_path"] = str(final_config_path)
-    return write_yaml(
-        tmp_path / f"tune_{variant}.yaml",
-        {
-            "name": f"unit_tune_{variant}",
-            "task": "hparam_tune",
-            "variant": variant,
-            "base_recipe": str(base),
-            "inputs": inputs,
-            "search": {"method": "grid", "max_runs": max_runs, "parameters": parameters or {"runtime.lr": [1e-6]}},
-            "evaluation_policy": {
-                "selection_metric": selection_metric,
-                "selection_mode": selection_mode,
-                "selection_split": "val",
-                "final_eval_split": "test",
-                "external_test_locked": True,
-                "test_after_fit": False,
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "label_name": {"value": "ahi", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
-    )
-
-
-def _local_runtime_execution(workdir: Path) -> dict:
-    return {"workdir": str(workdir), "python": sys.executable, "runtime_commit": _RUNTIME_COMMIT}
-
-
-def _survival_recipe_with_missing_sidecar_key(tmp_path: Path) -> tuple[Path, Path]:
-    index = tmp_path / "survival_index.csv"
-    index.write_text("path,split,duration,eid,ppg_mask\na.npz,train,60,001,1\nb.npz,val,60,003,1\n")
-    config = write_yaml(
-        tmp_path / "survival_config.yaml",
-        survival_config_payload(index, write_survival_sidecars(tmp_path)),
-    )
-    recipe = {
-        "name": "unit_survival_missing_sidecar_key",
-        "task": "finetune",
-        "variant": "sleep2vec",
-        "inputs": {"config": str(config), "label_name": "incident_cox", "pretrained_backbone_path": None},
-        "runtime": {"devices": [0]},
-        "artifacts": {"results_csv_path": str(tmp_path / "results.csv"), "version_name": "unit"},
-        "evaluation_policy": {
-            "selection_metric": "val_loss",
-            "selection_mode": "min",
-            "selection_split": "val",
-            "external_test_locked": True,
-            "test_after_fit": False,
-        },
-        "decisions": {
-            "task": {"value": "finetune", "source": "explicit_recipe"},
-            "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
-            "pretrained_backbone_path": {
-                "value": None,
-                "source": "explicit_recipe",
-                "meaning": "train from scratch",
-            },
-            "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-        },
-    }
-    return write_yaml(tmp_path / "survival_recipe.yaml", recipe), config
-
-
-def _bad_survival_sidecars() -> dict[str, str]:
-    return {
-        "disease_columns_index": "/path/to/disease_columns.txt",
-        "event_time_index": "/path/to/event_time.csv",
-        "is_event_index": "/path/to/is_event.csv",
-        "has_label_index": "/path/to/has_label.csv",
-    }
-
-
-def _write_survival_config_with_bad_sidecars(tmp_path: Path, *, preset_path: Path | None = None) -> Path:
-    index = tmp_path / "survival_runtime_index.csv"
-    index.write_text("path,split,duration,eid,ppg_mask\na.npz,test,60,001,1\n")
-    payload = survival_config_payload(index, _bad_survival_sidecars())
-    if preset_path is not None:
-        payload["data"]["finetune_preset_path"] = str(preset_path)
-    return write_yaml(tmp_path / "bad_survival_config.yaml", payload)
-
-
-def _write_infer_recipe(
-    tmp_path: Path,
-    config: Path,
-    *,
-    inference_preset_path: Path | None = None,
-    eval_split: str = "test",
-) -> Path:
-    ckpt = tmp_path / "model.ckpt"
-    ckpt.write_text("checkpoint")
-    inputs = {
-        "config": str(config),
-        "label_name": "incident_cox",
-        "ckpt_path": str(ckpt),
-        "eval_split": eval_split,
-    }
-    if inference_preset_path is not None:
-        inputs["inference_preset_path"] = str(inference_preset_path)
-    return write_yaml(
-        tmp_path / "infer_survival.yaml",
-        {
-            "name": "unit_infer_survival",
-            "task": "infer",
-            "variant": "sleep2vec",
-            "inputs": inputs,
-            "evaluation_policy": {"external_test_locked": False, "final_test_unlocked": True},
-            "decisions": {
-                "task": {"value": "infer", "source": "explicit_recipe"},
-                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
-                "ckpt_path": {"value": str(ckpt), "source": "explicit_recipe"},
-                "external_test_locked": {"value": False, "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": True, "source": "explicit_recipe"},
-            },
-        },
-    )
-
-
-def _write_preset_recipe(
-    tmp_path: Path,
-    *,
-    config: str | Path,
-    index: str | Path,
-    variant: str = "sleep2vec",
-    preset: dict | None = None,
-    execution: dict | None = None,
-    name: str = "unit_preset",
-) -> Path:
-    preset = {
-        "output_template": str(tmp_path / "presets" / "{dataset}_{split}_{tokens}{meta_suffix}.pickle"),
-        **(preset or {"n_tokens": 128, "split": ["train"], "allow_missing_channels": False}),
-    }
-    config_payload = yaml.safe_load(Path(config).read_text())
-    preset_build = config_payload.get("preset_build") or {}
-    required_channels = preset.get("channels")
-    required_channels_source = "explicit_recipe"
-    if required_channels is None and preset_build.get("required_channels") is not None:
-        required_channels = preset_build["required_channels"]
-        required_channels_source = "explicit_config"
-    min_channels = preset.get("min_channels")
-    min_channels_source = "explicit_recipe"
-    if min_channels is None and preset_build.get("min_channels") is not None:
-        min_channels = preset_build["min_channels"]
-        min_channels_source = "explicit_config"
-    payload = {
-        "name": name,
-        "task": "preset_prepare",
-        "variant": variant,
-        "inputs": {"config": str(config), "index": [str(index)], "dataset_name": "unit"},
-        "preset": preset,
-        "decisions": {
-            "task": {"value": "preset_prepare", "source": "explicit_recipe"},
-            "required_channels": {
-                "value": required_channels if required_channels is not None else ["ppg"],
-                "source": required_channels_source,
-            },
-            "min_channels": {"value": min_channels if min_channels is not None else 1, "source": min_channels_source},
-        },
-    }
-    if execution is not None:
-        payload["execution"] = execution
-    return write_yaml(tmp_path / f"{name}.yaml", payload)
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
 
 
 def test_plan_does_not_create_run_all_when_consultation_required(tmp_path: Path):
@@ -324,7 +99,7 @@ def test_blocked_plan_directory_may_equal_fresh_experiment_root(tmp_path: Path, 
     source = tmp_path / "source"
     workspace = tmp_path / "workspace"
     if task == "hparam_tune":
-        recipe = _hparam_recipe(source)
+        recipe = write_variant_hparam_recipe(source)
         payload = yaml.safe_load(recipe.read_text())
         payload["decisions"]["label_name"]["value"] = "ASK_USER"
     else:
@@ -448,13 +223,13 @@ def test_generic_blocked_plan_rejects_foreign_output_entry(tmp_path: Path):
     plan_dir.mkdir(parents=True)
     competitor = plan_dir / "run.sh"
     competitor.write_text("user competitor\n")
-    before = {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()}
+    before = tree_files(workspace)
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
 
     assert result.returncode == 1
     assert "unexpected entries" in result.stdout
-    assert {path.relative_to(workspace): path.read_bytes() for path in workspace.rglob("*") if path.is_file()} == before
+    assert tree_files(workspace) == before
     assert read_run_manifest(workspace) == []
 
 
@@ -502,7 +277,7 @@ def test_generic_pass_rolls_back_blocked_artifact_created_after_final_guard(
 
 
 def test_hparam_blocked_plan_writes_user_decision_template(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["decisions"]["label_name"]["value"] = "ASK_USER"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
@@ -578,7 +353,7 @@ def test_blocked_plan_registers_step_after_complete_bundle(tmp_path: Path, monke
 
 
 def test_hparam_blocked_plan_retry_rejects_same_output_dir(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
     payload["decisions"]["label_name"]["value"] = "ASK_USER"
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))

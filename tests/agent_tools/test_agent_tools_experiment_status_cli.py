@@ -4,9 +4,8 @@ import json
 import os
 from pathlib import Path
 
+from agent_tool_test_helpers import add_plan, init_status_workspace, read_manifest_rows, workspace_files
 import pytest
-from test_agent_tools_experiment_status import _add_plan, _init_workspace, _read_manifest_rows, _workspace_files
-from test_agent_tools_experiment_status import _stub_execution_target  # noqa: F401
 import yaml
 
 from agent_tools import (
@@ -24,17 +23,19 @@ from agent_tools import (
 from agent_tools.adapters.registry import all_adapters
 from agent_tools.manifests import write_rows
 
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
+
 
 def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monkeypatch):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(
+    init_status_workspace(root)
+    add_plan(
         root,
         step_id="tune",
         task="hparam_tune",
         status="lost",
     )
-    before = _workspace_files(root)
+    before = workspace_files(root)
 
     def unexpected(*_args, **_kwargs):
         raise AssertionError("experiment-status attempted a write or live observation")
@@ -59,7 +60,7 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
             monkeypatch.setattr(adapter_type, name, unexpected)
 
     baseline = experiments.experiment_status(root)
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
 
     (root / "experiment_manifest.tsv").write_text("not\ta\tvalid\tprojection\n")
     (root / "reports").mkdir()
@@ -73,13 +74,13 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
 
 def test_experiment_status_contract_error_is_zero_write(tmp_path, monkeypatch, capsys):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _row = _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    plan_dir, _row = add_plan(root, step_id="train")
     plan = json.loads((plan_dir / "plan.json").read_text())
     # plan.json alone drifts from recipe.resolved.yaml, which the registered-plan reader rejects.
     plan["recipe"]["unknown"] = True
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
-    before = _workspace_files(root)
+    before = workspace_files(root)
 
     def unexpected(*_args, **_kwargs):
         raise AssertionError("experiment-status attempted a write")
@@ -95,14 +96,14 @@ def test_experiment_status_contract_error_is_zero_write(tmp_path, monkeypatch, c
     monkeypatch.setattr(experiments, "merge_run_manifest", unexpected)
 
     assert cli.main(["experiment-status", "--run-dir", str(root), "--json"]) == 1
-    assert _workspace_files(root) == before
+    assert workspace_files(root) == before
     assert "Traceback" not in capsys.readouterr().err
 
 
 def test_experiment_status_does_not_use_following_read_for_experiment_manifest(tmp_path, monkeypatch):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    add_plan(root, step_id="train")
     manifest = root / "experiment.yaml"
     outside = tmp_path / "outside-experiment.yaml"
     outside.write_bytes(manifest.read_bytes())
@@ -127,8 +128,8 @@ def test_experiment_status_does_not_use_following_read_for_experiment_manifest(t
 
 def test_experiment_status_reports_facts_without_next_action_advice(tmp_path):
     root = tmp_path / "experiment with spaces"
-    _init_workspace(root)
-    _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    add_plan(root, step_id="train")
 
     snapshot = experiments.experiment_status(root)
     rendered = experiment_tracking.format_experiment_status(snapshot)
@@ -151,7 +152,7 @@ def test_experiment_status_reports_facts_without_next_action_advice(tmp_path):
 
 def test_experiment_status_human_output_scopes_same_code_blockers(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
+    init_status_workspace(root)
     for step_id in ("first", "second"):
         step_dir = root / "steps" / step_id
         step_dir.mkdir(parents=True)
@@ -256,8 +257,8 @@ def test_experiment_status_projects_recorded_scheduler_node():
 
 def test_experiment_status_defers_the_hparam_queue_to_an_active_runner(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _row = _add_plan(
+    init_status_workspace(root)
+    plan_dir, _row = add_plan(
         root,
         step_id="tune",
         task="hparam_tune",
@@ -284,8 +285,8 @@ def test_experiment_status_defers_the_hparam_queue_to_an_active_runner(tmp_path)
 
 def test_experiment_monitor_reports_queue_runner_liveness_without_starting_one(tmp_path, monkeypatch, capsys):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _row = _add_plan(
+    init_status_workspace(root)
+    plan_dir, _row = add_plan(
         root,
         step_id="tune",
         task="hparam_tune",
@@ -316,7 +317,7 @@ def test_experiment_monitor_reports_queue_runner_liveness_without_starting_one(t
     assert after["queue_runners"] == [
         {"plan_dir": str(plan_dir), "active": False, "pid": None, "log_path": str(log_path)}
     ]
-    assert _read_manifest_rows(root)[0]["status"] == "pending"
+    assert read_manifest_rows(root)[0]["status"] == "pending"
     assert not log_path.exists()
 
 
@@ -335,7 +336,7 @@ def test_experiment_status_cli_converts_malformed_yaml_to_exit_one(tmp_path, cap
 
 def test_experiment_status_rejects_unknown_experiment_envelope_field(tmp_path):
     root = tmp_path / "experiment"
-    _init_workspace(root)
+    init_status_workspace(root)
     manifest_path = root / "experiment.yaml"
     manifest = yaml.safe_load(manifest_path.read_text())
     manifest["duplicate_owner"] = {"status": "completed"}
@@ -347,9 +348,9 @@ def test_experiment_status_rejects_unknown_experiment_envelope_field(tmp_path):
 
 def test_experiment_status_cli_returns_one_for_contract_errors(tmp_path, capsys):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    _add_plan(root, step_id="train")
-    rows = _read_manifest_rows(root)
+    init_status_workspace(root)
+    add_plan(root, step_id="train")
+    rows = read_manifest_rows(root)
     rows[0]["status"] = "invented"
     write_rows(root / "run_manifest.tsv", rows)
 
@@ -361,8 +362,8 @@ def test_experiment_status_cli_returns_one_for_contract_errors(tmp_path, capsys)
 
 def test_experiment_status_cli_returns_one_for_non_mapping_plan_run(tmp_path, capsys):
     root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _canonical = _add_plan(root, step_id="train")
+    init_status_workspace(root)
+    plan_dir, _canonical = add_plan(root, step_id="train")
     plan = json.loads((plan_dir / "plan.json").read_text())
     plan["runs"] = [None]
     (plan_dir / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")

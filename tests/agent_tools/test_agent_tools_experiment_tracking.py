@@ -1,25 +1,13 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import csv
 import json
 from pathlib import Path
-import subprocess
-import sys
 
+from agent_tool_test_helpers import read_table, run_cli
 import pytest
 
 from agent_tools import experiment_io, experiment_tracking, experiment_workspace, experiments, run_evidence, slurm
-
-
-def _run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-m", "agent_tools", *args], text=True, capture_output=True)
-
-
-def _read_table(path: Path) -> list[dict[str, str]]:
-    delimiter = "\t" if path.suffix == ".tsv" else ","
-    with path.open(newline="") as file_obj:
-        return list(csv.DictReader(file_obj, delimiter=delimiter))
 
 
 def _initialize_workspace(root: Path, *, experiment_id: str = "unit") -> None:
@@ -50,11 +38,11 @@ def test_experiment_monitor_preserves_wandb_running_without_pid(tmp_path: Path):
 
     assert result["runs"][0]["status"] == "running"
     assert result["runs"][0]["health_status"] == "running"
-    rows = _read_table(tmp_path / "run_manifest.tsv")
+    rows = read_table(tmp_path / "run_manifest.tsv")
     assert rows[0]["status"] == "running"
     report = tmp_path / "running_final.md"
     report.write_text("# Final\n")
-    finalized = _run("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
+    finalized = run_cli("experiment-finalize", "--run-dir", str(tmp_path), "--report", str(report))
     assert finalized.returncode == 1
     assert "unresolved runs" in finalized.stderr
 
@@ -93,7 +81,7 @@ def test_experiment_monitor_preserves_script_owned_running_without_execution_evi
 
     assert result["runs"][0]["status"] == "running"
     assert result["runs"][0]["health_status"] == "running"
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "running"
 
 
 @pytest.mark.parametrize(
@@ -133,7 +121,7 @@ def test_experiment_monitor_respects_terminal_owner_for_dead_process(
     result = experiments.monitor_experiment(tmp_path)
 
     assert result["runs"][0]["status"] == expected_status
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == expected_status
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == expected_status
 
 
 @pytest.mark.parametrize(
@@ -193,7 +181,7 @@ def test_experiment_monitor_marks_lifecycle_script_exit_without_terminal_commit_
     result = experiments.monitor_experiment(tmp_path)
 
     assert result["runs"][0]["status"] == "failed"
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
 
 
 def test_experiment_monitor_resolves_mixed_canonical_statuses(tmp_path: Path):
@@ -286,7 +274,7 @@ def test_experiment_monitor_reads_one_validated_input_snapshot_then_fresh_commit
     assert len(snapshots) == 1
     assert snapshots[0][0] == snapshots[0][1]
     assert result["runs"][0]["status"] == "completed"
-    assert _read_table(manifest_path)[0]["status"] == "completed"
+    assert read_table(manifest_path)[0]["status"] == "completed"
     transitions = [
         (event["from"], event["to"])
         for event in experiment_workspace.read_experiment_events(tmp_path)
@@ -472,7 +460,7 @@ def test_experiment_monitor_does_not_advance_planned_run(tmp_path: Path):
     result = experiments.monitor_experiment(tmp_path)
 
     assert result["runs"][0]["status"] == "planned"
-    assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
+    assert read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "planned"
 
 
 def test_experiment_monitor_keeps_duplicate_versions_scoped_by_step_and_run(tmp_path: Path, monkeypatch):

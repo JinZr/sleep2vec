@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from agent_tool_test_helpers import read_table, write_slurm_plan
 import pytest
-from test_agent_tools_hparam_runtime import _read_table, _write_slurm_plan
-from test_agent_tools_hparam_runtime import _stub_execution_snapshot_preflight  # noqa: F401
 
 from agent_tools import cli, experiments, hparam_runtime, managed_scheduler, run_artifacts, run_evidence, slurm
 from agent_tools.experiment_workspace import EXECUTION_IDENTITY_FIELDS, SCHEDULER_PLAN_IDENTITY_FIELDS
+
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
 
 _STOP_AT = "2026-08-21T03:40:00Z"
 
@@ -160,11 +161,11 @@ def _fake_queue(monkeypatch, *, job_ids: list[str] | None = None) -> dict:
 
 
 def _canonical(tmp_path: Path, run: dict) -> dict[str, str]:
-    return next(row for row in _read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
+    return next(row for row in read_table(tmp_path / "run_manifest.tsv") if row["run_id"] == run["run_id"])
 
 
 def test_experiment_monitor_uses_one_squeue_query_per_round_and_records_runtime_drift(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
+    plan_dir, plan = write_slurm_plan(tmp_path, run_count=2)
     first, second = plan["runs"]
     queue = _fake_queue(monkeypatch)
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
@@ -205,7 +206,7 @@ def test_experiment_monitor_uses_one_squeue_query_per_round_and_records_runtime_
 
 
 def test_slurm_hparam_run_queue_execute_is_one_submit_pass(tmp_path: Path, monkeypatch, capsys):
-    plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
+    plan_dir, plan = write_slurm_plan(tmp_path, run_count=2)
     queue = _fake_queue(monkeypatch)
     monkeypatch.setattr(hparam_runtime.time, "sleep", lambda _seconds: pytest.fail("a Slurm queue never polls"))
     monkeypatch.setattr(hparam_runtime.subprocess, "Popen", lambda *_a, **_k: pytest.fail("no detached runner"))
@@ -225,7 +226,7 @@ def test_slurm_hparam_run_queue_execute_is_one_submit_pass(tmp_path: Path, monke
 
 
 def test_slurm_stop_of_unsubmitted_run_is_a_metadata_stop(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _write_slurm_plan(tmp_path, run_count=2)
+    plan_dir, plan = write_slurm_plan(tmp_path, run_count=2)
     cancelled_run, remaining = plan["runs"]
     queue = _fake_queue(monkeypatch)
     monkeypatch.setattr(run_evidence, "stop_process_group", lambda *_a, **_k: pytest.fail("no signal"))
@@ -258,7 +259,7 @@ def test_slurm_stop_of_unsubmitted_run_is_a_metadata_stop(tmp_path: Path, monkey
 
 
 def test_hparam_stop_records_intent_before_scancel_and_monitor_commits_stopped(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
+    plan_dir, plan = write_slurm_plan(tmp_path)
     run = plan["runs"][0]
     queue = _fake_queue(monkeypatch)
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
@@ -294,7 +295,7 @@ def test_hparam_stop_records_intent_before_scancel_and_monitor_commits_stopped(t
 
 
 def test_hparam_stop_resolves_lost_run_without_scancel(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
+    plan_dir, plan = write_slurm_plan(tmp_path)
     run = plan["runs"][0]
     queue = _fake_queue(monkeypatch)
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
@@ -315,7 +316,7 @@ def test_hparam_stop_resolves_lost_run_without_scancel(tmp_path: Path, monkeypat
 
 
 def test_slurm_stop_intent_merge_failure_prevents_scancel(tmp_path: Path, monkeypatch):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
+    plan_dir, plan = write_slurm_plan(tmp_path)
     run = plan["runs"][0]
     queue = _fake_queue(monkeypatch)
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)
@@ -335,7 +336,7 @@ def test_slurm_stop_intent_merge_failure_prevents_scancel(tmp_path: Path, monkey
 
 @pytest.mark.parametrize("stale_status", ["queued", "running", "lost"])
 def test_slurm_monitor_preserves_concurrent_stop_intent(tmp_path: Path, monkeypatch, stale_status: str):
-    plan_dir, plan = _write_slurm_plan(tmp_path)
+    plan_dir, plan = write_slurm_plan(tmp_path)
     run = plan["runs"][0]
     _fake_queue(monkeypatch)
     hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False)

@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 import sys
 
-from agent_tool_test_helpers import config_payload
+from agent_tool_test_helpers import (
+    config_payload,
+    fake_execution_snapshot,
+    workspace_files,
+    write_preflight_hparam_recipe,
+)
 import pytest
 import yaml
 
@@ -21,7 +26,6 @@ from agent_tools import (
     slurm,
 )
 from agent_tools.experiment_workspace import managed_run_key, merge_run_row
-from tests.agent_tools.test_agent_tools_hparam_preflight import _recipe, _snapshot, _workspace_files
 
 
 @pytest.mark.parametrize("search_kind", ["configurations", "parameters"])
@@ -29,7 +33,7 @@ from tests.agent_tools.test_agent_tools_hparam_preflight import _recipe, _snapsh
 def test_candidate_budget_validates_only_reachable_joint_configs(
     tmp_path: Path, monkeypatch, search_kind: str, include_invalid: bool
 ):
-    recipe_path, workspace = _recipe(tmp_path)
+    recipe_path, workspace = write_preflight_hparam_recipe(tmp_path)
     recipe = yaml.safe_load(recipe_path.read_text())
     if search_kind == "configurations":
         search = {
@@ -53,11 +57,11 @@ def test_candidate_budget_validates_only_reachable_joint_configs(
 
     def inspect(execution, runs, **_kwargs):
         target_calls.append(runs)
-        return _snapshot(execution, runs)
+        return fake_execution_snapshot(execution, runs)
 
     monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
     plan_dir = workspace / "plans" / "candidates"
-    workspace_before = _workspace_files(workspace)
+    workspace_before = workspace_files(workspace)
 
     report = plans.build_plan(recipe_path=recipe_path, output_dir=plan_dir)
 
@@ -67,7 +71,7 @@ def test_candidate_budget_validates_only_reachable_joint_configs(
         assert "model.cls.embedding_type must be set" in issue.message
         assert issue.evidence["preflight_before_workspace"] is True
         assert target_calls == []
-        assert _workspace_files(workspace) == workspace_before
+        assert workspace_files(workspace) == workspace_before
         assert not plan_dir.exists()
     else:
         assert report.exit_code == 0
@@ -224,17 +228,17 @@ def test_invalid_frozen_config_blocks_registration_before_target_or_workspace_wr
     monkeypatch.setattr(
         run_artifacts, "merge_run_manifest", lambda *_args: pytest.fail("Invalid config reached registration")
     )
-    before = _workspace_files(plan_dir.parent)
+    before = workspace_files(plan_dir.parent)
 
     with pytest.raises(ValueError, match="run-000.*model.cls.embedding_type must be set"):
         run_artifacts.preflight_hparam_plan(plan_dir, semantic_out=plan_dir)
 
-    assert _workspace_files(plan_dir.parent) == before
+    assert workspace_files(plan_dir.parent) == before
     assert not (plan_dir / "plan.md").exists()
 
 
 def test_registration_validates_same_frozen_bytes_as_card_without_commit_reload(tmp_path: Path, monkeypatch):
-    recipe_path, workspace = _recipe(tmp_path)
+    recipe_path, workspace = write_preflight_hparam_recipe(tmp_path)
     recipe = yaml.safe_load(recipe_path.read_text())
     recipe["search"] = {"parameters": {"runtime.lr": [1e-6, 2e-6]}, "max_runs": 2, "method": "grid"}
     recipe_path.write_text(yaml.safe_dump(recipe))
@@ -256,7 +260,7 @@ def test_registration_validates_same_frozen_bytes_as_card_without_commit_reload(
         assert len(runs) == 2
         assert len({run["command"] for run in runs}) == 2
         target_calls.append(runs)
-        return _snapshot(execution, runs)
+        return fake_execution_snapshot(execution, runs)
 
     monkeypatch.setattr(plan_hparam, "validate_hparam_run_configs", tracked_validate)
     monkeypatch.setattr(plan_hparam, "render_hparam_preflight_card", tracked_render)

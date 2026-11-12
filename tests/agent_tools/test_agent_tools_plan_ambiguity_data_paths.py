@@ -5,25 +5,25 @@ from shlex import quote as shlex_quote
 import sys
 
 from agent_tool_test_helpers import (
+    checkout_commit,
     run_cli,
     survival_config_payload,
     write_finetune_recipe,
+    write_preset_recipe,
+    write_survival_config_with_bad_sidecars,
+    write_survival_infer_recipe,
+    write_survival_recipe_with_missing_sidecar_key,
     write_survival_sidecars,
     write_yaml,
 )
-from test_agent_plan_blocks_on_ambiguity import (
-    _RUNTIME_COMMIT,
-    _survival_recipe_with_missing_sidecar_key,
-    _write_infer_recipe,
-    _write_preset_recipe,
-    _write_survival_config_with_bad_sidecars,
-)
-from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
+import pytest
 import yaml
+
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
 
 
 def test_plan_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
-    recipe, _config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    recipe, _config = write_survival_recipe_with_missing_sidecar_key(tmp_path)
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -35,7 +35,7 @@ def test_plan_blocks_survival_index_keys_missing_from_sidecars(tmp_path: Path):
 
 
 def test_plan_skips_survival_index_gate_when_finetune_preset_is_configured(tmp_path: Path):
-    recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    recipe, config = write_survival_recipe_with_missing_sidecar_key(tmp_path)
     preset = tmp_path / "preset.pkl"
     preset.write_bytes(b"preset")
     payload = yaml.safe_load(config.read_text())
@@ -51,7 +51,7 @@ def test_plan_skips_survival_index_gate_when_finetune_preset_is_configured(tmp_p
 
 
 def test_plan_skips_missing_index_path_when_finetune_preset_is_configured(tmp_path: Path):
-    recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    recipe, config = write_survival_recipe_with_missing_sidecar_key(tmp_path)
     preset = tmp_path / "preset.pkl"
     preset.write_bytes(b"preset")
     payload = yaml.safe_load(config.read_text())
@@ -68,7 +68,7 @@ def test_plan_skips_missing_index_path_when_finetune_preset_is_configured(tmp_pa
 
 
 def test_plan_blocks_missing_finetune_preset_path(tmp_path: Path):
-    recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    recipe, config = write_survival_recipe_with_missing_sidecar_key(tmp_path)
     payload = yaml.safe_load(config.read_text())
     payload["data"]["finetune_preset_path"] = str(tmp_path / "missing_preset.pkl")
     write_yaml(config, payload)
@@ -83,7 +83,7 @@ def test_plan_blocks_missing_finetune_preset_path(tmp_path: Path):
 
 
 def test_hparam_plan_skips_survival_index_gate_when_base_preset_is_configured(tmp_path: Path):
-    base, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    base, config = write_survival_recipe_with_missing_sidecar_key(tmp_path)
     preset = tmp_path / "preset.pkl"
     preset.write_bytes(b"preset")
     payload = yaml.safe_load(config.read_text())
@@ -159,8 +159,8 @@ def test_infer_invalid_eval_split_blocks_command_generation(tmp_path: Path):
 
 
 def test_infer_blocks_missing_inference_preset_path(tmp_path: Path):
-    config = _write_survival_config_with_bad_sidecars(tmp_path)
-    recipe = _write_infer_recipe(tmp_path, config, inference_preset_path=tmp_path / "missing_override.pkl")
+    config = write_survival_config_with_bad_sidecars(tmp_path)
+    recipe = write_survival_infer_recipe(tmp_path, config, inference_preset_path=tmp_path / "missing_override.pkl")
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -172,8 +172,8 @@ def test_infer_blocks_missing_inference_preset_path(tmp_path: Path):
 
 
 def test_infer_blocks_missing_config_finetune_preset_path(tmp_path: Path):
-    config = _write_survival_config_with_bad_sidecars(tmp_path, preset_path=tmp_path / "missing_config_preset.pkl")
-    recipe = _write_infer_recipe(tmp_path, config)
+    config = write_survival_config_with_bad_sidecars(tmp_path, preset_path=tmp_path / "missing_config_preset.pkl")
+    recipe = write_survival_infer_recipe(tmp_path, config)
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -185,8 +185,8 @@ def test_infer_blocks_missing_config_finetune_preset_path(tmp_path: Path):
 
 
 def test_infer_survival_blocks_invalid_sidecars_without_preset(tmp_path: Path):
-    config = _write_survival_config_with_bad_sidecars(tmp_path)
-    recipe = _write_infer_recipe(tmp_path, config)
+    config = write_survival_config_with_bad_sidecars(tmp_path)
+    recipe = write_survival_infer_recipe(tmp_path, config)
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -199,8 +199,8 @@ def test_infer_survival_blocks_invalid_sidecars_without_preset(tmp_path: Path):
 def test_infer_survival_allows_invalid_sidecars_with_preset(tmp_path: Path):
     preset = tmp_path / "preset.pkl"
     preset.write_bytes(b"preset")
-    config = _write_survival_config_with_bad_sidecars(tmp_path, preset_path=preset)
-    recipe = _write_infer_recipe(tmp_path, config)
+    config = write_survival_config_with_bad_sidecars(tmp_path, preset_path=preset)
+    recipe = write_survival_infer_recipe(tmp_path, config)
     output_dir = tmp_path / "plan"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -213,8 +213,8 @@ def test_infer_survival_allows_invalid_sidecars_with_preset(tmp_path: Path):
 def test_infer_preset_path_does_not_skip_survival_sidecar_checks(tmp_path: Path):
     preset = tmp_path / "preset.pkl"
     preset.write_bytes(b"preset")
-    config = _write_survival_config_with_bad_sidecars(tmp_path)
-    recipe = _write_infer_recipe(tmp_path, config)
+    config = write_survival_config_with_bad_sidecars(tmp_path)
+    recipe = write_survival_infer_recipe(tmp_path, config)
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["preset_path"] = str(preset)
     write_yaml(recipe, payload)
@@ -234,7 +234,7 @@ def test_infer_checks_survival_sidecar_keys_only_for_eval_split(tmp_path: Path):
         tmp_path / "survival_infer_config.yaml",
         survival_config_payload(index, write_survival_sidecars(tmp_path)),
     )
-    recipe = _write_infer_recipe(tmp_path, config, eval_split="val")
+    recipe = write_survival_infer_recipe(tmp_path, config, eval_split="val")
     output_dir = tmp_path / "plan_infer_val"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir))
@@ -286,7 +286,7 @@ def test_preset_plan_checks_inputs_index_even_when_config_has_finetune_preset(tm
 
 
 def test_preset_plan_blocks_survival_config_with_invalid_sidecars(tmp_path: Path):
-    config = _write_survival_config_with_bad_sidecars(tmp_path)
+    config = write_survival_config_with_bad_sidecars(tmp_path)
     index = tmp_path / "preset_index.csv"
     index.write_text("path,split,duration,eid,ppg_mask\nx.npz,train,60,001,1\n")
     recipe = write_yaml(
@@ -336,11 +336,11 @@ def test_preset_plan_blocks_multilabel_sidecars_missing_from_execution_workdir(t
     config.write_text(yaml.safe_dump(config_payload, sort_keys=False))
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    recipe = _write_preset_recipe(
+    recipe = write_preset_recipe(
         tmp_path,
         config=config,
         index=config_payload["data"]["finetune_data_index"],
-        execution={"workdir": str(runtime), "python": sys.executable, "runtime_commit": _RUNTIME_COMMIT},
+        execution={"workdir": str(runtime), "python": sys.executable, "runtime_commit": checkout_commit()},
         name="preset_multilabel_relative_sidecars",
     )
     output_dir = tmp_path / "plan_multilabel_sidecars"

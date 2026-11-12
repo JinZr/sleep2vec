@@ -8,22 +8,26 @@ import shlex
 from shlex import quote as shlex_quote
 import subprocess
 
-from agent_tool_test_helpers import run_cli, write_finetune_recipe, write_yaml
-from test_agent_plan_blocks_on_ambiguity import (
-    _first_run,
-    _hparam_recipe,
-    _local_runtime_execution,
-    _survival_recipe_with_missing_sidecar_key,
-    _valid_final_config_bytes,
-    _write_survival_config_with_bad_sidecars,
+from agent_tool_test_helpers import (
+    local_runtime_execution,
+    plan_first_run,
+    run_cli,
+    valid_final_config_bytes,
+    write_finetune_recipe,
+    write_survival_config_with_bad_sidecars,
+    write_survival_recipe_with_missing_sidecar_key,
+    write_variant_hparam_recipe,
+    write_yaml,
 )
-from test_agent_plan_blocks_on_ambiguity import _stub_execution_target  # noqa: F401
+import pytest
 import yaml
 
 from agent_tools import configs, models, plan_context, plans, run_artifacts
 from agent_tools.adapters.hparam_tune import HparamTuneAdapter
 from agent_tools.models import REPO_ROOT
 from agent_tools.plan_hparam import final_test_checkpoint_issues
+
+pytestmark = pytest.mark.usefixtures("stub_execution_target")
 
 
 def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):
@@ -62,7 +66,7 @@ def test_infer_eval_split_ask_user_blocks_command_generation(tmp_path: Path):
 def test_unlock_final_test_with_yaml_search_requires_explicit_final_config(tmp_path: Path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
-    recipe = _hparam_recipe(tmp_path, parameters={"yaml:/finetune/task/output_dim": [31]}, ckpt_path=ckpt)
+    recipe = write_variant_hparam_recipe(tmp_path, parameters={"yaml:/finetune/task/output_dim": [31]}, ckpt_path=ckpt)
     output_dir = tmp_path / "unlocked"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
@@ -76,13 +80,13 @@ def test_unlock_final_test_with_yaml_search_uses_explicit_final_config(tmp_path:
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
     selected_config = tmp_path / "selected_run.yaml"
-    recipe = _hparam_recipe(
+    recipe = write_variant_hparam_recipe(
         tmp_path,
         parameters={"yaml:/finetune/task/output_dim": [31]},
         ckpt_path=ckpt,
         final_config_path=selected_config,
     )
-    selected_bytes = _valid_final_config_bytes(tmp_path)
+    selected_bytes = valid_final_config_bytes(tmp_path)
     selected_config.write_bytes(selected_bytes)
     output_dir = tmp_path / "unlocked"
 
@@ -109,13 +113,13 @@ def test_preflight_binds_final_eval_config_beside_a_json_recipe(tmp_path: Path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
     selected_config = tmp_path / "selected_run.yaml"
-    recipe_path = _hparam_recipe(
+    recipe_path = write_variant_hparam_recipe(
         tmp_path,
         parameters={"yaml:/finetune/task/output_dim": [31]},
         ckpt_path=ckpt,
         final_config_path=selected_config,
     )
-    selected_bytes = _valid_final_config_bytes(tmp_path)
+    selected_bytes = valid_final_config_bytes(tmp_path)
     selected_config.write_bytes(selected_bytes)
 
     recipe, cfg, report = plans.preflight_plan(
@@ -137,8 +141,8 @@ def test_preflight_binds_final_eval_config_beside_a_json_recipe(tmp_path: Path):
 def test_unresolved_final_eval_sidecars_write_a_json_draft(tmp_path: Path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
-    final_config = _write_survival_config_with_bad_sidecars(tmp_path)
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=final_config)
+    final_config = write_survival_config_with_bad_sidecars(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=final_config)
     output_dir = tmp_path / "plan"
 
     # The final-eval bytes are bound before the sidecar check asks for input; they must not reach the draft.
@@ -157,17 +161,17 @@ def test_relative_final_eval_config_remains_repo_relative_with_execution_workdir
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
     selected_config = tmp_path / "selected_run.yaml"
-    recipe = _hparam_recipe(
+    recipe = write_variant_hparam_recipe(
         tmp_path,
         parameters={"yaml:/finetune/task/output_dim": [31]},
         ckpt_path=ckpt,
         final_config_path=selected_config,
     )
-    selected_bytes = _valid_final_config_bytes(tmp_path)
+    selected_bytes = valid_final_config_bytes(tmp_path)
     selected_config.write_bytes(selected_bytes)
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["final_eval_config_path"] = os.path.relpath(selected_config, REPO_ROOT)
-    payload["execution"] = _local_runtime_execution(tmp_path / "runtime")
+    payload["execution"] = local_runtime_execution(tmp_path / "runtime")
     recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     output_dir = tmp_path / "unlocked"
 
@@ -180,12 +184,12 @@ def test_relative_final_eval_config_remains_repo_relative_with_execution_workdir
 def test_hparam_final_inference_resolves_preset_from_execution_workdir(tmp_path: Path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt)
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=ckpt)
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     payload = yaml.safe_load(recipe.read_text())
     payload["inputs"]["inference_preset_path"] = "AGENTS.md"
-    payload["execution"] = _local_runtime_execution(runtime)
+    payload["execution"] = local_runtime_execution(runtime)
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_relative_preset"
 
@@ -200,7 +204,7 @@ def test_hparam_final_inference_resolves_preset_from_execution_workdir(tmp_path:
 def test_hparam_final_inference_rejects_npz_preset_for_kaldi_backend(tmp_path: Path):
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt)
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=ckpt)
     payload = yaml.safe_load(recipe.read_text())
     config_path = Path(payload["base_recipe"]).parent / "config.yaml"
     config = yaml.safe_load(config_path.read_text())
@@ -222,7 +226,7 @@ def test_hparam_final_inference_rejects_npz_preset_for_kaldi_backend(tmp_path: P
     runtime.mkdir()
     (runtime / "external.pickle").write_bytes(b"preset")
     payload["inputs"]["inference_preset_path"] = "external.pickle"
-    payload["execution"] = _local_runtime_execution(runtime)
+    payload["execution"] = local_runtime_execution(runtime)
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_kaldi_preset"
 
@@ -239,7 +243,7 @@ def test_hparam_final_inference_rejects_ahi_checkpoint_averaging(tmp_path: Path)
     ckpt.write_text("checkpoint")
     averages = tmp_path / "averages"
     averages.mkdir()
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt)
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=ckpt)
     payload = yaml.safe_load(recipe.read_text())
     payload["runtime"] = {"avg_ckpts": 2, "avg_ckpt_dir": str(averages)}
     write_yaml(recipe, payload)
@@ -271,14 +275,14 @@ def test_hparam_final_config_resolves_runtime_inputs_from_execution_workdir(tmp_
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
     selected_config = tmp_path / "selected_run.yaml"
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
-    selected_payload = yaml.safe_load(_valid_final_config_bytes(tmp_path))
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    selected_payload = yaml.safe_load(valid_final_config_bytes(tmp_path))
     selected_payload["data"]["finetune_data_index"] = "AGENTS.md"
     selected_config.write_text(yaml.safe_dump(selected_payload, sort_keys=False))
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     payload = yaml.safe_load(recipe.read_text())
-    payload["execution"] = _local_runtime_execution(runtime)
+    payload["execution"] = local_runtime_execution(runtime)
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_relative_final_input"
 
@@ -294,8 +298,8 @@ def test_hparam_final_config_resolves_generic_kaldi_inputs_from_execution_workdi
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
     selected_config = tmp_path / "selected_kaldi.yaml"
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
-    selected_payload = yaml.safe_load(_valid_final_config_bytes(tmp_path))
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    selected_payload = yaml.safe_load(valid_final_config_bytes(tmp_path))
     selected_payload["data"].update(
         {
             "backend": "kaldi",
@@ -308,7 +312,7 @@ def test_hparam_final_config_resolves_generic_kaldi_inputs_from_execution_workdi
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     payload = yaml.safe_load(recipe.read_text())
-    payload["execution"] = _local_runtime_execution(runtime)
+    payload["execution"] = local_runtime_execution(runtime)
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_relative_kaldi"
 
@@ -325,8 +329,8 @@ def test_hparam_final_config_resolves_multilabel_sidecars_from_execution_workdir
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
     selected_config = tmp_path / "selected_multilabel.yaml"
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
-    selected_payload = yaml.safe_load(_valid_final_config_bytes(tmp_path))
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    selected_payload = yaml.safe_load(valid_final_config_bytes(tmp_path))
     selected_payload["finetune"]["task"].update(
         {
             "type": "multilabel_classification",
@@ -346,7 +350,7 @@ def test_hparam_final_config_resolves_multilabel_sidecars_from_execution_workdir
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     payload = yaml.safe_load(recipe.read_text())
-    payload["execution"] = _local_runtime_execution(runtime)
+    payload["execution"] = local_runtime_execution(runtime)
     write_yaml(recipe, payload)
     output_dir = tmp_path / "unlocked_relative_multilabel"
 
@@ -363,7 +367,7 @@ def test_unlock_final_test_rejects_invalid_explicit_config_before_workspace_muta
     ckpt.write_text("checkpoint")
     selected_config = tmp_path / "invalid_selected_run.yaml"
     selected_config.write_text("{}\n")
-    recipe = _hparam_recipe(
+    recipe = write_variant_hparam_recipe(
         tmp_path,
         parameters={"yaml:/finetune/task/output_dim": [31]},
         ckpt_path=ckpt,
@@ -385,7 +389,7 @@ def test_unlock_final_test_rejects_variant_incompatible_explicit_config_before_w
     ckpt.write_text("checkpoint")
     selected_config = tmp_path / "sex_age_selected_run.yaml"
     selected_config.write_bytes((REPO_ROOT / "configs" / "sex_age_baseline" / "cox.yaml").read_bytes())
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
     output_dir = tmp_path / "unlocked"
 
     result = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(output_dir), "--unlock-final-test")
@@ -400,8 +404,8 @@ def test_unlock_final_test_freezes_explicit_config_without_yaml_search(tmp_path:
     ckpt = tmp_path / "best.ckpt"
     ckpt.write_text("checkpoint")
     selected_config = tmp_path / "selected_run.yaml"
-    recipe = _hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
-    selected_bytes = _valid_final_config_bytes(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path, ckpt_path=ckpt, final_config_path=selected_config)
+    selected_bytes = valid_final_config_bytes(tmp_path)
     selected_config.write_bytes(selected_bytes)
     output_dir = tmp_path / "unlocked"
 
@@ -487,7 +491,7 @@ def test_finetune_plan_freezes_config_bytes_validated_before_workspace_setup(tmp
     report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
 
     assert report.exit_code == 0
-    frozen_config = Path(_first_run(output_dir)["config"])
+    frozen_config = Path(plan_first_run(output_dir)["config"])
     assert frozen_config.read_bytes() == validated_bytes
     assert yaml.safe_load(frozen_config.read_text())["finetune"]["task"]["monitor"] == "val_ahi_pearson"
 
@@ -514,13 +518,13 @@ def test_finetune_plan_validates_captured_bytes_during_aba_source_swap(tmp_path:
     report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
 
     assert report.exit_code == 0
-    frozen_config = Path(_first_run(output_dir)["config"])
+    frozen_config = Path(plan_first_run(output_dir)["config"])
     assert frozen_config.read_bytes() == validated_bytes
     assert yaml.safe_load(frozen_config.read_text())["finetune"]["task"]["output_dim"] == 30
 
 
 def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     base_recipe = Path(yaml.safe_load(recipe.read_text())["base_recipe"])
     config = Path(yaml.safe_load(base_recipe.read_text())["inputs"]["config"])
     validated_bytes = config.read_bytes()
@@ -539,12 +543,12 @@ def test_hparam_plan_materializes_config_validated_before_workspace_setup(tmp_pa
 
     assert report.exit_code == 0
     assert (output_dir / "config.source.yaml").read_bytes() == validated_bytes
-    run_config = Path(_first_run(output_dir)["config"])
+    run_config = Path(plan_first_run(output_dir)["config"])
     assert yaml.safe_load(run_config.read_text())["finetune"]["task"]["monitor"] == "val_ahi_pearson"
 
 
 def test_hparam_override_checks_captured_config_during_aba_source_swap(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     base_recipe = Path(yaml.safe_load(recipe.read_text())["base_recipe"])
     config = Path(yaml.safe_load(base_recipe.read_text())["inputs"]["config"])
     captured_bytes = config.read_bytes()
@@ -570,7 +574,7 @@ def test_hparam_override_checks_captured_config_during_aba_source_swap(tmp_path:
 
 
 def test_hparam_override_does_not_approve_invalid_captured_config_during_aba_source_swap(tmp_path: Path, monkeypatch):
-    recipe = _hparam_recipe(tmp_path)
+    recipe = write_variant_hparam_recipe(tmp_path)
     base_recipe = Path(yaml.safe_load(recipe.read_text())["base_recipe"])
     config = Path(yaml.safe_load(base_recipe.read_text())["inputs"]["config"])
     valid_bytes = config.read_bytes()
@@ -599,7 +603,7 @@ def test_hparam_override_does_not_approve_invalid_captured_config_during_aba_sou
 
 
 def test_hparam_override_validation_fails_without_bound_config_bytes(tmp_path: Path):
-    recipe_path = _hparam_recipe(tmp_path)
+    recipe_path = write_variant_hparam_recipe(tmp_path)
     recipe, cfg, report = plans.evaluate_recipe(recipe_path)
     assert report.exit_code == 0
     assert cfg is not None
@@ -614,7 +618,7 @@ def test_hparam_override_validation_fails_without_bound_config_bytes(tmp_path: P
 
 
 def test_survival_index_summary_checks_captured_config_during_aba_source_swap(tmp_path: Path, monkeypatch):
-    recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    recipe, config = write_survival_recipe_with_missing_sidecar_key(tmp_path)
     config_payload = yaml.safe_load(config.read_text())
     index = Path(config_payload["data"]["finetune_data_index"])
     index.write_text("path,split,duration,eid,ppg_mask\na.npz,train,60,001,1\nb.npz,val,60,002,1\n")
@@ -637,13 +641,13 @@ def test_survival_index_summary_checks_captured_config_during_aba_source_swap(tm
     report = plans.build_plan(recipe_path=recipe, output_dir=output_dir)
 
     assert report.exit_code == 0
-    assert Path(_first_run(output_dir)["config"]).read_bytes() == captured_bytes
+    assert Path(plan_first_run(output_dir)["config"]).read_bytes() == captured_bytes
 
 
 def test_survival_index_summary_does_not_approve_invalid_captured_config_during_aba_source_swap(
     tmp_path: Path, monkeypatch
 ):
-    recipe, config = _survival_recipe_with_missing_sidecar_key(tmp_path)
+    recipe, config = write_survival_recipe_with_missing_sidecar_key(tmp_path)
     captured_bytes = config.read_bytes()
     swapped = yaml.safe_load(captured_bytes)
     swapped["finetune"]["task"]["type"] = "classification"
