@@ -5,19 +5,9 @@ import importlib
 import json
 from pathlib import Path
 
-import pytest
 
-
-@pytest.mark.parametrize(
-    "module_name",
-    [
-        "preprocess.watchpat_zzp_to_edf",
-        "sleep2expert.preprocess.watchpat_zzp_to_edf",
-        "sleep2vec2.preprocess.watchpat_zzp_to_edf",
-    ],
-)
-def test_watchpat_batch_conversion_writes_progress_status(tmp_path: Path, monkeypatch, module_name: str):
-    module = importlib.import_module(module_name)
+def test_watchpat_batch_conversion_writes_progress_status(tmp_path: Path, monkeypatch):
+    module = importlib.import_module("preprocess.watchpat_zzp_to_edf")
     input_root = tmp_path / "input"
     output_root = tmp_path / "output"
     input_root.mkdir()

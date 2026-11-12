@@ -146,6 +146,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Treat `preprocess/preprocess_pipeline.ipynb` as history, not reusable implementation.
 - Keep standalone data utilities in `utils/` independent from the training runtime when they only prepare external cohorts or files.
 - Mirror converter/preset behavior into a variant only when that package contract is intentionally standalone.
+- Variants carry only the preprocessing modules their runtime imports (`save_dataset_presets.py`, `convert_npz_to_kaldi.py`, `split_index_by_dataset.py`); use the root `preprocess/` scripts for variant-agnostic steps (mask stats, preset merge, WatchPAT conversion). `tests/variants/test_sleep2vec2_namespace.py` pins those copies to root, allowing only the root-only preset manifest hunks.
 
 ### sleep2stat
 

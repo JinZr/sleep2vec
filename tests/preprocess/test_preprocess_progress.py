@@ -10,16 +10,8 @@ import pandas as pd
 import pytest
 
 
-@pytest.mark.parametrize(
-    "module_name",
-    [
-        "preprocess.merge_dataset_presets",
-        "sleep2expert.preprocess.merge_dataset_presets",
-        "sleep2vec2.preprocess.merge_dataset_presets",
-    ],
-)
-def test_merge_dataset_presets_writes_progress(tmp_path: Path, monkeypatch, module_name: str):
-    module = importlib.import_module(module_name)
+def test_merge_dataset_presets_writes_progress(tmp_path: Path, monkeypatch):
+    module = importlib.import_module("preprocess.merge_dataset_presets")
     input_a = tmp_path / "a.pkl"
     input_b = tmp_path / "b.pkl"
     output = tmp_path / "merged.pkl"
@@ -76,16 +68,8 @@ def test_split_index_by_dataset_writes_progress(tmp_path: Path, monkeypatch, mod
     assert progress["processed"] == 3
 
 
-@pytest.mark.parametrize(
-    "module_name",
-    [
-        "preprocess.mask_missing_stats",
-        "sleep2expert.preprocess.mask_missing_stats",
-        "sleep2vec2.preprocess.mask_missing_stats",
-    ],
-)
-def test_mask_missing_stats_writes_progress(tmp_path: Path, monkeypatch, module_name: str):
-    module = importlib.import_module(module_name)
+def test_mask_missing_stats_writes_progress(tmp_path: Path, monkeypatch):
+    module = importlib.import_module("preprocess.mask_missing_stats")
     input_csv = tmp_path / "input.csv"
     out_prefix = tmp_path / "stats" / "missing"
     pd.DataFrame(
