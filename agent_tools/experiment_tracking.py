@@ -1,4 +1,4 @@
-"""Projections, status advice, and hparam ranking validation over recorded evidence.
+"""Projections, status snapshots, and hparam ranking validation over recorded evidence.
 
 Consumes the run manifest, validates recorded checkpoint evidence against it,
 and produces the experiment status snapshot, monitor results, and the
@@ -17,7 +17,6 @@ import io
 import json
 from pathlib import Path
 import re
-import shlex
 from typing import Any, TypedDict
 
 from . import experiment_io as exp_io, managed_scheduler, run_artifacts as artifacts, run_evidence as evidence, slurm
@@ -73,33 +72,11 @@ class HparamSelectionLifecycle(TypedDict):
     automatic_report_final: bool
 
 
-class _ExperimentStatusActionCore(TypedDict):
-    id: str
-    step_id: str | None
-    reason: str
-    advisory: bool
-    mutates: bool
-    requires_authorization: bool
-    argv: list[str]
-
-
-class ExperimentStatusAction(_ExperimentStatusActionCore, total=False):
-    required_inputs: list[str]
-
-
-class ExperimentStatusDecision(TypedDict):
-    manual_choice_required: bool
-    recommended_next: ExperimentStatusAction | None
-    other_legal_actions: list[ExperimentStatusAction]
-    blocked_actions: list[str]
-
-
 class ExperimentStatusBlocker(TypedDict):
     code: str
     step_id: str | None
     run_ids: list[str]
     message: str
-    blocked_actions: list[str]
 
 
 class ExperimentStatusSummary(TypedDict):
@@ -177,7 +154,6 @@ class ExperimentStatusSnapshot(TypedDict):
     steps: list[ExperimentStatusStep]
     runs: list[ExperimentStatusRun]
     blockers: list[ExperimentStatusBlocker]
-    decision: ExperimentStatusDecision
 
 
 def validate_checkpoint_evidence_rows(
@@ -357,35 +333,22 @@ def monitor_report(
     return "\n".join(lines)
 
 
-def _experiment_lifecycle_decision(
+def _experiment_lifecycle_state(
     *,
     completed: bool,
-    rows: Sequence[Mapping[str, str]],
     sorted_rows: Sequence[Mapping[str, str]],
     plan_blockers: list[ExperimentStatusBlocker],
     missing_stop_reason_rows: Sequence[Mapping[str, str]],
     hparam: HparamSelectionLifecycle,
-    candidates: list[ExperimentStatusAction],
+    has_unowned_launchable_plan: bool,
     blockers: list[ExperimentStatusBlocker],
-    root: Path,
-) -> tuple[str, ExperimentStatusDecision]:
-    decision: ExperimentStatusDecision = {
-        "manual_choice_required": False,
-        "recommended_next": None,
-        "other_legal_actions": [],
-        "blocked_actions": [],
-    }
+) -> str:
+    """Return the lifecycle state and append its lifecycle blockers to ``blockers``."""
     if completed:
         state = "completed"
-    elif not rows:
+    elif not sorted_rows:
         state = "empty"
-        blockers.append(
-            _status_blocker(
-                "no_managed_runs",
-                "The experiment has no canonical managed runs. No plan or launch command can be inferred.",
-            )
-        )
-        decision["manual_choice_required"] = True
+        blockers.append(_status_blocker("no_managed_runs", "The experiment has no canonical managed runs."))
     else:
         uncertain = [row for row in sorted_rows if row["status"] in {"lost", "missing_pid"}]
         active = [row for row in sorted_rows if row["status"] in managed_scheduler.ACTIVE_STATUSES]
@@ -394,14 +357,7 @@ def _experiment_lifecycle_decision(
             groups = sorted({(str(row["status"]), str(row["step_id"])) for row in uncertain})
             for status, step_id in groups:
                 matching = [row for row in uncertain if str(row["status"]) == status and str(row["step_id"]) == step_id]
-                blockers.append(
-                    _status_blocker(
-                        status,
-                        _status_reason(matching),
-                        rows=matching,
-                        blocked_actions=["finalize", "launch", "resubmit"],
-                    )
-                )
+                blockers.append(_status_blocker(status, _status_reason(matching), rows=matching))
             uncertain_keys = {managed_run_key(row) for row in uncertain}
             remaining_active = [row for row in active if managed_run_key(row) not in uncertain_keys]
             for step_id in sorted({str(row["step_id"]) for row in remaining_active}):
@@ -410,10 +366,8 @@ def _experiment_lifecycle_decision(
                         "active_runs",
                         "Canonical runs are still active. Refresh recorded evidence before another lifecycle decision.",
                         rows=[row for row in remaining_active if str(row["step_id"]) == step_id],
-                        blocked_actions=["finalize", "launch", "resubmit"],
                     )
                 )
-            decision["recommended_next"] = _monitor_action(root)
         elif active:
             state = "in_progress"
             for step_id in sorted({str(row["step_id"]) for row in active}):
@@ -422,33 +376,21 @@ def _experiment_lifecycle_decision(
                         "active_runs",
                         "Canonical runs are still active. Refresh recorded evidence before another lifecycle decision.",
                         rows=[row for row in active if str(row["step_id"]) == step_id],
-                        blocked_actions=["finalize", "launch", "resubmit"],
                     )
                 )
-            decision["recommended_next"] = _monitor_action(root)
         elif all(row["status"] in TERMINAL_STATUSES for row in sorted_rows):
             if plan_blockers or missing_stop_reason_rows:
                 state = "blocked"
-                decision["manual_choice_required"] = True
             elif hparam["pending_steps"]:
                 state = "ready_to_select"
-                select_actions = [
-                    _hparam_select_action(step["step_id"], step["plan_path"]) for step in hparam["pending_steps"]
-                ]
                 for step in hparam["pending_steps"]:
                     blockers.append(
                         _status_blocker(
                             "hparam_selection_required",
                             "Successful terminal hparam runs must be ranked before finalization.",
                             step_id=step["step_id"],
-                            blocked_actions=["finalize"],
                         )
                     )
-                if len(select_actions) == 1:
-                    decision["recommended_next"] = select_actions[0]
-                else:
-                    decision["manual_choice_required"] = True
-                    decision["other_legal_actions"] = select_actions
             elif hparam["selected_steps"] and not hparam["report_valid"]:
                 state = "ready_to_report"
                 blockers.append(
@@ -456,14 +398,10 @@ def _experiment_lifecycle_decision(
                         "hparam_selection_report_required",
                         "The deterministic hparam selection report is missing or differs from "
                         "canonical selection evidence.",
-                        blocked_actions=["finalize"],
                     )
                 )
-                first = hparam["selected_steps"][0]
-                decision["recommended_next"] = _hparam_select_action(first["step_id"], first["plan_path"])
             elif hparam["selected_steps"] and hparam["automatic_report_final"]:
                 state = "ready_to_finalize"
-                decision["recommended_next"] = _finalize_action(root, hparam["report_path"])
             elif hparam["selected_steps"]:
                 state = "ready_to_report"
                 blockers.append(
@@ -471,30 +409,18 @@ def _experiment_lifecycle_decision(
                         "combined_report_required",
                         "The hparam selection report does not cover every ordinary experiment step, so "
                         "finalization requires a non-empty combined report.",
-                        blocked_actions=["finalize"],
                     )
                 )
-                finalize = _finalize_action(root, "{report_path}")
-                finalize["required_inputs"] = ["report_path"]
-                decision["manual_choice_required"] = True
-                decision["other_legal_actions"] = [finalize]
             elif hparam["hparam_steps"]:
                 state = "ready_to_report"
                 blockers.append(
                     _status_blocker(
                         "failure_report_required",
                         "No hparam run completed successfully; finalization requires a non-empty failure report.",
-                        blocked_actions=["finalize"],
                     )
                 )
-                finalize = _finalize_action(root, "{report_path}")
-                finalize["required_inputs"] = ["report_path"]
-                decision["manual_choice_required"] = True
-                decision["other_legal_actions"] = [finalize]
             else:
                 state = "ready_to_finalize"
-                finalize = _finalize_action(root, "{report_path}")
-                finalize["required_inputs"] = ["report_path"]
                 # The report is experiment-wide human input, not evidence attached to any managed run.
                 blockers.append(
                     _status_blocker(
@@ -502,22 +428,14 @@ def _experiment_lifecycle_decision(
                         "Finalization requires a user-selected non-empty report path.",
                     )
                 )
-                decision["manual_choice_required"] = True
-                decision["other_legal_actions"] = [finalize]
-        elif not candidates and any(blocker["code"] == "queue_runner_active" for blocker in plan_blockers):
-            # Detached queue runners own every remaining launchable run; observe them instead of launching.
+        elif not has_unowned_launchable_plan and any(
+            blocker["code"] == "queue_runner_active" for blocker in plan_blockers
+        ):
+            # Detached queue runners own every remaining launchable run.
             state = "in_progress"
-            decision["recommended_next"] = _monitor_action(root)
         else:
-            state = "ready_to_launch" if candidates else "blocked"
-            if len(candidates) == 1:
-                decision["recommended_next"] = candidates[0]
-            elif len(candidates) > 1:
-                decision["manual_choice_required"] = True
-                decision["other_legal_actions"] = candidates
-            else:
-                decision["manual_choice_required"] = True
-    return state, decision
+            state = "ready_to_launch" if has_unowned_launchable_plan else "blocked"
+    return state
 
 
 def experiment_status_snapshot(
@@ -538,7 +456,7 @@ def experiment_status_snapshot(
                 f"{row.get('run_id')}: {status}"
             )
     sorted_rows = sorted(rows, key=lambda row: (str(row["step_id"]), str(row["run_id"])))
-    plan_blockers, candidates = _plan_advice(registered_steps, sorted_rows)
+    plan_blockers, has_unowned_launchable_plan = _plan_blockers(registered_steps, sorted_rows)
     hparam = hparam_selection_lifecycle(
         registered_steps,
         sorted_rows,
@@ -598,19 +516,16 @@ def experiment_status_snapshot(
                 "missing_stop_reason",
                 "Stopped canonical runs require a non-empty recorded stop_reason before finalization.",
                 rows=[row for row in missing_stop_reason_rows if str(row["step_id"]) == step_id],
-                blocked_actions=["finalize"],
             )
         )
-    state, decision = _experiment_lifecycle_decision(
+    state = _experiment_lifecycle_state(
         completed=completed,
-        rows=rows,
         sorted_rows=sorted_rows,
         plan_blockers=plan_blockers,
         missing_stop_reason_rows=missing_stop_reason_rows,
         hparam=hparam,
-        candidates=candidates,
+        has_unowned_launchable_plan=has_unowned_launchable_plan,
         blockers=blockers,
-        root=root,
     )
 
     blocker_codes_by_key: dict[tuple[str, str], list[str]] = {
@@ -622,12 +537,6 @@ def experiment_status_snapshot(
                 blocker_codes_by_key[key].append(blocker["code"])
     for payload in row_payloads:
         payload["blockers"] = sorted(blocker_codes_by_key[(payload["step_id"], payload["run_id"])])
-    decision["blocked_actions"] = sorted(
-        {
-            *decision["blocked_actions"],
-            *(action for blocker in blockers for action in blocker["blocked_actions"]),
-        }
-    )
 
     return {
         "experiment": {
@@ -649,7 +558,6 @@ def experiment_status_snapshot(
             blockers,
             key=lambda blocker: (blocker["code"], blocker["step_id"] or "", blocker["run_ids"]),
         ),
-        "decision": decision,
     }
 
 
@@ -920,32 +828,6 @@ def validated_hparam_ranking(step: HparamSelectionReportStep) -> list[dict[str, 
     return ranked or None
 
 
-def _hparam_select_action(step_id: str, plan_path: str) -> ExperimentStatusAction:
-    return _status_action(
-        "hparam-select",
-        "Rank terminal successful candidates and regenerate the deterministic selection report.",
-        ["python", "-m", "agent_tools", "hparam-select", "--run-dir", plan_path],
-        step_id=step_id,
-    )
-
-
-def _finalize_action(root: Path, report_path: str) -> ExperimentStatusAction:
-    return _status_action(
-        "experiment-finalize",
-        "Publish the verified non-empty experiment report.",
-        [
-            "python",
-            "-m",
-            "agent_tools",
-            "experiment-finalize",
-            "--run-dir",
-            str(root),
-            "--report",
-            report_path,
-        ],
-    )
-
-
 def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
     experiment = snapshot["experiment"]
     lines = [
@@ -1036,34 +918,17 @@ def format_experiment_status(snapshot: ExperimentStatusSnapshot) -> str:
             lines.append(f"- `{blocker['code']}`{scope_text}: {blocker['message']}")
         lines.append("")
 
-    lines.extend(["## Next legal action", ""])
-    decision = snapshot["decision"]
-    actions = []
-    if decision["recommended_next"] is not None:
-        actions.append(decision["recommended_next"])
-    actions.extend(decision["other_legal_actions"])
-    if decision["manual_choice_required"]:
-        lines.append("Manual choice required.")
-    if actions:
-        for action in actions:
-            lines.append(f"- `{action['id']}`: `{shlex.join(action['argv'])}` — {action['reason']}")
-            if action.get("required_inputs"):
-                lines.append(f"  Required inputs: {', '.join(action['required_inputs'])}")
-    else:
-        lines.append("No advisory command is available from the current canonical state.")
-    if decision["blocked_actions"]:
-        lines.append("Blocked actions: " + ", ".join(decision["blocked_actions"]))
-    lines.extend(["", "Advisory only; this output does not authorize execution.", ""])
     return "\n".join(lines)
 
 
-def _plan_advice(
+def _plan_blockers(
     registered_steps: list[artifacts.RegisteredPlanStep],
     rows: Sequence[Mapping[str, str]],
-) -> tuple[list[ExperimentStatusBlocker], list[ExperimentStatusAction]]:
+) -> tuple[list[ExperimentStatusBlocker], bool]:
+    """Return plan blockers and whether a plan has launchable runs that no live queue runner owns."""
     rows_by_key = {managed_run_key(row): row for row in rows}
     blockers = []
-    candidates = []
+    has_unowned_launchable_plan = False
     for registered in sorted(registered_steps, key=lambda item: str(item["manifest"]["step"]["id"])):
         manifest = registered["manifest"]
         step_id = str(manifest["step"]["id"])
@@ -1074,7 +939,6 @@ def _plan_advice(
                     "The registered step has no materialized plan or canonical runs; experiment-status cannot "
                     "prove controller completion.",
                     step_id=step_id,
-                    blocked_actions=["finalize"],
                 )
             )
             continue
@@ -1091,42 +955,11 @@ def _plan_advice(
                         f"A detached hparam-run-queue runner owns this plan's launchable runs: "
                         f"{format_queue_runner(runner)}.",
                         step_id=step_id,
-                        blocked_actions=["finalize"],
                     )
                 )
                 continue
-            if plan["task"] == "hparam_tune":
-                argv = [
-                    "python",
-                    "-m",
-                    "agent_tools",
-                    "hparam-run-queue",
-                    "--plan-dir",
-                    plan["path"],
-                    "--execute",
-                ]
-                action_id = "hparam-run-queue"
-            elif plan["task"] == "infer" and all(scheduler_type(row) == "slurm" for row in plan_rows):
-                argv = ["python", "-m", "agent_tools", "infer-launch", "--plan-dir", plan["path"], "--execute"]
-                action_id = "infer-launch"
-            elif plan["task"] == "preset_prepare" and (plan["recipe"].get("execution") or {}).get("scheduler") == {
-                "type": "direct"
-            }:
-                argv = ["python", "-m", "agent_tools", "preset-launch", "--plan-dir", plan["path"], "--execute"]
-                action_id = "preset-launch"
-            else:
-                argv = ["bash", plan["launch_script"]]
-                action_id = "run-plan"
-            candidates.append(
-                _status_action(
-                    action_id,
-                    "Launch only after explicit user authorization and the command's own preflight succeeds.",
-                    argv,
-                    step_id=step_id,
-                )
-            )
-    candidates.sort(key=lambda action: (action["step_id"] or "", action["id"], action["argv"]))
-    return blockers, candidates
+            has_unowned_launchable_plan = True
+    return blockers, has_unowned_launchable_plan
 
 
 def _status_run_payload(row: Mapping[str, str]) -> ExperimentStatusRun:
@@ -1176,7 +1009,6 @@ def _status_blocker(
     *,
     step_id: str | None = None,
     rows: Sequence[Mapping[str, str]] | None = None,
-    blocked_actions: list[str] | None = None,
 ) -> ExperimentStatusBlocker:
     rows = rows or []
     step_ids = sorted({str(row["step_id"]) for row in rows})
@@ -1185,33 +1017,6 @@ def _status_blocker(
         "step_id": step_id or (step_ids[0] if len(step_ids) == 1 else None),
         "run_ids": sorted(str(row["run_id"]) for row in rows),
         "message": message,
-        "blocked_actions": sorted(blocked_actions or []),
-    }
-
-
-def _monitor_action(root: Path) -> ExperimentStatusAction:
-    return _status_action(
-        "experiment-monitor",
-        "Refresh canonical lifecycle evidence.",
-        ["python", "-m", "agent_tools", "experiment-monitor", "--run-dir", str(root)],
-    )
-
-
-def _status_action(
-    action_id: str,
-    reason: str,
-    argv: list[str],
-    *,
-    step_id: str | None = None,
-) -> ExperimentStatusAction:
-    return {
-        "id": action_id,
-        "step_id": step_id,
-        "reason": reason,
-        "advisory": True,
-        "mutates": True,
-        "requires_authorization": True,
-        "argv": argv,
     }
 
 

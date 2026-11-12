@@ -44,7 +44,7 @@ Other exceptions are bugs and keep their traceback.
 | Which `.tsv` owns lifecycle state, and what are the others? | [Table index](run_manifest.md#table-index) |
 | What establishes a Slurm job binding? | [Submission and adoption](run_manifest.md#submission-and-adoption) |
 | What does a Slurm status mean, and how is `lost` resolved? | [Monitor state table](run_manifest.md#monitor-state-table) and [stopping and lost runs](run_manifest.md#stopping-and-lost-runs) |
-| Read recorded status or refresh observations? | [Read-only status](experiment_workspace.md#read-only-status-and-advisory-actions) versus [entrypoint effects](experiment_workspace.md#lifecycle-entrypoints) |
+| Read recorded status or refresh observations? | [Read-only status](experiment_workspace.md#read-only-status) versus [entrypoint effects](experiment_workspace.md#lifecycle-entrypoints) |
 | Why is selection/finalization blocked? | [Selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers), then [finalization](experiment_workspace.md#finalization) |
 | How does a further tuning round proceed? | [Search space](hparam_workflow.md#search-space) |
 | Where do meaningful observations and decisions go? | [Research log](experiment_workspace.md#research-log) |

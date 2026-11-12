@@ -467,27 +467,9 @@ def test_result_types_reach_callers(tmp_path: Path):
             blocker_step: str | None = status_blocker["step_id"]
             blocker_runs: list[str] = status_blocker["run_ids"]
             status_blocker["run_id"]  # type: ignore[typeddict-item]
-            status_blocker["blocked_actions"] = [1]  # type: ignore[list-item]
+            status_blocker["blocked_actions"]  # type: ignore[typeddict-item]
             status_blocker["message"] = None  # type: ignore[typeddict-item]
-            manual_choice: bool = status_snapshot["decision"]["manual_choice_required"]
-            blocked_actions: list[str] = status_snapshot["decision"]["blocked_actions"]
-            status_snapshot["decisions"]  # type: ignore[typeddict-item]
-            status_snapshot["decision"]["manual_choice_required"] = 1  # type: ignore[typeddict-item]
-            status_snapshot["decision"]["recommended_next"]["argv"]  # type: ignore[index]
-            recommended = status_snapshot["decision"]["recommended_next"]
-            if recommended is not None:
-                action_argv: list[str] = recommended["argv"]
-                recommended["command"]  # type: ignore[typeddict-item]
-                recommended["argv"] = [1]  # type: ignore[list-item]
-                recommended["required_inputs"] = "report_path"  # type: ignore[typeddict-item]
-                if "required_inputs" in recommended:
-                    required_inputs: list[str] = recommended["required_inputs"]
-            alternative = status_snapshot["decision"]["other_legal_actions"][0]
-            alternative["reason"] = 1  # type: ignore[typeddict-item]
-            alternative["argv"] = "python"  # type: ignore[typeddict-item]
-            missing_action_fields: experiment_tracking.ExperimentStatusAction = {  # type: ignore[typeddict-item]
-                "id": "monitor",
-            }
+            status_snapshot["decision"]  # type: ignore[typeddict-item]
             experiment_tracking.hparam_selection_lifecycle(
                 [{"manifest": {}, "plans": ["/plan"]}], [], root=Path("/workspace"),  # type: ignore[list-item]
             )

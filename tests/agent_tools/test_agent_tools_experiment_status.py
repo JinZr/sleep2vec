@@ -342,7 +342,7 @@ def test_experiment_status_accepts_public_generic_plan_without_runtime_directori
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
-    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
+    assert snapshot["blockers"] == []
 
 
 def test_experiment_status_accepts_public_finetune_plan(tmp_path):
@@ -355,7 +355,7 @@ def test_experiment_status_accepts_public_finetune_plan(tmp_path):
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
-    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(plan_dir / "run.sh")]
+    assert snapshot["blockers"] == []
 
 
 def test_experiment_status_recompiles_relative_generic_plan_without_controller_host_defaults(tmp_path, monkeypatch):

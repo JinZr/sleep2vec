@@ -37,7 +37,6 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
         "steps",
         "runs",
         "blockers",
-        "decision",
     }
     assert "schema_version" not in first
     assert "generated_at" not in first
@@ -48,8 +47,14 @@ def test_experiment_status_snapshot_is_deterministic_and_keeps_recorded_evidence
     assert set(first["runs"][0]["scheduler"]) == {"type", "job_id", "node", "raw_state", "reason"}
     assert first["runs"][0]["process"]["pid"] is None
     assert first["runs"][0]["evidence"]["checkpoint_count"] == "50"
-    assert first["decision"]["recommended_next"]["id"] == "experiment-monitor"
-    assert first["decision"]["blocked_actions"] == ["finalize", "launch", "resubmit"]
+    assert first["blockers"] == [
+        {
+            "code": "lost",
+            "step_id": "train",
+            "run_ids": ["run-000"],
+            "message": "Scheduler identity is incomplete.",
+        }
+    ]
 
 
 def test_experiment_status_snapshot_is_independent_of_input_order():
@@ -113,7 +118,7 @@ def test_experiment_status_rejects_process_identity_on_launchable_direct_runs(tm
 
 
 @pytest.mark.parametrize("status", ["lost", "missing_pid"])
-def test_experiment_status_uncertain_states_block_planned_launch_and_recommend_only_monitor(tmp_path, status):
+def test_experiment_status_uncertain_states_block_planned_launch(tmp_path, status):
     root = tmp_path / "experiment"
     _init_workspace(root)
     _add_plan(root, step_id="train", status=status)
@@ -122,13 +127,11 @@ def test_experiment_status_uncertain_states_block_planned_launch_and_recommend_o
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "blocked"
-    assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
-    assert snapshot["decision"]["other_legal_actions"] == []
-    assert snapshot["decision"]["blocked_actions"] == ["finalize", "launch", "resubmit"]
+    assert [(blocker["code"], blocker["step_id"]) for blocker in snapshot["blockers"]] == [(status, "train")]
 
 
 @pytest.mark.parametrize("status", ["queued", "launched", "running", "stopping"])
-def test_experiment_status_active_states_recommend_monitor(tmp_path, status):
+def test_experiment_status_active_states_report_in_progress(tmp_path, status):
     root = tmp_path / "experiment"
     _init_workspace(root)
     _add_plan(root, step_id="train", status=status)
@@ -136,9 +139,7 @@ def test_experiment_status_active_states_recommend_monitor(tmp_path, status):
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "in_progress"
-    assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
-    assert "finalize" in snapshot["decision"]["blocked_actions"]
-    assert "launch" in snapshot["decision"]["blocked_actions"]
+    assert [(blocker["code"], blocker["run_ids"]) for blocker in snapshot["blockers"]] == [("active_runs", ["run-000"])]
 
 
 def test_experiment_status_preserves_active_blockers_with_uncertain_runs(tmp_path):
@@ -151,8 +152,6 @@ def test_experiment_status_preserves_active_blockers_with_uncertain_runs(tmp_pat
     blockers_by_step = {run["step_id"]: run["blockers"] for run in snapshot["runs"]}
 
     assert snapshot["summary"]["state"] == "blocked"
-    assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
-    assert snapshot["decision"]["blocked_actions"] == ["finalize", "launch", "resubmit"]
     assert blockers_by_step == {"active": ["active_runs"], "uncertain": ["lost"]}
 
 
@@ -163,39 +162,24 @@ def test_experiment_status_empty_workspace_does_not_guess_a_command(tmp_path):
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"] == {"state": "empty", "run_count": 0, "status_counts": {}}
-    assert snapshot["blockers"][0]["code"] == "no_managed_runs"
-    assert snapshot["decision"]["manual_choice_required"] is True
-    assert snapshot["decision"]["recommended_next"] is None
+    assert [blocker["code"] for blocker in snapshot["blockers"]] == ["no_managed_runs"]
 
 
-def test_experiment_status_launch_actions_and_manual_choice(tmp_path):
+def test_experiment_status_reports_ready_to_launch_for_launchable_plans(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    hparam_plan, _row = _add_plan(root, step_id="tune", task="hparam_tune")
+    _add_plan(root, step_id="tune", task="hparam_tune")
 
     one = experiments.experiment_status(root)
 
     assert one["summary"]["state"] == "ready_to_launch"
-    assert one["decision"]["recommended_next"]["argv"] == [
-        "python",
-        "-m",
-        "agent_tools",
-        "hparam-run-queue",
-        "--plan-dir",
-        str(hparam_plan),
-        "--execute",
-    ]
+    assert one["blockers"] == []
 
-    generic_plan, _row = _add_plan(root, step_id="train")
+    _add_plan(root, step_id="train")
     multiple = experiments.experiment_status(root)
 
-    assert multiple["decision"]["manual_choice_required"] is True
-    assert multiple["decision"]["recommended_next"] is None
-    assert [action["id"] for action in multiple["decision"]["other_legal_actions"]] == [
-        "run-plan",
-        "hparam-run-queue",
-    ]
-    assert multiple["decision"]["other_legal_actions"][0]["argv"] == ["bash", str(generic_plan / "run.sh")]
+    assert multiple["summary"]["state"] == "ready_to_launch"
+    assert multiple["blockers"] == []
 
 
 def test_experiment_status_rejects_missing_step_controller_without_writing(tmp_path):
@@ -236,8 +220,6 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "blocked"
-    assert snapshot["decision"]["other_legal_actions"] == []
-    assert snapshot["decision"]["blocked_actions"] == ["finalize"]
     assert snapshot["blockers"] == [
         {
             "code": "unmaterialized_step",
@@ -245,7 +227,6 @@ def test_experiment_status_blocks_finalize_for_unmaterialized_registered_step(tm
             "run_ids": [],
             "message": "The registered step has no materialized plan or canonical runs; experiment-status cannot "
             "prove controller completion.",
-            "blocked_actions": ["finalize"],
         }
     ]
 
@@ -269,8 +250,6 @@ def test_experiment_status_prioritizes_active_hparam_plan_over_ordinary_launch(t
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == state
-    assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
-    assert snapshot["decision"]["other_legal_actions"] == []
     assert code in {blocker["code"] for blocker in snapshot["blockers"]}
 
 

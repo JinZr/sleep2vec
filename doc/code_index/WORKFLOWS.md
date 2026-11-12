@@ -245,7 +245,7 @@ carry those choices into launch and recovery.
    `run-stop` routes a reasoned stop of one named run to the hparam, inference, or preset owner by the
    registered plan's task.
 5. Inspect recorded state with
-   [read-only status](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions),
+   [read-only status](../agent_contracts/experiment_workspace.md#read-only-status),
    or explicitly refresh evidence with the non-launching `experiment-monitor`; the
    [entrypoint side-effect table](../agent_contracts/experiment_workspace.md#lifecycle-entrypoints)
    distinguishes them. [Run-manifest evidence](../agent_contracts/run_manifest.md#evidence-ownership)

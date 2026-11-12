@@ -621,11 +621,11 @@ def experiment_status(run_dir: str | Path) -> tracking.ExperimentStatusSnapshot:
     evidence, including completed workspaces. Does not poll
     jobs or refresh canonical run statuses: live_observation is False. The one
     live read is a shared-lock probe of each hparam plan with launchable runs:
-    an active queue runner replaces that plan's hparam-run-queue advice with a
-    queue_runner_active blocker.
+    an active queue runner adds a queue_runner_active blocker, and that plan's
+    runs no longer make the state ready_to_launch.
 
-    The mapping contains experiment identity, lifecycle_source, summary, steps,
-    runs, blockers and advisory next actions, which do not authorize execution.
+    The mapping contains experiment identity, lifecycle_source, summary (with the
+    lifecycle state), steps, runs and blockers; it names no commands to run.
     Lifecycle blockers appear in that snapshot; invalid workspace/plan contracts and
     unhandled read errors raise. No reports or manifests are written."""
     root = _target_root(run_dir)
