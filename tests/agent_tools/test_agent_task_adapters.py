@@ -13,7 +13,6 @@ from agent_tools.models import VARIANTLESS_TASKS
 
 ALL_TASKS = (
     "sleep2stat",
-    "embedding_extraction",
     "preset_prepare",
     "infer",
     "finetune",

@@ -19,11 +19,11 @@ hparam_search_defaults:
 
 high_impact_fields:
   - id: task
-    required_for_tasks: ["preset_prepare", "finetune", "infer", "hparam_tune", "sleep2stat", "embedding_extraction"]
-    question: "Which task should be performed: preset_prepare, finetune, infer, hparam_tune, sleep2stat, or embedding_extraction?"
+    required_for_tasks: ["preset_prepare", "finetune", "infer", "hparam_tune", "sleep2stat"]
+    question: "Which task should be performed: preset_prepare, finetune, infer, hparam_tune, or sleep2stat?"
 
   - id: config
-    required_for_tasks: ["finetune", "infer", "embedding_extraction"]
+    required_for_tasks: ["finetune", "infer"]
     question: "Which model config should this task use?"
 
   - id: label_name
@@ -57,11 +57,11 @@ high_impact_fields:
     question: "Should this run initialize from a pretrained backbone checkpoint? If yes, which path should be used?"
 
   - id: ckpt_path
-    required_for_tasks: ["infer", "embedding_extraction"]
+    required_for_tasks: ["infer"]
     question: "Which checkpoint path should be used for inference/evaluation?"
 
   - id: eval_split
-    required_for_tasks: ["infer", "embedding_extraction"]
+    required_for_tasks: ["infer"]
     allowed_values: ["train", "val", "test"]
     question: "Which split should be evaluated: train, val, or test?"
 
@@ -70,7 +70,7 @@ high_impact_fields:
     question: "Should existing preset files be reused or regenerated?"
 
   - id: overwrite_policy
-    required_for_tasks: ["preset_prepare", "finetune", "hparam_tune", "infer", "sleep2stat", "embedding_extraction"]
+    required_for_tasks: ["preset_prepare", "finetune", "hparam_tune", "infer", "sleep2stat"]
     question: "Is overwriting existing output files allowed for this task?"
 
   - id: sleep2stat_split_policy
@@ -88,30 +88,6 @@ high_impact_fields:
   - id: min_channels
     required_for_tasks: ["preset_prepare"]
     question: "If missing channels are allowed, what is the minimum number of channels that each sample must contain?"
-
-  - id: embedding_channels
-    required_for_tasks: ["embedding_extraction"]
-    question: "Which model channels should be exported?"
-
-  - id: embedding_kind
-    required_for_tasks: ["embedding_extraction"]
-    question: "Should whole-night extraction export both token and CLS embeddings?"
-
-  - id: layer_index
-    required_for_tasks: ["embedding_extraction"]
-    question: "Which encoder layer should supply embeddings?"
-
-  - id: max_source_tokens
-    required_for_tasks: ["embedding_extraction"]
-    question: "What is the maximum whole-night source-token count?"
-
-  - id: output_format
-    required_for_tasks: ["embedding_extraction"]
-    question: "Which embedding output format should be used?"
-
-  - id: sequence_mode
-    required_for_tasks: ["embedding_extraction"]
-    question: "Which extraction sequence mode should be used?"
 
   - id: hparam_search_space
     required_for_tasks: ["hparam_tune"]

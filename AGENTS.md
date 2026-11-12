@@ -124,7 +124,7 @@ bash utils/style_check.sh
 ## Agent Stop-And-Consult Policy
 Agents must not silently guess high-impact experiment decisions.
 
-Before generating runnable commands for preset preparation, finetuning, inference, evaluation, embedding extraction, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`.
+Before generating runnable commands for preset preparation, finetuning, inference, evaluation, or hyper-parameter tuning, run the relevant agent consultation checks through `agent_tools doctor` or `agent_tools plan`.
 
 If the tool returns `NEEDS_USER_INPUT`, stop and ask the user the generated questions. When `doctor --output-dir` or a safely published blocked `plan` emits `decisions.yaml`, fill only user-authorized values and pass that file back with `--user-decisions`. A blocked-plan retry must use a fresh output directory. A doctor retry may reuse its output directory only while the existing `decisions.yaml` already contains every currently requested decision and matches every currently resolved concrete value; newly exposed or changed concrete decisions require a fresh doctor output directory. While required decisions remain unresolved, do not generate executable experiment scripts, run training, or evaluate external test data. After consultation passes, follow the publication and launch authorization boundaries below; passing consultation alone does not authorize execution.
 

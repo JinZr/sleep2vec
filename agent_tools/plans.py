@@ -596,22 +596,10 @@ def _evaluate_config_override_decisions(
     recipe_adapter: TaskAdapter | None,
 ) -> tuple[DecisionReport, list[DecisionIssue] | None]:
     override_issues = None
-    accepts_config = cfg is not None and (
-        (cfg.get("is_finetune") is True and not cfg.get("blocking_issues"))
-        or (
-            recipe_adapter is not None
-            and recipe_adapter.accepts_pretrain_config
-            and (cfg.get("is_pretrain") is True or cfg.get("is_finetune") is True)
-        )
-    )
-    if accepts_config:
-        override_issues = recipe_adapter.config_override_issues(recipe, cfg) if recipe_adapter is not None else None
-    if (
-        override_issues is None
-        and cfg is not None
-        and cfg.get("is_finetune") is True
-        and not cfg.get("blocking_issues")
-    ):
+    accepts_config = cfg is not None and cfg.get("is_finetune") is True and not cfg.get("blocking_issues")
+    if accepts_config and recipe_adapter is not None:
+        override_issues = recipe_adapter.config_override_issues(recipe, cfg)
+    if override_issues is None and accepts_config:
         inputs_value = recipe.get("inputs")
         inputs = inputs_value if isinstance(inputs_value, dict) else {}
         evaluation_value = recipe.get("evaluation_policy")
@@ -658,14 +646,8 @@ def _evaluate_selected_config_decision(
     selected_config_value = (
         raw_config_decision.get("value") if isinstance(raw_config_decision, dict) else raw_config_decision
     )
-    selected_config_adapter = (
-        recipe_adapter
-        if recipe_adapter is not None
-        and (recipe_adapter.uses_finetune_config or recipe_adapter.accepts_pretrain_config)
-        and "config" in user_decisions
-        else None
-    )
-    if selected_config_adapter is not None and selected_config_value in (None, "", "ASK_USER"):
+    selects_config = recipe_adapter is not None and recipe_adapter.uses_finetune_config and "config" in user_decisions
+    if selects_config and selected_config_value in (None, "", "ASK_USER"):
         report = _append_issues(
             report,
             [
@@ -681,21 +663,12 @@ def _evaluate_selected_config_decision(
                 )
             ],
         )
-    elif selected_config_adapter is not None:
-        blocking_config_issues = (
-            cfg.get("blocking_issues", [])
-            if cfg is not None and not selected_config_adapter.accepts_pretrain_config
-            else []
-        )
-        config_kind_valid = cfg is not None and (
-            cfg.get("is_finetune") is True
-            or (selected_config_adapter.accepts_pretrain_config and cfg.get("is_pretrain") is True)
-        )
+    elif selects_config:
+        blocking_config_issues = cfg.get("blocking_issues", []) if cfg is not None else []
+        config_kind_valid = cfg is not None and cfg.get("is_finetune") is True
         if config_error or not config_kind_valid or blocking_config_issues:
-            message = config_error or (
-                "Selected config must be a readable pretrain or finetune model config without blocking issues."
-                if selected_config_adapter.accepts_pretrain_config
-                else "Selected config must be a readable finetune model config without blocking issues."
+            message = (
+                config_error or "Selected config must be a readable finetune model config without blocking issues."
             )
             report = _append_issues(
                 report,
@@ -1585,9 +1558,7 @@ def preflight_plan(
                 ],
             )
     preflight_adapter = get_adapter(recipe.get("task"))
-    if preflight_adapter is not None and (
-        report.exit_code == 0 or (report.exit_code == 2 and preflight_adapter.preflight_on_unresolved)
-    ):
+    if preflight_adapter is not None and report.exit_code == 0:
         adapter_preflight = preflight_adapter.preflight_issues(
             recipe,
             cfg,

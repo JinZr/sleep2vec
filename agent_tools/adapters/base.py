@@ -129,10 +129,6 @@ class TaskAdapter:
     slurm_launch_subcommand: str | None = None
     #: Public manager entrypoint for a generic task's local detached run.
     direct_launch_subcommand: str | None = None
-    #: Task accepts either a pretrain or finetune model config.
-    accepts_pretrain_config: bool = False
-    #: Run preflight_issues while consultation choices remain unresolved.
-    preflight_on_unresolved: bool = False
     #: Doctor runs its read-only target runtime diagnostic for this task.
     supports_doctor_runtime_diagnostics: bool = False
     #: Trainer log directory under execution.workdir that holds each managed

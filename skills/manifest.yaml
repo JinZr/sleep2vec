@@ -17,9 +17,6 @@ skills:
   inference_evaluation:
     path: skills/inference_evaluation/SKILL.md
     task_types: [infer]
-  embedding_extraction:
-    path: skills/embedding_extraction/SKILL.md
-    task_types: [embedding_extraction]
   sleep2stat:
     path: skills/sleep2stat/SKILL.md
     task_types: [sleep2stat]

@@ -632,10 +632,7 @@ def test_doctor_writes_task_template_for_explicit_ask_user_sentinel(tmp_path: Pa
     assert yaml.safe_load((output_dir / "decisions.yaml").read_text())["decisions"]["task"] == {
         "value": "ASK_USER",
         "source": "explicit_user",
-        "question": (
-            "Which task should be performed: preset_prepare, finetune, infer, "
-            "hparam_tune, sleep2stat, or embedding_extraction?"
-        ),
+        "question": "Which task should be performed: preset_prepare, finetune, infer, hparam_tune, or sleep2stat?",
     }
 
 
