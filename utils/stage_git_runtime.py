@@ -176,46 +176,27 @@ def _positive_reply(result, request, kinds):
     return reply
 
 
-def _on_target(request, argv):
-    if request["host"]:
-        argv = ["ssh", "--", request["host"], shlex.join(argv)]
+def _on_target(argv):
     return subprocess.run(argv, capture_output=True, text=True, timeout=30)
 
 
-def stage_runtime(
-    source_repo,
-    commit,
-    destination,
-    evidence_dir,
-    *,
-    host=None,
-    remote_python=None,
-    remote_attempt_dir=None,
-):
+def stage_runtime(source_repo, commit, destination, evidence_dir):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("commit must be a complete lowercase 40-character SHA.")
-    paths = [source_repo, destination, evidence_dir]
-    if host:
-        if not remote_python or not remote_attempt_dir:
-            raise ValueError("Remote staging requires remote_python and remote_attempt_dir.")
-        paths.append(remote_attempt_dir)
-    elif remote_python is not None or remote_attempt_dir is not None:
-        raise ValueError("Remote options require host.")
-    if any(not Path(path).is_absolute() for path in paths):
+    if any(not Path(path).is_absolute() for path in (source_repo, destination, evidence_dir)):
         raise ValueError("Use explicit absolute source, destination and evidence paths.")
-    if not host and os.path.lexists(destination):
+    if os.path.lexists(destination):
         raise FileExistsError(f"Destination already exists: {destination}")
     evidence = Path(evidence_dir)
     evidence.mkdir()
     _fsync_directory(evidence.parent)
     request = {
         "attempt_id": uuid.uuid4().hex,
-        "attempt_dir": str(remote_attempt_dir if host else evidence / "target"),
+        "attempt_dir": str(evidence / "target"),
         "destination": str(destination),
         "commit": commit,
         "source_repo": str(source_repo),
-        "host": host,
-        "python": remote_python if host else sys.executable,
+        "python": sys.executable,
     }
     _write_json(evidence / "intent.json", request)
     origin = subprocess.run(
@@ -232,30 +213,13 @@ def stage_runtime(
     request["bundle_sha256"] = _sha256(bundle)
     request["worker_sha256"] = _sha256(__file__)
     _write_json(evidence / "request.json", request)
-    claim = _on_target(
-        request,
-        [request["python"], "-c", _CLAIM_PROGRAM, json.dumps(request), json.dumps(IDENTITY_KEYS)],
-    )
+    claim = _on_target([request["python"], "-c", _CLAIM_PROGRAM, json.dumps(request), json.dumps(IDENTITY_KEYS)])
     _positive_reply(claim, request, {"claimed"})
     attempt = Path(request["attempt_dir"])
     worker = attempt / "stage_git_runtime.py"
-    if host:
-        transfer = subprocess.run(
-            [
-                "scp",
-                "-O",
-                "--",
-                str(bundle),
-                str(Path(__file__).absolute()),
-                f"{host}:{shlex.quote(str(attempt) + '/')}",
-            ]
-        )
-        transfer.check_returncode()
-    else:
-        shutil.copyfile(bundle, attempt / "runtime.bundle")
-        shutil.copyfile(__file__, worker)
+    shutil.copyfile(bundle, attempt / "runtime.bundle")
+    shutil.copyfile(__file__, worker)
     result = _on_target(
-        request,
         [
             request["python"],
             "-c",
@@ -264,7 +228,7 @@ def stage_runtime(
             request["worker_sha256"],
             "_launch",
             str(attempt),
-        ],
+        ]
     )
     return _positive_reply(result, request, {"started"})
 
@@ -421,7 +385,6 @@ def check_runtime(evidence_dir):
     request = json.loads((Path(evidence_dir) / "request.json").read_text())
     worker = str(Path(request["attempt_dir"]) / "stage_git_runtime.py")
     result = _on_target(
-        request,
         [
             request["python"],
             "-c",
@@ -430,7 +393,7 @@ def check_runtime(evidence_dir):
             request["worker_sha256"],
             "_check",
             request["attempt_dir"],
-        ],
+        ]
     )
     receipt = _positive_reply(result, request, {"completed", "failed", "pending"})
     if receipt["kind"] != "pending":
@@ -453,8 +416,6 @@ def main(argv=None):
         )
         for name in ("source-repo", "commit", "destination", "evidence-dir"):
             stage.add_argument("--" + name, required=True)
-        for name in ("host", "remote-python", "remote-attempt-dir"):
-            stage.add_argument("--" + name)
         check = commands.add_parser("check", help="Read the original attempt; only verified completion returns exit 0.")
         check.add_argument("--evidence-dir", required=True)
         args = vars(parser.parse_args(argv))

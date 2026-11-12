@@ -193,9 +193,10 @@ jobs:
 
       # The agent_tools kernel must stay importable and fully testable without
       # any domain package (torch, lightning, wandb, sleep2stat, ...). The
-      # ignored domain-facing test files need those packages in their own
-      # environment; test_agent_run_manifest.py runs through the shared runner
-      # in the unit_tests job below, and test_agent_tools_recipes.py is owned by the
+      # ignored domain-facing test files (test_agent_run_manifest.py,
+      # test_agent_tools_sleep2stat.py and test_agent_sex_age_baseline.py) run
+      # through the shared runner in the unit_tests job below, which installs
+      # those packages; test_agent_tools_recipes.py is owned by the
       # agent_tools_recipe_tests job above.
       #
       # The suite runs as four shards selected by the crc32 of each test's node
@@ -282,11 +283,16 @@ jobs:
             tests/variants/test_sleep2vec2_namespace.py \
             tests/variants/test_sleep2expert_namespace.py
 
-      # Domain-facing agent_tools tests need torch, lightning and wandb, and run
-      # through the shared runner for its random-order and CPU policy.
+      # Domain-facing agent_tools tests import the repository's domain packages
+      # (sleep2vec, sex_age_baseline, sleep2stat) and their torch, lightning and
+      # wandb dependencies, and run through the shared runner for its
+      # random-order and CPU policy.
       - name: Run agent tools domain tests
         env:
           PYTEST_ADDOPTS: --randomly-seed=${{ github.run_number }}
         run: |
           echo "pytest random seed: ${GITHUB_RUN_NUMBER}"
-          python utils/test_agent_tools.py -q tests/agent_tools/test_agent_run_manifest.py
+          python utils/test_agent_tools.py -q -n auto \
+            tests/agent_tools/test_agent_run_manifest.py \
+            tests/agent_tools/test_agent_tools_sleep2stat.py \
+            tests/agent_tools/test_agent_sex_age_baseline.py

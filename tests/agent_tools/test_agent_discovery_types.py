@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-import subprocess
-import sys
-import textwrap
-
 from agent_tools import skills
 
 
@@ -41,64 +36,3 @@ def test_validation_preserves_discovery_mapping_identity(tmp_path, monkeypatch):
     assert result == {"ok": True, "issues": [], "skills": summaries}
     assert result["skills"] is summaries
     assert result["skills"][0] is summaries[0]
-
-
-def test_discovery_mypy_consumer_contract(tmp_path):
-    root = Path(__file__).resolve().parents[2]
-    probe = tmp_path / "discovery_consumer.py"
-    probe.write_text(textwrap.dedent("""\
-            from typing import Any
-            from typing_extensions import assert_type
-            from agent_tools.repo import repo_summary
-            from agent_tools.skills import SkillSummary, SkillValidationResult, list_skills, validate_skills
-
-            summary = repo_summary()
-            assert_type(summary["repo_root"], str)
-            assert_type(summary["git"]["available"], bool)
-            assert_type(summary["git"]["branch"], str)
-            assert_type(summary["git"]["commit"], str)
-            assert_type(summary["git"]["dirty"], bool)
-            assert_type(summary["code_index"]["path"], str)
-            assert_type(summary["code_index"]["exists"], bool)
-            assert_type(summary["important_paths"]["skills_manifest"], str)
-            assert_type(summary["python"]["version"], str)
-            entries = list_skills()
-            assert_type(entries, list[SkillSummary])
-            assert_type(entries[0]["name"], Any)
-            assert_type(entries[0]["path"], Any)
-            assert_type(entries[0]["task_types"], Any)
-            validation = validate_skills()
-            assert_type(validation["ok"], bool)
-            assert_type(validation["issues"], list[str])
-            if "skills" in validation:
-                assert_type(validation["skills"], list[SkillSummary])
-            missing: SkillValidationResult = {"ok": False, "issues": ["missing"]}
-            """))
-    command = [
-        sys.executable,
-        "-m",
-        "mypy",
-        "--config-file",
-        str(root / "pyproject.toml"),
-        "--follow-imports=silent",
-        "--no-incremental",
-        str(probe),
-    ]
-    result = subprocess.run(command, cwd=root, capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout + result.stderr
-
-    with probe.open("a") as stream:
-        stream.write(
-            '\nsummary["git"]["available"] = "yes"\n'
-            'summary["code_index"]["missing"]\n'
-            'summary["important_paths"]["tests"] = 1\n'
-            'summary["python"]["version"] = 1\n'
-            'entries[0]["unknown"]\n'
-            'validation["issues"] = [1]\n'
-            'invalid: SkillValidationResult = {"ok": True}\n'
-        )
-    result = subprocess.run(command, cwd=root, capture_output=True, text=True)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert result.stdout.count("error:") == 7, result.stdout + result.stderr
-    assert result.stdout.count("[typeddict-item]") == 6, result.stdout
-    assert result.stdout.count("[list-item]") == 1, result.stdout

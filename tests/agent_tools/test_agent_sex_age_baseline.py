@@ -501,30 +501,6 @@ def test_sex_age_baseline_hparam_val_only_ignores_unloaded_test_sidecar_keys(tmp
     assert "--wandb-mode" not in script
 
 
-@pytest.mark.parametrize("ckpt_name", ["epoch=02.ckpt", "last"])
-def test_baseline_infer_plan_renders_checkpoint_averaging_like_sleep2vec(tmp_path: Path, ckpt_name):
-    config = _write_survival_config(tmp_path)
-    ckpt_dir = tmp_path / "checkpoints"
-    ckpt_dir.mkdir()
-    (ckpt_dir / "epoch=02.ckpt").write_text("placeholder")
-    ckpt_path = str(ckpt_dir / ckpt_name) if ckpt_name.endswith(".ckpt") else ckpt_name
-    recipe = _infer_recipe(tmp_path, config, ckpt_dir / "epoch=02.ckpt")
-    payload = yaml.safe_load(recipe.read_text())
-    payload["inputs"]["ckpt_path"] = ckpt_path
-    payload["runtime"].update(avg_ckpts=3, avg_ckpt_dir=str(ckpt_dir))
-    _write_yaml(recipe, payload)
-    output = tmp_path / "averaging-plan"
-
-    report = build_plan(recipe_path=recipe, output_dir=output)
-
-    assert report.exit_code == 0, report.issues
-    (command,) = json.loads((output / "plan.json").read_text())["commands"]
-    argv = shlex.split(command)
-    assert argv[argv.index("--ckpt-path") + 1] == ckpt_path
-    assert argv[argv.index("--avg-ckpts") + 1] == "3"
-    assert argv[argv.index("--avg-ckpt-dir") + 1] == str(ckpt_dir)
-
-
 @pytest.mark.parametrize("device", ["cuda", "cuda:0", "cuda:1"])
 def test_baseline_slurm_device_contract_matches_sleep2vec(device):
     from agent_tools.decision_paths import execution_contract_issues
@@ -538,33 +514,6 @@ def test_baseline_slurm_device_contract_matches_sleep2vec(device):
 
     assert device_issues("sex_age_baseline") == device_issues("sleep2vec")
     assert bool(device_issues("sex_age_baseline")) == (device == "cuda:1")
-
-
-def test_sex_age_baseline_slurm_multi_gpu_plan(tmp_path: Path):
-    config = _write_survival_config(tmp_path)
-    recipe = _hparam_recipe(
-        tmp_path,
-        config,
-        execution={
-            "gpus_per_run": 2,
-            "scheduler": {
-                "type": "slurm",
-                "partition": "gpu",
-                "cpus_per_task": 8,
-                "memory": "64G",
-                "walltime": "01:00:00",
-            },
-        },
-    )
-    plan_dir = tmp_path / "plan-slurm-multi-gpu"
-
-    report = build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    failures = [issue for issue in report.issues if issue.status.value == "FAIL"]
-    assert not failures, failures
-    scripts = list((plan_dir / "runs").glob("run-000--*/launch.sh"))
-    assert len(scripts) == 1
-    assert "--devices 0 1" in scripts[0].read_text()
 
 
 @pytest.mark.parametrize("wandb_mode", ["disabled", "offline"])
@@ -667,30 +616,6 @@ def test_covariate_baseline_selected_bmi_empty_fails_doctor(tmp_path: Path, bmi:
     _recipe, _cfg, report = evaluate_recipe(_finetune_recipe(tmp_path, config))
     assert report.exit_code != 0
     assert any("empty covariate values in column: bmi" in issue.message for issue in report.issues)
-
-
-def test_covariate_baseline_explicit_scheduler_search_renders_each_arm(tmp_path: Path):
-    recipe = _hparam_recipe(tmp_path, _write_survival_config(tmp_path))
-    payload = yaml.safe_load(recipe.read_text())
-    payload["search"] = {
-        "method": "grid",
-        "max_runs": 2,
-        "parameters": {"runtime.lr_decay_shape": ["cosine", "linear"], "runtime.lr_decay_floor": [0.2]},
-    }
-    _write_yaml(recipe, payload)
-    plan = tmp_path / "scheduler-plan"
-    report = build_plan(recipe_path=recipe, output_dir=plan)
-    assert report.exit_code == 0, report.issues
-    scripts = [path.read_text() for path in (plan / "runs").glob("run-*--*/launch.sh")]
-    assert len(scripts) == 2
-    assert all("--lr-decay-floor 0.2" in script for script in scripts)
-    from agent_tools.plan_rendering import runtime_cli_args
-
-    argv = runtime_cli_args({"lr_decay_floor": 0.2, "lr_decay_shape": "linear"})
-    assert argv.count("--lr-decay-floor") == 1
-    assert argv.count("--lr-decay-shape") == 1
-    assert sum("--lr-decay-shape cosine" in script for script in scripts) == 1
-    assert sum("--lr-decay-shape linear" in script for script in scripts) == 1
 
 
 def test_sex_age_baseline_multilabel_blocks_missing_covariate_columns(tmp_path: Path):

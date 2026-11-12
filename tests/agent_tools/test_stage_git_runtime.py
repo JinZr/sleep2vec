@@ -50,71 +50,7 @@ def source_repo(tmp_path_factory):
     return SimpleNamespace(root=root, commit=commit, head=_git(root, "rev-parse", "HEAD"))
 
 
-@pytest.fixture
-def fake_transport(tmp_path, monkeypatch):
-    directory = tmp_path / "fake transport"
-    directory.mkdir()
-    calls = tmp_path / "transport-calls.jsonl"
-    program = f"#!{sys.executable}\n" + """import json
-import os
-from pathlib import Path
-import shutil
-import shlex
-import subprocess
-import sys
-
-kind = Path(sys.argv[0]).name
-with open(os.environ["STAGE_TEST_TRANSPORT_CALLS"], "a") as stream:
-    stream.write(json.dumps({"kind": kind, "argv": sys.argv[1:]}) + "\\n")
-if kind == "scp":
-    if os.environ.get("STAGE_TEST_SCP_FAILURE"):
-        sys.exit(23)
-    args = [value for value in sys.argv[1:] if not value.startswith("-")]
-    target = Path(shlex.split(args[-1].split(":", 1)[1])[0])
-    for source in args[:-1]:
-        copied = target / Path(source).name if target.is_dir() else target
-        shutil.copyfile(source, copied)
-        if os.environ.get("STAGE_TEST_CORRUPT_BUNDLE") and copied.name == "runtime.bundle":
-            copied.write_bytes(b"damaged transfer")
-    sys.exit(0)
-mode = os.environ.get("STAGE_TEST_SSH_MODE", "normal")
-failure_call = os.environ.get("STAGE_TEST_SSH_FAILURE_CALL")
-if failure_call:
-    calls = [json.loads(line) for line in Path(os.environ["STAGE_TEST_TRANSPORT_CALLS"]).read_text().splitlines()]
-    if sum(call["kind"] == "ssh" for call in calls) != int(failure_call):
-        mode = "normal"
-if mode == "eof":
-    print("authentication EOF", file=sys.stderr)
-    sys.exit(0)
-result = subprocess.run(["bash", "-c", sys.argv[-1]], input=sys.stdin.buffer.read(), capture_output=True)
-output = result.stdout
-if mode == "empty":
-    output = b""
-elif mode == "truncated":
-    output = output[:len(output) // 2]
-elif mode in {"wrong_binding", "wrong_head", "missing_steps"} and output:
-    data = json.loads(output)
-    if mode == "wrong_binding":
-        data["attempt_id"] = "another-attempt"
-    elif mode == "wrong_head":
-        data["head"] = "a" * 40
-    else:
-        data.pop("steps", None)
-    output = json.dumps(data).encode()
-sys.stdout.buffer.write(output)
-sys.stderr.buffer.write(result.stderr)
-sys.exit(255 if mode == "ssh255" else result.returncode)
-"""
-    for name in ("ssh", "scp"):
-        executable = directory / name
-        executable.write_text(program)
-        executable.chmod(0o755)
-    monkeypatch.setenv("PATH", str(directory) + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("STAGE_TEST_TRANSPORT_CALLS", str(calls))
-    return calls
-
-
-def _transport_calls(path):
+def _records(path):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
@@ -181,23 +117,15 @@ def _finish(staging, evidence):
     pytest.fail(f"The tiny Git staging operation did not finish within {SUBPROCESS_WAIT_SECONDS} seconds")
 
 
-def _stage(staging, source, tmp_path, *, remote=False):
+def _stage(staging, source, tmp_path):
     evidence = tmp_path / "evidence"
     destination = tmp_path / "runtime destination"
-    kwargs = {}
-    if remote:
-        kwargs = {
-            "host": "fake-host",
-            "remote_python": sys.executable,
-            "remote_attempt_dir": str(tmp_path / "remote attempt"),
-        }
-    result = staging.stage_runtime(source.root, source.commit, destination, evidence, **kwargs)
+    result = staging.stage_runtime(source.root, source.commit, destination, evidence)
     return evidence, destination, result
 
 
-@pytest.mark.parametrize("remote", [False, True])
-def test_stage_exact_commit_excludes_dirty_source(staging, source_repo, tmp_path, fake_transport, remote):
-    evidence, destination, started = _stage(staging, source_repo, tmp_path, remote=remote)
+def test_stage_exact_commit_excludes_dirty_source(staging, source_repo, tmp_path):
+    evidence, destination, started = _stage(staging, source_repo, tmp_path)
     assert started["kind"] == "started"
     result = _finish(staging, evidence)
 
@@ -221,10 +149,9 @@ def test_stage_exact_commit_excludes_dirty_source(staging, source_repo, tmp_path
     ]
 
 
-@pytest.mark.parametrize("remote", [False, True])
 @pytest.mark.parametrize("ambient", ["autocrlf", "attributes"])
 def test_ambient_git_configuration_does_not_transform_runtime_bytes(
-    staging, source_repo, tmp_path, fake_transport, observed_git, monkeypatch, ambient, remote
+    staging, source_repo, tmp_path, observed_git, monkeypatch, ambient
 ):
     ambient_home = tmp_path / "ambient home"
     ambient_home.mkdir()
@@ -237,12 +164,12 @@ def test_ambient_git_configuration_does_not_transform_runtime_bytes(
     monkeypatch.setenv("HOME", str(ambient_home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(ambient_home / ".config"))
 
-    evidence, destination, _started = _stage(staging, source_repo, tmp_path, remote=remote)
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path)
 
     assert _finish(staging, evidence)["kind"] == "completed"
     assert (destination / "tracked.txt").read_bytes() == b"requested commit\n"
     assert (source_repo.root / "tracked.txt").read_bytes() == b"uncommitted edit\n"
-    records = _transport_calls(observed_git)
+    records = _records(observed_git)
     assert records
     assert all(
         record["git_environment"]
@@ -251,31 +178,30 @@ def test_ambient_git_configuration_does_not_transform_runtime_bytes(
     )
 
 
-def test_producer_failure_does_not_transfer(staging, source_repo, tmp_path, fake_transport, monkeypatch):
+def test_producer_failure_does_not_claim_attempt(staging, source_repo, tmp_path, monkeypatch):
     def fail_producer(*_args):
         raise subprocess.CalledProcessError(3, ["git", "bundle", "create"])
 
     monkeypatch.setattr(staging, "_produce_bundle", fail_producer)
     with pytest.raises(subprocess.CalledProcessError):
-        _stage(staging, source_repo, tmp_path, remote=True)
-    assert _transport_calls(fake_transport) == []
-    assert not (tmp_path / "runtime destination" / ".git").exists()
+        _stage(staging, source_repo, tmp_path)
+    assert not (tmp_path / "evidence" / "target").exists()
+    assert not (tmp_path / "runtime destination").exists()
 
 
 @pytest.mark.parametrize("operation", ["init", "fetch", "rev-parse", "bundle create", "bundle verify"])
-def test_real_producer_git_failure_stops_before_transfer(
-    staging, source_repo, tmp_path, fake_transport, observed_git, monkeypatch, operation
+def test_real_producer_git_failure_stops_before_claim(
+    staging, source_repo, tmp_path, observed_git, monkeypatch, operation
 ):
     monkeypatch.setenv("STAGE_TEST_GIT_SCOPE", "producer")
     monkeypatch.setenv("STAGE_TEST_GIT_FAILURE", operation)
     with pytest.raises(subprocess.CalledProcessError):
-        _stage(staging, source_repo, tmp_path, remote=True)
-    assert _transport_calls(fake_transport) == []
+        _stage(staging, source_repo, tmp_path)
     results = json.loads((tmp_path / "evidence" / "producer-results.json").read_text())
     assert results[-1]["returncode"] == 19
     assert all(word in results[-1]["argv"] for word in operation.split())
     assert not (tmp_path / "runtime destination").exists()
-    assert not (tmp_path / "remote attempt").exists()
+    assert not (tmp_path / "evidence" / "target").exists()
 
 
 def test_valid_hash_does_not_make_invalid_bundle_usable(staging, source_repo, tmp_path, monkeypatch):
@@ -296,43 +222,24 @@ def test_valid_hash_does_not_make_invalid_bundle_usable(staging, source_repo, tm
     assert not (destination / ".git").exists()
 
 
-@pytest.mark.parametrize("mode", ["eof", "empty", "truncated", "wrong_binding", "ssh255"])
-def test_ssh_uncertainty_never_becomes_success_or_retries(
-    staging, source_repo, tmp_path, fake_transport, monkeypatch, mode
-):
-    monkeypatch.setenv("STAGE_TEST_SSH_MODE", mode)
-    with pytest.raises((RuntimeError, ValueError, subprocess.CalledProcessError)):
-        _stage(staging, source_repo, tmp_path, remote=True)
-    calls = _transport_calls(fake_transport)
-    assert len([call for call in calls if call["kind"] == "ssh"]) == 1
-    assert not any(call["kind"] == "scp" for call in calls)
-    assert not (tmp_path / "runtime destination" / ".git").exists()
+def test_corrupted_attempt_bundle_never_prepares_runtime(staging, source_repo, tmp_path, monkeypatch):
+    copy = staging.shutil.copyfile
 
+    def corrupt_bundle(source, target):
+        copy(source, target)
+        if Path(target).name == "runtime.bundle":
+            Path(target).write_bytes(b"damaged copy")
 
-def test_transfer_failure_does_not_start_worker(staging, source_repo, tmp_path, fake_transport, monkeypatch):
-    monkeypatch.setenv("STAGE_TEST_SCP_FAILURE", "1")
-    with pytest.raises((RuntimeError, subprocess.CalledProcessError)):
-        _stage(staging, source_repo, tmp_path, remote=True)
-    calls = _transport_calls(fake_transport)
-    assert len([call for call in calls if call["kind"] == "scp"]) == 1
-    assert len([call for call in calls if call["kind"] == "ssh"]) == 1
-    assert not (tmp_path / "runtime destination" / ".git").exists()
-
-
-def test_corrupted_transfer_never_prepares_runtime(staging, source_repo, tmp_path, fake_transport, monkeypatch):
-    monkeypatch.setenv("STAGE_TEST_CORRUPT_BUNDLE", "1")
+    monkeypatch.setattr(staging.shutil, "copyfile", corrupt_bundle)
     with pytest.raises(RuntimeError, match="Transport failed"):
-        _stage(staging, source_repo, tmp_path, remote=True)
+        _stage(staging, source_repo, tmp_path)
     assert not (tmp_path / "runtime destination" / ".git").exists()
-    assert not (tmp_path / "remote attempt" / "launch-attempt.json").exists()
-    calls = _transport_calls(fake_transport)
-    assert len([call for call in calls if call["kind"] == "scp"]) == 1
-    assert len([call for call in calls if call["kind"] == "ssh"]) == 2
+    assert not (tmp_path / "evidence" / "target" / "launch-attempt.json").exists()
 
 
 @pytest.mark.parametrize("operation", ["clone", "checkout", "rev-parse", "status"])
 def test_failed_git_phase_never_has_positive_terminal_receipt(
-    staging, source_repo, tmp_path, fake_transport, observed_git, monkeypatch, operation
+    staging, source_repo, tmp_path, observed_git, monkeypatch, operation
 ):
     monkeypatch.setenv("STAGE_TEST_GIT_FAILURE", operation)
     evidence, _destination, _started = _stage(staging, source_repo, tmp_path)
@@ -340,57 +247,28 @@ def test_failed_git_phase_never_has_positive_terminal_receipt(
     assert result["kind"] == "failed"
     assert result["returncode"] != 0
     assert any(step["returncode"] != 0 for step in result["steps"])
-    records = _transport_calls(observed_git)
+    records = _records(observed_git)
     failed = [index for index, record in enumerate(records) if operation in record["argv"]]
     assert failed
     assert operation in records[-1]["argv"]
 
 
-@pytest.mark.parametrize("mode", ["empty", "truncated", "wrong_binding", "ssh255"])
-def test_lost_start_reply_does_not_repeat_successful_launch(
-    staging, source_repo, tmp_path, fake_transport, monkeypatch, mode
-):
-    monkeypatch.setenv("STAGE_TEST_SSH_MODE", mode)
-    monkeypatch.setenv("STAGE_TEST_SSH_FAILURE_CALL", "2")
-    with pytest.raises((RuntimeError, ValueError, subprocess.CalledProcessError)):
-        _stage(staging, source_repo, tmp_path, remote=True)
-    calls = _transport_calls(fake_transport)
-    assert len([call for call in calls if call["kind"] == "ssh"]) == 2
-    assert len([call for call in calls if call["kind"] == "scp"]) == 1
-
-    monkeypatch.delenv("STAGE_TEST_SSH_MODE")
-    completed = _finish(staging, tmp_path / "evidence")
-    assert completed["kind"] == "completed"
-    assert completed["head"] == source_repo.commit
-    assert (tmp_path / "remote attempt" / "launch-attempt.json").is_file()
-
-
-def test_lost_start_reply_preserves_pending_worker_handle(
-    staging, source_repo, tmp_path, fake_transport, observed_git, monkeypatch
-):
+def test_pending_check_reports_recorded_worker_handle(staging, source_repo, tmp_path, observed_git, monkeypatch):
     gate = tmp_path / "release-git"
-    attempt = tmp_path / "remote attempt"
-    evidence = tmp_path / "evidence"
     monkeypatch.setenv("STAGE_TEST_GIT_GATE", str(gate))
-    monkeypatch.setenv("STAGE_TEST_SSH_MODE", "empty")
-    monkeypatch.setenv("STAGE_TEST_SSH_FAILURE_CALL", "2")
     try:
-        with pytest.raises(RuntimeError, match="no complete operation reply"):
-            _stage(staging, source_repo, tmp_path, remote=True)
+        evidence, _destination, started = _stage(staging, source_repo, tmp_path)
+        attempt = evidence / "target"
         deadline = time.monotonic() + SUBPROCESS_WAIT_SECONDS
         while not gate.with_suffix(".waiting").exists():
             assert time.monotonic() < deadline, "Worker did not reach the controlled Git barrier"
             time.sleep(0.01)
         worker = json.loads((attempt / "worker.json").read_text())
-        monkeypatch.delenv("STAGE_TEST_SSH_MODE")
         pending = staging.check_runtime(evidence)
         assert pending["kind"] == "pending"
-        assert pending["recorded_pid"] == worker["pid"]
+        assert pending["recorded_pid"] == worker["pid"] == started["pid"]
         assert os.getpgid(worker["pid"]) == worker["pid"]
         assert not (attempt / "receipt.json").exists()
-        calls = _transport_calls(fake_transport)
-        assert len([call for call in calls if call["kind"] == "ssh" and "_launch" in call["argv"][-1]]) == 1
-        assert len([call for call in calls if call["kind"] == "scp"]) == 1
     finally:
         gate.touch()
     assert _finish(staging, evidence)["kind"] == "completed"
@@ -410,14 +288,19 @@ def test_pending_worker_handle_rejects_wrong_identity_or_pid(staging, source_rep
         staging.check_runtime(evidence)
 
 
-def test_pending_worker_handle_is_atomically_visible(staging, source_repo, tmp_path, fake_transport, monkeypatch):
-    monkeypatch.setenv("STAGE_TEST_SSH_MODE", "eof")
-    monkeypatch.setenv("STAGE_TEST_SSH_FAILURE_CALL", "2")
-    with pytest.raises(RuntimeError, match="no complete operation reply"):
-        _stage(staging, source_repo, tmp_path, remote=True)
-    monkeypatch.delenv("STAGE_TEST_SSH_MODE")
-    attempt = tmp_path / "remote attempt"
+def test_pending_worker_handle_is_atomically_visible(staging, source_repo, tmp_path, monkeypatch):
+    on_target = staging._on_target
+
+    def refuse_launch(argv):
+        if "_launch" in argv:
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        return on_target(argv)
+
+    monkeypatch.setattr(staging, "_on_target", refuse_launch)
+    with pytest.raises(RuntimeError, match="Transport failed"):
+        _stage(staging, source_repo, tmp_path)
     evidence = tmp_path / "evidence"
+    attempt = evidence / "target"
     partial = Event()
     release = Event()
     dump = staging.json.dump
@@ -450,13 +333,10 @@ def test_pending_worker_handle_is_atomically_visible(staging, source_repo, tmp_p
     assert _finish(staging, evidence)["kind"] == "completed"
 
 
-@pytest.mark.parametrize("remote", [False, True])
-def test_changed_worker_cannot_forward_receipt_for_dirty_runtime(
-    staging, source_repo, tmp_path, fake_transport, remote
-):
-    evidence, destination, _started = _stage(staging, source_repo, tmp_path, remote=remote)
+def test_changed_worker_cannot_forward_receipt_for_dirty_runtime(staging, source_repo, tmp_path):
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path)
     assert _finish(staging, evidence)["kind"] == "completed"
-    attempt = tmp_path / "remote attempt" if remote else evidence / "target"
+    attempt = evidence / "target"
     marker = tmp_path / "changed-worker-executed"
     (attempt / "stage_git_runtime.py").write_text(
         "from pathlib import Path\n"
@@ -464,19 +344,15 @@ def test_changed_worker_cannot_forward_receipt_for_dirty_runtime(
         f"print(Path({str(attempt / 'receipt.json')!r}).read_text())\n"
     )
     (destination / "tracked.txt").write_text("dirty runtime\n")
-    before = _transport_calls(fake_transport)
 
     with pytest.raises(RuntimeError, match="Transport failed"):
         staging.check_runtime(evidence)
 
     assert not marker.exists()
     assert (destination / "tracked.txt").read_text() == "dirty runtime\n"
-    extra = _transport_calls(fake_transport)[len(before) :]
-    assert len(extra) == int(remote)
-    assert all(call["kind"] == "ssh" and "_check" in call["argv"][-1] for call in extra)
 
 
-def test_staging_evidence_and_parent_entries_are_fsynced(staging, source_repo, tmp_path, fake_transport, monkeypatch):
+def test_staging_evidence_and_parent_entries_are_fsynced(staging, source_repo, tmp_path, monkeypatch):
     observer = tmp_path / "fsync observer"
     observer.mkdir()
     trace = tmp_path / "fsync-calls.jsonl"
@@ -502,19 +378,11 @@ def test_staging_evidence_and_parent_entries_are_fsynced(staging, source_repo, t
 
     monkeypatch.setattr(staging.os, "fsync", observed_fsync)
     evidence = tmp_path / "evidence parent" / "evidence"
-    attempt = tmp_path / "attempt parent" / "attempt"
+    attempt = evidence / "target"
     destination = tmp_path / "destination parent" / "runtime"
-    for path in (evidence, attempt, destination):
+    for path in (evidence, destination):
         path.parent.mkdir()
-    staging.stage_runtime(
-        source_repo.root,
-        source_repo.commit,
-        destination,
-        evidence,
-        host="fake-host",
-        remote_python=sys.executable,
-        remote_attempt_dir=attempt,
-    )
+    staging.stage_runtime(source_repo.root, source_repo.commit, destination, evidence)
     before_completion = [json.loads(line) for line in trace.read_text().splitlines()]
     for directory in (evidence, attempt, destination, evidence.parent, attempt.parent, destination.parent):
         info = directory.stat()
@@ -537,18 +405,15 @@ def test_staging_evidence_and_parent_entries_are_fsynced(staging, source_repo, t
         assert [parent.st_dev, parent.st_ino] in synced[file_sync + 1 :], path.name
 
 
-@pytest.mark.parametrize("remote", [False, True])
-def test_worker_has_detached_session_and_persistent_stdio(
-    staging, source_repo, tmp_path, fake_transport, observed_git, remote
-):
-    evidence, destination, started = _stage(staging, source_repo, tmp_path, remote=remote)
+def test_worker_has_detached_session_and_persistent_stdio(staging, source_repo, tmp_path, observed_git):
+    evidence, destination, started = _stage(staging, source_repo, tmp_path)
     assert _finish(staging, evidence)["kind"] == "completed"
-    records = _transport_calls(observed_git)
+    records = _records(observed_git)
     target_commands = [
         record for record in records if record["cwd"] == str(destination) or record["argv"][0] == "clone"
     ]
     assert target_commands
-    attempt = tmp_path / "remote attempt" if remote else evidence / "target"
+    attempt = evidence / "target"
     log_inode = (attempt / "worker.log").stat().st_ino
     for record in target_commands:
         assert record["sid"] == started["pid"]
@@ -563,7 +428,7 @@ def test_worker_has_detached_session_and_persistent_stdio(
 
 
 @pytest.mark.parametrize("field", ["attempt_id", "destination", "commit", "bundle_sha256", "head", "clean"])
-def test_completed_receipt_with_wrong_binding_is_not_success(staging, source_repo, tmp_path, fake_transport, field):
+def test_completed_receipt_with_wrong_binding_is_not_success(staging, source_repo, tmp_path, field):
     evidence, _destination, _started = _stage(staging, source_repo, tmp_path)
     assert _finish(staging, evidence)["kind"] == "completed"
     receipt_path = evidence / "target" / "receipt.json"
@@ -572,23 +437,6 @@ def test_completed_receipt_with_wrong_binding_is_not_success(staging, source_rep
     receipt_path.write_text(json.dumps(receipt))
     with pytest.raises((RuntimeError, ValueError)):
         staging.check_runtime(evidence)
-
-
-@pytest.mark.parametrize(
-    "mode", ["eof", "empty", "truncated", "wrong_binding", "wrong_head", "missing_steps", "ssh255"]
-)
-def test_check_requires_complete_bound_success_without_retry(
-    staging, source_repo, tmp_path, fake_transport, monkeypatch, mode
-):
-    evidence, _destination, _started = _stage(staging, source_repo, tmp_path, remote=True)
-    assert _finish(staging, evidence)["kind"] == "completed"
-    before = _transport_calls(fake_transport)
-    monkeypatch.setenv("STAGE_TEST_SSH_MODE", mode)
-    with pytest.raises((RuntimeError, ValueError, subprocess.CalledProcessError)):
-        staging.check_runtime(evidence)
-    after = _transport_calls(fake_transport)
-    assert len(after) == len(before) + 1
-    assert after[-1]["kind"] == "ssh"
 
 
 @pytest.mark.parametrize("drift", ["head", "tracked", "untracked"])
@@ -608,9 +456,8 @@ def test_check_rejects_changed_runtime_without_repair(staging, source_repo, tmp_
     assert _git(destination, "status", "--porcelain") == status
 
 
-@pytest.mark.parametrize("remote", [False, True])
-def test_check_rejects_attached_head_even_at_exact_clean_commit(staging, source_repo, tmp_path, fake_transport, remote):
-    evidence, destination, _started = _stage(staging, source_repo, tmp_path, remote=remote)
+def test_check_rejects_attached_head_even_at_exact_clean_commit(staging, source_repo, tmp_path):
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path)
     assert _finish(staging, evidence)["kind"] == "completed"
     _git(destination, "checkout", "-b", "reattached-head")
     assert _git(destination, "rev-parse", "HEAD") == source_repo.commit
@@ -655,13 +502,12 @@ def test_check_does_not_treat_symbolic_ref_error_as_detached(staging, source_rep
         staging.check_runtime(evidence)
 
 
-def test_missing_receipt_stays_pending_even_when_head_exists(staging, source_repo, tmp_path, fake_transport):
-    evidence, destination, _started = _stage(staging, source_repo, tmp_path, remote=True)
+def test_missing_receipt_stays_pending_even_when_head_exists(staging, source_repo, tmp_path):
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path)
     assert _finish(staging, evidence)["kind"] == "completed"
-    attempt = tmp_path / "remote attempt"
+    attempt = evidence / "target"
     launch = (attempt / "launch-attempt.json").read_bytes()
     (attempt / "receipt.json").unlink()
-    before = _transport_calls(fake_transport)
 
     assert staging.check_runtime(evidence)["kind"] == "pending"
     checked = subprocess.run(
@@ -672,19 +518,13 @@ def test_missing_receipt_stays_pending_even_when_head_exists(staging, source_rep
     )
     assert checked.returncode == 2
     assert json.loads(checked.stdout)["kind"] == "pending"
-    extra = _transport_calls(fake_transport)[len(before) :]
-    assert len(extra) == 2
-    assert all(call["kind"] == "ssh" and "_check" in call["argv"][-1] for call in extra)
     assert (attempt / "launch-attempt.json").read_bytes() == launch
     assert not (attempt / "receipt.json").exists()
     assert _git(destination, "rev-parse", "HEAD") == source_repo.commit
 
 
-@pytest.mark.parametrize("remote", [False, True])
-def test_completed_check_leaves_git_index_bytes_and_mtime_unchanged(
-    staging, source_repo, tmp_path, fake_transport, remote
-):
-    evidence, destination, _started = _stage(staging, source_repo, tmp_path, remote=remote)
+def test_completed_check_leaves_git_index_bytes_and_mtime_unchanged(staging, source_repo, tmp_path):
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path)
     assert _finish(staging, evidence)["kind"] == "completed"
     tracked = destination / "tracked.txt"
     previous = tracked.stat()
@@ -733,34 +573,29 @@ def test_worker_cli_propagates_failed_receipt_exit(staging, monkeypatch, capsys)
     assert json.loads(capsys.readouterr().out) == {"kind": "failed", "returncode": 19}
 
 
-@pytest.mark.parametrize("existing", ["destination", "evidence", "remote_attempt"])
-def test_existing_paths_are_not_reused(staging, source_repo, tmp_path, fake_transport, existing):
-    paths = {
-        "destination": tmp_path / "runtime destination",
-        "evidence": tmp_path / "evidence",
-        "remote_attempt": tmp_path / "remote attempt",
-    }
+@pytest.mark.parametrize("existing", ["destination", "evidence"])
+def test_existing_paths_are_not_reused(staging, source_repo, tmp_path, existing):
+    paths = {"destination": tmp_path / "runtime destination", "evidence": tmp_path / "evidence"}
     paths[existing].mkdir()
     marker = paths[existing] / "existing.txt"
     marker.write_text("keep existing content\n")
     with pytest.raises((FileExistsError, ValueError, RuntimeError, subprocess.CalledProcessError)):
-        _stage(staging, source_repo, tmp_path, remote=True)
+        _stage(staging, source_repo, tmp_path)
     assert marker.read_text() == "keep existing content\n"
 
 
-@pytest.mark.parametrize("remote", [False, True])
-def test_repeated_attempt_never_starts_another_worker(staging, source_repo, tmp_path, fake_transport, remote):
-    evidence, destination, _started = _stage(staging, source_repo, tmp_path, remote=remote)
+def test_repeated_attempt_never_starts_another_worker(staging, source_repo, tmp_path):
+    evidence, destination, _started = _stage(staging, source_repo, tmp_path)
     completed = _finish(staging, evidence)
-    before = _transport_calls(fake_transport)
+    launch = (evidence / "target" / "launch-attempt.json").read_bytes()
     with pytest.raises((FileExistsError, ValueError, RuntimeError, subprocess.CalledProcessError)):
-        _stage(staging, source_repo, tmp_path, remote=remote)
-    assert _transport_calls(fake_transport) == before
+        _stage(staging, source_repo, tmp_path)
+    assert (evidence / "target" / "launch-attempt.json").read_bytes() == launch
     assert _finish(staging, evidence) == completed
     assert _git(destination, "rev-parse", "HEAD") == source_repo.commit
 
 
-def test_stage_cli_started_is_not_shell_success(staging, source_repo, tmp_path, fake_transport):
+def test_stage_cli_started_is_not_shell_success(staging, source_repo, tmp_path):
     evidence = tmp_path / "evidence"
     destination = tmp_path / "runtime destination"
     result = subprocess.run(
