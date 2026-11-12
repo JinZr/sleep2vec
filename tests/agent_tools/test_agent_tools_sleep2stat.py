@@ -114,20 +114,6 @@ def test_sleep2stat_existing_run_output_dir_blocks_before_command_generation(tmp
     assert not (output_dir / "run.sh").exists()
 
 
-def test_sleep2stat_existing_run_output_dir_blocks(tmp_path: Path):
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    (run_dir / "old.txt").write_text("old")
-    recipe_path = _write_tiny_recipe_with_run_dir(tmp_path, run_dir)
-    output_dir = tmp_path / "plan"
-
-    report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
-
-    assert report.exit_code == 2
-    assert any(issue.field == "sleep2stat.run.output_dir" for issue in report.issues)
-    assert not (output_dir / "run.sh").exists()
-
-
 def test_sleep2stat_empty_run_output_dir_allows_command_generation(tmp_path: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()

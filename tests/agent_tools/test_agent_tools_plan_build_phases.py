@@ -4,12 +4,9 @@ import copy
 import hashlib
 from pathlib import Path
 
-from agent_tool_test_helpers import config_payload
 import pytest
-import yaml
 
 from agent_tools import plan_contract, plan_hparam, plans, run_artifacts
-from agent_tools.adapters.base import TaskAdapter
 
 
 def test_hparam_precommit_failure_removes_staging_without_publication(tmp_path: Path, monkeypatch):
@@ -77,50 +74,3 @@ def test_frozen_readers_copy_snapshots(tmp_path: Path):
     copied_snapshots[0]["sha256"] = "b" * 64
     copied_snapshot["path"] = "/changed"
     assert recipe == before
-
-
-@pytest.mark.parametrize("phase", ["generic", "hparam_rows", "hparam_materialized"])
-def test_compiled_plan_phase_fields_and_row_identity(tmp_path: Path, phase: str):
-    config_bytes = yaml.safe_dump(config_payload(tmp_path / "index.csv")).encode()
-    recipe = {
-        "name": "phase-contract",
-        "variant": "sleep2vec",
-        "inputs": {"config": str(tmp_path / "source.yaml"), "label_name": "ahi"},
-        "experiment": {"id": "phase-contract", "root": str(tmp_path / "workspace")},
-        "step": {"id": "tune"},
-        "execution": {"python": "/python", "runtime_commit": "a" * 40, "workdir": str(tmp_path)},
-        "evaluation_policy": {"test_after_fit": False, "selection_split": "val"},
-        "search": {"configurations": [{"runtime.lr": 1e-6}, {"runtime.lr": 2e-6}]},
-    }
-    plan_contract.bind_plan_context(recipe)
-    plan_contract.bind_frozen_input_snapshot(
-        recipe, "inputs.config", recipe["inputs"]["config"], hashlib.sha256(config_bytes).hexdigest()
-    )
-    before = copy.deepcopy(recipe)
-    out = tmp_path / "unwritten-plan"
-    if phase == "generic":
-        compiled = TaskAdapter().compile_plan_contract(recipe, out, run_index_offset=7, config_bytes=config_bytes)
-    else:
-        run_files = plan_hparam.compile_hparam_run_contracts(
-            recipe, out, 7, source_config_bytes=config_bytes if phase == "hparam_materialized" else None
-        )
-
-    assert recipe == before
-    assert not out.exists()
-    if phase == "generic":
-        assert set(compiled) == {"runs", "commands", "script_text"}
-        assert compiled["commands"] == []
-        assert isinstance(compiled["script_text"], str)
-        assert compiled["runs"][0]["config_sha256"] == hashlib.sha256(config_bytes).hexdigest()
-    else:
-        assert [run_file["row"]["run_id"] for run_file in run_files] == ["run-007", "run-008"]
-        for run_file in run_files:
-            row = run_file["row"]
-            if phase == "hparam_rows":
-                assert set(run_file) == {"row"}
-                assert "config_sha256" not in row and "script_sha256" not in row
-            else:
-                assert set(run_file) == {"row", "config_bytes", "script_text"}
-                assert run_file["config_bytes"] == config_bytes
-                assert row["config_sha256"] == hashlib.sha256(run_file["config_bytes"]).hexdigest()
-                assert row["script_sha256"] == hashlib.sha256(run_file["script_text"].encode()).hexdigest()

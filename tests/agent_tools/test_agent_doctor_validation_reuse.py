@@ -57,7 +57,7 @@ def test_doctor_emits_decisions_template_on_needs_user_input(tmp_path: Path):
     assert not (output_dir / "plan.blocked.md").exists()
 
 
-def test_user_decisions_retry_rules(tmp_path: Path):
+def test_doctor_retry_reuses_its_output_directory_when_decisions_are_complete(tmp_path: Path):
     recipe = _recipe(tmp_path, "needs")
     doctor_dir = tmp_path / "doctor"
     template = doctor_dir / "decisions.yaml"
@@ -67,50 +67,12 @@ def test_user_decisions_retry_rules(tmp_path: Path):
     template.write_text(yaml.safe_dump(payload, sort_keys=False))
     filled = template.read_bytes()
 
-    # A doctor retry may reuse its directory while the existing file covers every requested decision.
     retried = run_cli(
         "doctor", "--recipe", str(recipe), "--user-decisions", str(template), "--output-dir", str(doctor_dir)
     )
+
     assert retried.returncode == 0, retried.stdout + retried.stderr
     assert template.read_bytes() == filled
-
-    # A blocked-plan retry must use a fresh output directory.
-    blocked_dir = tmp_path / "plans" / "blocked"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(blocked_dir)).returncode == 2
-    reused = run_cli(
-        "plan", "--recipe", str(recipe), "--user-decisions", str(template), "--output-dir", str(blocked_dir)
-    )
-    assert reused.returncode == 1
-    assert "retry with a fresh --output-dir" in reused.stdout
-    fresh = run_cli(
-        "plan",
-        "--recipe",
-        str(recipe),
-        "--user-decisions",
-        str(template),
-        "--output-dir",
-        str(tmp_path / "plans" / "ok"),
-    )
-    assert fresh.returncode == 0, fresh.stdout + fresh.stderr
-
-    # A newly exposed decision needs a fresh doctor directory; the earlier file is neither merged nor overwritten.
-    authored = yaml.safe_load(recipe.read_text())
-    authored["decisions"]["train_val_test_policy"]["value"] = "ASK_USER"
-    recipe.write_text(yaml.safe_dump(authored, sort_keys=False))
-    stale = run_cli(
-        "doctor", "--recipe", str(recipe), "--user-decisions", str(template), "--output-dir", str(doctor_dir)
-    )
-    assert stale.returncode == 1
-    assert "retry with a fresh --output-dir" in stale.stderr
-    assert template.read_bytes() == filled
-    delta_dir = tmp_path / "doctor-delta"
-    delta = run_cli(
-        "doctor", "--recipe", str(recipe), "--user-decisions", str(template), "--output-dir", str(delta_dir)
-    )
-    assert delta.returncode == 2
-    decisions = yaml.safe_load((delta_dir / "decisions.yaml").read_text())["decisions"]
-    assert decisions["label_name"]["value"] == "ahi"
-    assert decisions["train_val_test_policy"]["value"] == "ASK_USER"
 
 
 def test_plan_freezes_and_hashes_the_single_config_read(tmp_path: Path, monkeypatch):

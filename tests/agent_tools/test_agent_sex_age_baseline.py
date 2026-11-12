@@ -13,7 +13,11 @@ from agent_tools import execution_snapshot
 from agent_tools.configs import config_summary
 from agent_tools.decision_models import DecisionStatus
 from agent_tools.plans import build_plan, evaluate_recipe
-from tests.agent_tool_test_helpers import run_execution_preflight_fixture, write_yaml as _write_yaml
+from tests.agent_tool_test_helpers import (
+    hparam_recipe_payload,
+    run_execution_preflight_fixture,
+    write_yaml as _write_yaml,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -175,34 +179,17 @@ def _finetune_recipe(tmp_path: Path, config: Path) -> Path:
 
 
 def _hparam_recipe(tmp_path: Path, config: Path, *, execution: dict | None = None) -> Path:
-    return _write_yaml(
-        tmp_path / "hparam.yaml",
-        {
-            "name": "unit_sex_age_hparam_val_only",
-            "task": "hparam_tune",
-            "variant": "sex_age_baseline",
-            "base_recipe": str(_finetune_recipe(tmp_path, config)),
-            "search": {"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
-            "execution": execution or {},
-            "evaluation_policy": {
-                "selection_metric": "val_c_index",
-                "selection_mode": "max",
-                "selection_split": "val",
-                "external_test_locked": True,
-                "test_after_fit": False,
-                "final_eval_split": "validation",
-                "final_test_unlocked": False,
-                "require_manual_unlock_for_final_test": True,
-            },
-            "decisions": {
-                "task": {"value": "hparam_tune", "source": "explicit_recipe"},
-                "label_name": {"value": "incident_cox", "source": "explicit_recipe"},
-                "external_test_locked": {"value": True, "source": "explicit_recipe"},
-                "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-            },
-        },
+    payload = hparam_recipe_payload(
+        _finetune_recipe(tmp_path, config),
+        name="unit_sex_age_hparam_val_only",
+        variant="sex_age_baseline",
+        search={"method": "grid", "max_runs": 1, "parameters": {"runtime.lr": [1e-3]}},
+        execution=execution or {},
+        selection_metric="val_c_index",
     )
+    payload["evaluation_policy"]["final_eval_split"] = "validation"
+    payload["decisions"]["label_name"]["value"] = "incident_cox"
+    return _write_yaml(tmp_path / "hparam.yaml", payload)
 
 
 def _infer_recipe(tmp_path: Path, config: Path, ckpt: Path) -> Path:
