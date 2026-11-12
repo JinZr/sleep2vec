@@ -127,12 +127,16 @@ def test_experiment_status_does_not_use_following_read_for_experiment_manifest(t
     assert not followed
 
 
-def test_experiment_status_human_output_quotes_advisory_argv(tmp_path):
+def test_experiment_status_reports_facts_without_next_action_advice(tmp_path):
     root = tmp_path / "experiment with spaces"
     _init_workspace(root)
     _add_plan(root, step_id="train")
 
-    rendered = experiment_tracking.format_experiment_status(experiments.experiment_status(root))
+    snapshot = experiments.experiment_status(root)
+    rendered = experiment_tracking.format_experiment_status(snapshot)
+
+    assert "decision" not in snapshot
+    assert snapshot["summary"]["state"] == "ready_to_launch"
 
     assert "recorded evidence, not live" in rendered
     assert "| Step | Phase | Plan controller | Status counts |" in rendered
@@ -141,10 +145,10 @@ def test_experiment_status_human_output_quotes_advisory_argv(tmp_path):
         in rendered
     )
     assert "Test evidence" not in rendered
-    assert "Next legal action" in rendered
-    assert "'" in rendered
     assert "control host:" not in rendered
-    assert "Advisory only; this output does not authorize execution." in rendered
+    assert "Next legal action" not in rendered
+    assert "Advisory only" not in rendered
+    assert "run.sh" not in rendered
 
 
 def test_experiment_status_human_output_scopes_same_code_blockers(tmp_path):
@@ -204,15 +208,13 @@ def test_experiment_status_projects_execution_target_without_control_host():
         [row],
         root=root,
     )
-    action = snapshot["decision"]["recommended_next"]
 
-    assert "control_host" not in action
+    assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["runs"][0]["execution"] == {"target": "local"}
     rendered = experiment_tracking.format_experiment_status(snapshot)
     assert "| train | train | ordinary | planned=1 |" in rendered
     assert "| train / run-000 — default | planned | local |" in rendered
     assert "control host:" not in rendered
-    assert f"bash {root / 'plans' / 'train' / 'run.sh'}" in rendered
 
 
 def test_experiment_status_projects_recorded_scheduler_node():
@@ -257,33 +259,6 @@ def test_experiment_status_projects_recorded_scheduler_node():
     assert "node=gpu-node-02" in experiment_tracking.format_experiment_status(snapshot)
 
 
-def test_experiment_status_keeps_local_hparam_queue_on_controller(tmp_path):
-    root = tmp_path / "experiment"
-    _init_workspace(root)
-    plan_dir, _row = _add_plan(
-        root,
-        step_id="tune",
-        task="hparam_tune",
-        status="pending",
-    )
-
-    snapshot = experiments.experiment_status(root)
-    action = snapshot["decision"]["recommended_next"]
-
-    assert action["id"] == "hparam-run-queue"
-    assert "control_host" not in action
-    assert action["argv"] == [
-        "python",
-        "-m",
-        "agent_tools",
-        "hparam-run-queue",
-        "--plan-dir",
-        str(plan_dir),
-        "--execute",
-    ]
-    assert "control host:" not in experiment_tracking.format_experiment_status(snapshot)
-
-
 def test_experiment_status_defers_the_hparam_queue_to_an_active_runner(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
@@ -300,17 +275,15 @@ def test_experiment_status_defers_the_hparam_queue_to_an_active_runner(tmp_path)
         text = experiment_tracking.format_experiment_status(snapshot)
 
     assert snapshot["summary"]["state"] == "in_progress"
-    assert snapshot["decision"]["recommended_next"]["id"] == "experiment-monitor"
-    assert snapshot["decision"]["other_legal_actions"] == []
     [blocker] = [blocker for blocker in snapshot["blockers"] if blocker["code"] == "queue_runner_active"]
     assert blocker["step_id"] == "tune"
     assert f"active; pid={os.getpid()}; log={log_path}" in blocker["message"]
     assert "- `queue_runner_active` [step=tune]: A detached hparam-run-queue runner" in text
     assert "hparam-run-queue --plan-dir" not in text
 
-    # A released lock leaves the file behind; the probe then reports no runner and the queue is advised again.
+    # A released lock leaves the file behind; the probe then reports no runner and the plan is launchable again.
     released = experiments.experiment_status(root)
-    assert released["decision"]["recommended_next"]["id"] == "hparam-run-queue"
+    assert released["summary"]["state"] == "ready_to_launch"
     assert not any(blocker["code"] == "queue_runner_active" for blocker in released["blockers"])
 
 

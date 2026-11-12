@@ -3,7 +3,7 @@
 `run_manifest.tsv` is the only mutable owner of managed run lifecycle state and execution identity.
 
 This contract owns identity, state reduction, evidence, and atomic commits.
-Command choice, status advice, and finalization belong to
+Command choice, status reporting, and finalization belong to
 [the workspace contract](experiment_workspace.md); hparam selection belongs to
 [the hparam workflow contract](hparam_workflow.md).
 
@@ -368,7 +368,7 @@ diagnostic evidence, but it cannot erase or bypass the canonical stop intent.
 `experiment-status` consumes lifecycle only from this canonical table. Step
 controller classification belongs to `steps/<step.id>/step.yaml.plan_controller`,
 not a duplicate table field. The complete
-[read-only status and advisory contract](experiment_workspace.md#read-only-status-and-advisory-actions)
+[read-only status contract](experiment_workspace.md#read-only-status)
 owns registered-plan binding checks, controller blockers, and the distinction
 from non-launching monitors that write fresh observations.
 

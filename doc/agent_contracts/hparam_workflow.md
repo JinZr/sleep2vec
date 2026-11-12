@@ -274,8 +274,8 @@ same loop in the calling process under the same lock. A Slurm plan's
 `--execute` submits every launchable run once and returns; it takes no runner
 lock. `experiment-monitor` reports runner liveness from a
 non-blocking shared-lock probe of `queue_runner.lock`, with the recorded PID
-and log path, and never starts a runner; `experiment-status` advises
-`hparam-run-queue` only for a plan with launchable runs and no live runner.
+and log path, and never starts a runner; `experiment-status` reports
+`ready_to_launch` only for a plan with launchable runs and no live runner.
 
 `run-stop --run-id <id>` with a non-empty reason can cancel a canonical `planned` or
 `pending` run before any execution identity is bound. It rereads the canonical
@@ -388,7 +388,7 @@ there is no other selected-candidate consumer.
 
 Status validates the canonical ranking; finalization rehashes every ranked
 checkpoint.
-The detailed [status read-set](experiment_workspace.md#read-only-status-and-advisory-actions)
+The detailed [status read-set](experiment_workspace.md#read-only-status)
 and [final report acceptance](experiment_workspace.md#finalization) have one
 workspace owner, including mixed/all-failed cases and historical completed-read
 compatibility. Final test authorization belongs to

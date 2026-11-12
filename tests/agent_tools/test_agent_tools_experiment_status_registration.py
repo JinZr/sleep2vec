@@ -55,7 +55,6 @@ def test_experiment_status_skips_registered_blocked_plan_after_successful_retry(
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["steps"][0]["plans"] == [str(retry_dir)]
-    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(retry_dir / "run.sh")]
     assert _workspace_files(root) == before
 
 
@@ -76,7 +75,6 @@ def test_experiment_status_skips_registered_blocked_plan_after_successful_plan(t
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["steps"][0]["plans"] == [str(successful_dir)]
-    assert snapshot["decision"]["recommended_next"]["argv"] == ["bash", str(successful_dir / "run.sh")]
     assert _workspace_files(root) == before
 
 
@@ -97,8 +95,7 @@ def test_experiment_status_allows_later_ordinary_plan_from_new_recipe(tmp_path):
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
     assert snapshot["steps"][0]["plans"] == [str(first_plan), str(second_plan)]
-    assert snapshot["decision"]["manual_choice_required"] is True
-    assert len(snapshot["decision"]["other_legal_actions"]) == 2
+    assert snapshot["steps"][0]["status_counts"] == {"planned": 2}
 
 
 def test_experiment_status_rejects_blocked_artifacts_beside_pass_plan(tmp_path):
@@ -323,7 +320,7 @@ def test_experiment_status_allows_unrelated_blank_parameter_columns(tmp_path):
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_launch"
-    assert snapshot["decision"]["manual_choice_required"] is True
+    assert snapshot["blockers"] == []
 
 
 @pytest.mark.parametrize("drift", ["resolved_recipe", "plan_escape", "canonical_run"])

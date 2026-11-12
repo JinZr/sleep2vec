@@ -617,8 +617,8 @@ def test_preset_monitor_preserves_inflight_stop_intent(tmp_path, preset_runtime,
     assert read_run_manifest(preset_runtime["workspace"])[0]["status"] == "stopped"
 
 
-def test_preset_status_recommends_explicit_managed_execute(tmp_path, preset_runtime, monkeypatch):
-    plan_dir, _plan_data = _plan(tmp_path, preset_runtime, monkeypatch)
-    action = experiments.experiment_status(preset_runtime["workspace"])["decision"]["recommended_next"]
-    assert action["id"] == "preset-launch"
-    assert action["argv"] == ["python", "-m", "agent_tools", "preset-launch", "--plan-dir", str(plan_dir), "--execute"]
+def test_preset_status_reports_a_launchable_plan(tmp_path, preset_runtime, monkeypatch):
+    _plan(tmp_path, preset_runtime, monkeypatch)
+    snapshot = experiments.experiment_status(preset_runtime["workspace"])
+    assert snapshot["summary"]["state"] == "ready_to_launch"
+    assert snapshot["blockers"] == []

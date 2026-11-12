@@ -341,7 +341,7 @@ while the canonical submission command is bound by the shared submission
 pass. Registration and dry-run do not bind a job or execution identity.
 
 Use `experiment-monitor` to refresh scheduler evidence and `experiment-status`
-for read-only advice. `run-stop --plan-dir <plan> --run-id <run-id> --reason <reason>`
+to read recorded state. `run-stop --plan-dir <plan> --run-id <run-id> --reason <reason>`
 acts on the plan's one run through the shared Slurm stop transaction. Repeated execute
 does not resubmit a queued, active, `lost`, or terminal run; a job already
 named for the run is adopted instead. The

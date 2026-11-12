@@ -174,7 +174,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 - Keep manifest commits and `plan_controller` binding in `experiment_workspace`, and checkpoint evidence validation
   and projections/status in `experiment_tracking` behind `experiments`;
   see [canonical state](../agent_contracts/run_manifest.md#canonical-state-and-projections)
-  and the [status read-set](../agent_contracts/experiment_workspace.md#read-only-status-and-advisory-actions).
+  and the [status read-set](../agent_contracts/experiment_workspace.md#read-only-status).
 - Load YAML text with `yaml.load(text, Loader=models.YAML_SAFE_LOADER)` (libyaml); strict managed mappings go
   through `experiment_workspace.read_managed_yaml_mapping`.
 - Spell decoded JSON values as `models.JsonValue`, not `Any`; `models.validate_json_value` owns narrowing to it

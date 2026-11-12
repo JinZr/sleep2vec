@@ -8,7 +8,7 @@ Read by question:
 - [Publication and registration](#publication-and-registration)
 - [Takeover and continue execution](#takeover-and-continue-execution)
 - [Lifecycle entrypoints](#lifecycle-entrypoints)
-- [Read-only status and advisory actions](#read-only-status-and-advisory-actions)
+- [Read-only status](#read-only-status)
 - [Finalization](#finalization)
 - [Research log](#research-log)
 - [Mutation and runtime identity](#mutation-and-runtime-identity)
@@ -271,7 +271,7 @@ evidence without copying canonical lifecycle rows.
 
 `experiment-finalize` requires registered materialized work, no active runs,
 non-empty reasons for stopped rows, and a non-empty final report. For ordinary
-hparam steps, `ready_to_select` advice after terminal success is not permission
+hparam steps, a `ready_to_select` state after terminal success is not permission
 to finalize. Complete [selection](hparam_workflow.md#selection-and-selected-candidate-consumers)
 before interpreting a report as accepted final evidence. Pure
 ordinary-hparam experiments may finalize directly from the verified selection
@@ -381,7 +381,7 @@ fact should not create an entry.
 | `run-stop` | Reasoned stop of one named run (`--plan-dir`, `--run-id`, `--reason`, all required) of a registered hparam, inference or preset plan, routed by the plan's task; never launches. Authenticated identity rules: [hparam prelaunch stop](hparam_workflow.md#launch-and-queue), [direct process evidence](run_manifest.md#pid-and-runtime-evidence), [Slurm stopping](run_manifest.md#stopping-and-lost-runs), [preset stop](task_recipe.md#managed-preset-preparation). |
 | `hparam-select` | Commit step-scoped ranking/selection; [selection and consumers](hparam_workflow.md#selection-and-selected-candidate-consumers). |
 | `experiment-note` | Append an evidence-backed [research note](#research-log), no lifecycle change. |
-| `experiment-status` | Validate and print the [read-only snapshot](#read-only-status-and-advisory-actions), computed on demand; writes nothing. |
+| `experiment-status` | Validate and print the [read-only snapshot](#read-only-status), computed on demand; writes nothing. |
 | `experiment-finalize` | Commit completion only under [finalization](#finalization). |
 
 `experiment-monitor` makes one observation round per call, with health probes;
@@ -394,7 +394,7 @@ persists, appear only in `reports/monitor.md` and the `--json` runs; the raw
 `log_tail` is never printed in the text summary because it may contain
 sensitive data. Monitoring never launches pending work.
 
-## Read-only status and advisory actions
+## Read-only status
 
 `experiment-status` validates the experiment owner, every registered step,
 each registered plan's binding, and canonical `run_manifest.tsv`, then
@@ -408,8 +408,8 @@ consistency evidence for canonical selection
 rows. Status does not read checkpoint contents or write workspace state.
 Its only live read is a non-blocking shared-lock probe of each hparam plan with
 launchable runs: a live [queue runner](hparam_workflow.md#direct-queue-runner)
-replaces that plan's `hparam-run-queue` advice with a `queue_runner_active`
-blocker that names the runner PID and log.
+adds a `queue_runner_active` blocker that names the runner PID and log, and
+that plan's launchable runs no longer count toward `ready_to_launch`.
 
 A registered plan is read for its binding only: its step registers it,
 `plan.json`'s recipe equals `recipe.resolved.yaml` (and, for an hparam plan,
@@ -425,9 +425,10 @@ start or submit. `infer-launch`, `preset-launch` and their `run-stop` paths read
 only the plan they name.
 
 Step output projects registered `plan_controller`; run output projects canonical
-execution target and recorded Slurm node separately. Advisory argv arrays run on
-the workspace-owning host; see the [identity legend](#execution-identity-legend). Suggestions do not authorize
-launch or mutation.
+execution target and recorded Slurm node separately. The snapshot reports facts
+only: a lifecycle `state` and blockers (code, message, step and run ids). It
+names no command to run; `ready_to_launch` means a registered plan has launchable
+runs that no live queue runner owns, and authorizes no launch or mutation.
 
 A registered directory containing `questions.json`, `questions.md` and
 `plan.blocked.md`, plus optional `decisions.yaml` and `plan.draft.json`, is a
@@ -442,7 +443,7 @@ A registered plan's step must have the `ordinary` `plan_controller`. A
 registered step with no materialized plan and no canonical rows blocks
 finalization; completed metadata cannot prove the declared work was absent or
 finished. The direct finalizer independently rejects unmaterialized steps.
-A canonical `stopped` row without non-empty `stop_reason` blocks finalize advice
+A canonical `stopped` row without non-empty `stop_reason` is a `missing_stop_reason` blocker
 and makes completed metadata corrupt; the finalizer enforces the same boundary.
 Valid blockers return success; corrupt control state or read failure returns
 non-zero.

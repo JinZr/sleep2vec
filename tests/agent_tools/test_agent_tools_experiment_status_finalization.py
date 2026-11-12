@@ -125,16 +125,14 @@ def test_experiment_status_terminal_and_completed_contract(tmp_path):
     ready = experiments.experiment_status(root)
 
     assert ready["summary"]["state"] == "ready_to_finalize"
-    finalize = ready["decision"]["other_legal_actions"][0]
-    assert finalize["id"] == "experiment-finalize"
-    assert finalize["required_inputs"] == ["report_path"]
+    assert [blocker["code"] for blocker in ready["blockers"]] == ["final_report_required"]
 
     manifest = yaml.safe_load((root / "experiment.yaml").read_text())
     manifest["experiment"].update({"status": "completed", "completed_at": "2026-08-25T02:00:00Z"})
     (root / "experiment.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
     completed = experiments.experiment_status(root)
     assert completed["summary"]["state"] == "completed"
-    assert completed["decision"]["recommended_next"] is None
+    assert completed["blockers"] == []
 
     rows = _read_manifest_rows(root)
     rows[0]["status"] = "running"
@@ -146,56 +144,43 @@ def test_experiment_status_terminal_and_completed_contract(tmp_path):
 def test_experiment_status_advances_ordinary_hparam_selection_and_report(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    plan_dir, _row = _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
+    _add_plan(root, step_id="tune", task="hparam_tune", status="completed")
     before = _workspace_files(root)
 
     pending = experiments.experiment_status(root)
 
     assert _workspace_files(root) == before
     assert pending["summary"]["state"] == "ready_to_select"
-    assert pending["decision"]["recommended_next"]["argv"] == [
-        "python",
-        "-m",
-        "agent_tools",
-        "hparam-select",
-        "--run-dir",
-        str(plan_dir),
+    assert [(blocker["code"], blocker["step_id"]) for blocker in pending["blockers"]] == [
+        ("hparam_selection_required", "tune")
     ]
-    assert pending["decision"]["blocked_actions"] == ["finalize"]
 
-    report_path = _record_hparam_selection(root)
+    _record_hparam_selection(root)
     selected_before = _workspace_files(root)
     selected = experiments.experiment_status(root)
     assert _workspace_files(root) == selected_before
     assert selected["summary"]["state"] == "ready_to_report"
-    assert selected["decision"]["recommended_next"]["id"] == "hparam-select"
+    assert [blocker["code"] for blocker in selected["blockers"]] == ["hparam_selection_report_required"]
 
     _record_hparam_selection(root, write_report=True)
     ready_before = _workspace_files(root)
     ready = experiments.experiment_status(root)
     assert _workspace_files(root) == ready_before
     assert ready["summary"]["state"] == "ready_to_finalize"
-    assert ready["decision"]["recommended_next"]["argv"][-2:] == ["--report", str(report_path)]
+    assert ready["blockers"] == []
 
 
-def test_experiment_status_requires_choice_for_multiple_pending_hparam_selections(tmp_path):
+def test_experiment_status_blocks_each_pending_hparam_selection(tmp_path):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    plan_dirs = [
-        _add_plan(root, step_id=step_id, task="hparam_tune", status="completed")[0] for step_id in ("tune-a", "tune-b")
-    ]
+    for step_id in ("tune-a", "tune-b"):
+        _add_plan(root, step_id=step_id, task="hparam_tune", status="completed")
     before = _workspace_files(root)
 
     snapshot = experiments.experiment_status(root)
 
     assert _workspace_files(root) == before
     assert snapshot["summary"]["state"] == "ready_to_select"
-    assert snapshot["decision"]["manual_choice_required"] is True
-    assert snapshot["decision"]["recommended_next"] is None
-    assert [action["argv"] for action in snapshot["decision"]["other_legal_actions"]] == [
-        ["python", "-m", "agent_tools", "hparam-select", "--run-dir", str(plan_dir)] for plan_dir in plan_dirs
-    ]
-    assert snapshot["decision"]["blocked_actions"] == ["finalize"]
     assert [(blocker["code"], blocker["step_id"]) for blocker in snapshot["blockers"]] == [
         ("hparam_selection_required", "tune-a"),
         ("hparam_selection_required", "tune-b"),
@@ -212,8 +197,6 @@ def test_experiment_status_requires_combined_report_for_mixed_ordinary_steps(tmp
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_report"
-    assert snapshot["decision"]["manual_choice_required"] is True
-    assert snapshot["decision"]["other_legal_actions"][0]["required_inputs"] == ["report_path"]
     assert "combined_report_required" in {blocker["code"] for blocker in snapshot["blockers"]}
 
 
@@ -225,8 +208,6 @@ def test_experiment_status_all_failed_hparam_requires_failure_report_not_selecti
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_report"
-    assert snapshot["decision"]["recommended_next"] is None
-    assert snapshot["decision"]["other_legal_actions"][0]["required_inputs"] == ["report_path"]
     assert "failure_report_required" in {blocker["code"] for blocker in snapshot["blockers"]}
 
 
@@ -679,7 +660,7 @@ def test_experiment_status_rejects_missing_or_drifted_hparam_ranking(tmp_path, m
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_report"
-    assert snapshot["decision"]["recommended_next"]["id"] == "hparam-select"
+    assert [blocker["code"] for blocker in snapshot["blockers"]] == ["hparam_selection_report_required"]
     with pytest.raises(ValueError, match="selection report is missing or differs"):
         experiments.finalize_experiment(root, selection_report)
     assert _workspace_files(root) == before
@@ -732,7 +713,7 @@ def test_experiment_status_rejects_hparam_ranking_candidate_provenance_drift(tmp
     snapshot = experiments.experiment_status(root)
 
     assert snapshot["summary"]["state"] == "ready_to_report"
-    assert snapshot["decision"]["recommended_next"]["id"] == "hparam-select"
+    assert [blocker["code"] for blocker in snapshot["blockers"]] == ["hparam_selection_report_required"]
     with pytest.raises(ValueError, match="selection report is missing or differs"):
         experiments.finalize_experiment(root, selection_report)
 
@@ -836,9 +817,6 @@ def test_experiment_status_blocks_finalize_for_stopped_run_without_reason(tmp_pa
 
     assert _workspace_files(root) == before
     assert blocked["summary"]["state"] == "blocked"
-    assert blocked["decision"]["recommended_next"] is None
-    assert blocked["decision"]["other_legal_actions"] == []
-    assert blocked["decision"]["blocked_actions"] == ["finalize"]
     assert blocked["blockers"][0]["code"] == "missing_stop_reason"
     assert blocked["blockers"][0]["run_ids"] == ["run-000"]
     assert blocked["runs"][0]["blockers"] == ["missing_stop_reason"]
@@ -848,7 +826,7 @@ def test_experiment_status_blocks_finalize_for_stopped_run_without_reason(tmp_pa
     write_rows(root / "run_manifest.tsv", rows)
     ready = experiments.experiment_status(root)
     assert ready["summary"]["state"] == "ready_to_finalize"
-    assert ready["decision"]["other_legal_actions"][0]["id"] == "experiment-finalize"
+    assert [blocker["code"] for blocker in ready["blockers"]] == ["final_report_required"]
 
 
 def test_experiment_status_rejects_completed_stopped_run_without_reason(tmp_path):
