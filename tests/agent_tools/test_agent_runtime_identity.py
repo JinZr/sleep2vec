@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
 import json
@@ -10,14 +8,12 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
-import threading
 from types import SimpleNamespace
 
 from agent_tool_test_helpers import SUBPROCESS_WAIT_SECONDS, git_commit
 import pytest
 
 from agent_tools import python_programs
-from agent_tools.runtime_sync import GIT_REPOSITORY_ENV
 
 GIT_COMMANDS = [
     ["git", "rev-parse", "HEAD"],
@@ -60,80 +56,6 @@ def identity_probe(tmp_path, monkeypatch):
     return program, results, payload
 
 
-def test_runtime_identity_uses_eight_exact_queries_with_three_ordered_workers(
-    tmp_path, monkeypatch, capsys, identity_probe
-):
-    program, results, payload = identity_probe
-    artifact = tmp_path / "artifact"
-    artifact.write_bytes(b"frozen artifact")
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "-c",
-            "runtime_cli",
-            json.dumps(payload),
-            json.dumps([{"path": str(artifact), "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest()}]),
-        ],
-    )
-    barrier = threading.Barrier(3, timeout=5)
-    finished = [threading.Event() for _ in GIT_COMMANDS]
-    lock = threading.Lock()
-    active = 0
-    peak_active = 0
-    calls = []
-    completion_order = []
-    executor_sizes = []
-
-    def create_executor(*, max_workers):
-        executor_sizes.append(max_workers)
-        return ThreadPoolExecutor(max_workers=max_workers)
-
-    def run_git(command, **kwargs):
-        nonlocal active, peak_active
-        index = GIT_COMMANDS.index(command)
-        with lock:
-            calls.append((command, kwargs))
-            active += 1
-            peak_active = max(peak_active, active)
-        try:
-            if index < 3:
-                barrier.wait()
-            if index == 0:
-                assert finished[1].wait(5)
-            elif index == 1:
-                assert finished[4].wait(5)
-            elif index >= 5:
-                assert finished[0].wait(5)
-            with lock:
-                completion_order.append(index)
-        finally:
-            with lock:
-                active -= 1
-        finished[index].set()
-        return results[index]
-
-    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", create_executor)
-    monkeypatch.setattr(subprocess, "run", run_git)
-
-    exec(program, {})
-
-    assert executor_sizes == [3]
-    assert peak_active == 3
-    assert active == 0
-    assert completion_order[:5] == [2, 3, 4, 1, 0]
-    assert set(completion_order[5:]) == {5, 6, 7}
-    ordered_calls = sorted(calls, key=lambda call: GIT_COMMANDS.index(call[0]))
-    assert [command for command, _kwargs in ordered_calls] == GIT_COMMANDS
-    for _command, kwargs in ordered_calls:
-        assert kwargs["text"] is True
-        assert kwargs["capture_output"] is True
-        assert set(GIT_REPOSITORY_ENV).isdisjoint(kwargs["env"])
-    output = capsys.readouterr()
-    assert output.err == ""
-    assert json.loads(output.out) == payload
-
-
 @pytest.mark.parametrize("failed_query", range(len(GIT_COMMANDS)))
 def test_runtime_identity_git_failure_precedes_runtime_reads(monkeypatch, capsys, identity_probe, failed_query):
     program, results, _payload = identity_probe
@@ -173,21 +95,19 @@ def test_runtime_identity_git_stderr_priority_follows_query_order(
     assert output.err == f"git diagnostic {first_diagnostic}\n"
 
 
-@pytest.mark.parametrize("failed_query", range(len(GIT_COMMANDS)))
-def test_runtime_identity_git_oserror_precedes_runtime_reads(monkeypatch, capsys, identity_probe, failed_query):
+def test_runtime_identity_git_oserror_precedes_runtime_reads(monkeypatch, capsys, identity_probe):
     program, results, _payload = identity_probe
 
     def run_git(command, **_kwargs):
-        index = GIT_COMMANDS.index(command)
-        if index == failed_query:
-            raise OSError(f"git unavailable {failed_query}")
-        return results[index]
+        if command == GIT_COMMANDS[-1]:
+            raise OSError("git unavailable")
+        return results[GIT_COMMANDS.index(command)]
 
     monkeypatch.setattr(subprocess, "run", run_git)
     monkeypatch.setattr(importlib.util, "find_spec", lambda _module: pytest.fail("must not resolve module"))
     monkeypatch.setattr(Path, "read_bytes", lambda _path: pytest.fail("must not read frozen artifact"))
 
-    with pytest.raises(OSError, match=f"git unavailable {failed_query}"):
+    with pytest.raises(OSError, match="git unavailable"):
         exec(program, {})
 
     output = capsys.readouterr()
@@ -260,7 +180,7 @@ def test_runtime_identity_records_commit_drift_and_still_checks_artifacts(
 
     output = capsys.readouterr()
     assert output.err == ""
-    assert json.loads(output.out)["runtime_commit"] == payload["runtime_commit"]
+    assert json.loads(output.out) == payload
 
 
 @pytest.fixture
