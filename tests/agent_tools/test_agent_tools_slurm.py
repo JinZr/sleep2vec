@@ -26,19 +26,6 @@ def test_parse_sbatch_output_rejects_ambiguous_or_malformed_values(stdout: str):
         slurm.parse_sbatch_output(stdout)
 
 
-def test_submit_quotes_arguments_and_parses_job_id(monkeypatch):
-    calls = []
-
-    def fake_run_shell(command, *, timeout):
-        calls.append((command, timeout))
-        return subprocess.CompletedProcess([], 0, "3880\n", "")
-
-    monkeypatch.setattr(slurm.transport, "run_shell", fake_run_shell)
-
-    assert slurm.submit("/shared/run dir/job.sbatch") == "3880"
-    assert calls == [(slurm.submission_command("/shared/run dir/job.sbatch"), 10)]
-
-
 def test_submit_preserves_nonzero_result(monkeypatch):
     monkeypatch.setattr(
         slurm.transport,
@@ -51,49 +38,6 @@ def test_submit_preserves_nonzero_result(monkeypatch):
 
     assert exc_info.value.returncode == 1
     assert "invalid partition" in str(exc_info.value)
-
-
-def test_submit_strips_ambient_sbatch_environment_on_submission_host(tmp_path: Path, monkeypatch):
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    capture_env = tmp_path / "env.txt"
-    capture_argv = tmp_path / "argv.txt"
-    fake_sbatch = fake_bin / "sbatch"
-    fake_sbatch.write_text(
-        "#!/usr/bin/env bash\n"
-        'env | sort > "$CAPTURE_ENV"\n'
-        'printf "%s\\n" "$@" > "$CAPTURE_ARGV"\n'
-        'printf "3880\\n"\n'
-    )
-    fake_sbatch.chmod(0o755)
-    calls = []
-
-    def fake_run_shell(command, *, timeout):
-        calls.append((command, timeout))
-        env = {
-            **os.environ,
-            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-            "CAPTURE_ENV": str(capture_env),
-            "CAPTURE_ARGV": str(capture_argv),
-            "SBATCH_PARTITION": "wrong-partition",
-            "SBATCH_FUTURE_OPTION": "wrong-future-value",
-            "SLURM_CLUSTERS": "wrong-cluster",
-            "SLURM_CONF": "/etc/selected slurm.conf",
-            "KEEP_ME": "kept",
-        }
-        return subprocess.run(["bash", "-c", command], text=True, capture_output=True, timeout=timeout, env=env)
-
-    monkeypatch.setattr(slurm.transport, "run_shell", fake_run_shell)
-
-    assert slurm.submit("/shared/job.sbatch") == "3880"
-    assert calls == [(slurm.submission_command("/shared/job.sbatch"), 10)]
-    environment = capture_env.read_text().splitlines()
-    assert not any(line.startswith("SBATCH_") for line in environment)
-    assert not any(line.startswith("SLURM_CLUSTERS=") for line in environment)
-    assert "SLURM_CONF=/etc/selected slurm.conf" in environment
-    assert f"PATH={fake_bin}{os.pathsep}{os.environ['PATH']}" in environment
-    assert "KEEP_ME=kept" in environment
-    assert capture_argv.read_text().splitlines() == ["--parsable", "/shared/job.sbatch"]
 
 
 def test_submit_real_transport_matches_canonical_command_and_preserves_parent_environment(tmp_path: Path, monkeypatch):
@@ -115,7 +59,9 @@ def test_submit_real_transport_matches_canonical_command_and_preserves_parent_en
         "CAPTURE_ENV": str(capture_env),
         "CAPTURE_ARGV": str(capture_argv),
         "SBATCH_PARTITION": "wrong-partition",
+        "SBATCH_FUTURE_OPTION": "wrong-future-value",
         "SLURM_CLUSTERS": "wrong-cluster",
+        "SLURM_CONF": "/etc/selected slurm.conf",
         "KEEP_ME": "kept",
     }.items():
         monkeypatch.setenv(name, value)
@@ -124,7 +70,7 @@ def test_submit_real_transport_matches_canonical_command_and_preserves_parent_en
     real_run = subprocess.run
 
     def record_run(argv, **kwargs):
-        calls.append(argv)
+        calls.append((argv, kwargs["timeout"]))
         return real_run(argv, **kwargs)
 
     monkeypatch.setattr(slurm.transport.subprocess, "run", record_run)
@@ -135,9 +81,10 @@ def test_submit_real_transport_matches_canonical_command_and_preserves_parent_en
 
     assert slurm.submit(script) == "3880"
     assert canonical == slurm.submission_command(script)
-    assert calls == [["bash", "-lc", canonical]]
+    assert calls == [(["bash", "-lc", canonical], 10)]
     environment = capture_env.read_text().splitlines()
     assert not any(line.startswith(("SBATCH_", "SLURM_CLUSTERS=")) for line in environment)
+    assert "SLURM_CONF=/etc/selected slurm.conf" in environment
     assert "KEEP_ME=kept" in environment
     assert capture_argv.read_text().splitlines() == ["--parsable", script]
     assert dict(os.environ) == parent_environment

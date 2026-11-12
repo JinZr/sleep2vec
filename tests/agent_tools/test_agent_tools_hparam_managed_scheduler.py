@@ -156,7 +156,6 @@ def test_hparam_run_queue_returns_terminal_plan_without_launch(tmp_path: Path, m
     rows = hparam_runtime.run_hparam_queue(plan_dir, dry_run=False)
 
     assert [row["status"] for row in rows] == ["finished"]
-    assert not (plan_dir / "run_status.tsv").exists()
 
 
 def test_hparam_run_queue_fails_instead_of_waiting_on_missing_pid(tmp_path: Path, monkeypatch):

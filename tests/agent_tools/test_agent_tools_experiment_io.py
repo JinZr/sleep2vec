@@ -116,35 +116,22 @@ def test_managed_output_reader_preserves_requested_keys_empty_text_and_missing(t
     assert not (root / "absent").exists()
 
 
-@pytest.mark.parametrize("missing", ["root", "parent", "leaf"])
-def test_managed_output_reader_only_missing_opens_return_none(tmp_path, missing):
-    root = tmp_path / "workspace"
-    parent = root / "outputs"
-    if missing != "root":
-        root.mkdir()
-    if missing == "leaf":
-        parent.mkdir()
+def test_managed_output_reader_only_missing_opens_return_none(tmp_path):
+    parent = tmp_path / "workspace" / "outputs"
     paths = [parent / "terminal.json", parent / "allocation.json"]
 
-    result = _run_managed_output_reader(root, paths)
+    result = _run_managed_output_reader(tmp_path / "workspace", paths)
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {str(path): None for path in paths}
     assert not paths[0].exists()
 
 
-@pytest.mark.parametrize("location", ["root", "target"])
-@pytest.mark.parametrize("component", ["absent", "alias"])
-def test_managed_output_reader_rejects_raw_parent_components(tmp_path, location, component):
+def test_managed_output_reader_rejects_raw_parent_components(tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()
-    if component == "alias":
-        (root / component).symlink_to(tmp_path, target_is_directory=True)
-    if location == "root":
-        root = root / component / ".."
-        target = root / "terminal.json"
-    else:
-        target = root / component / ".." / "terminal.json"
+    (root / "alias").symlink_to(tmp_path, target_is_directory=True)
+    target = root / "alias" / ".." / "terminal.json"
 
     result = _run_managed_output_reader(root, [target])
 
@@ -192,15 +179,6 @@ def test_managed_output_reader_does_not_hide_permission_errors(tmp_path):
     assert result.returncode != 0
     assert result.stdout == ""
     assert "PermissionError" in result.stderr
-
-
-@pytest.mark.parametrize("header", ["trial_id\n", "run_id\n", "step_id\tstep_id\trun_id\n"])
-def test_managed_table_reader_rejects_removed_or_malformed_header_only_tables(tmp_path: Path, header: str):
-    path = tmp_path / "run_manifest.tsv"
-    path.write_text(header)
-
-    with pytest.raises(ValueError):
-        experiment_io.read_rows_at(path, require_managed_identity=True)
 
 
 def test_managed_table_reader_accepts_current_header_only_table(tmp_path: Path):

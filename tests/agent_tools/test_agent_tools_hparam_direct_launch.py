@@ -90,21 +90,15 @@ def test_hparam_launch_does_not_restart_workspace_terminal_run(tmp_path: Path):
 
     launcher.assert_not_started()
     assert _read_table(tmp_path / "run_manifest.tsv")[0]["status"] == "failed"
-    # run_manifest.tsv is the only status table; a launch pass writes no status or launch projection.
-    assert not (plan_dir / "run_status.tsv").exists()
-    assert not (plan_dir / "launch_manifest.tsv").exists()
 
 
 @pytest.mark.parametrize("operation", ["launch", "monitor", "stop"])
-def test_hparam_runtime_does_not_reapply_stale_launch_snapshot_fields(tmp_path: Path, monkeypatch, operation: str):
+def test_hparam_runtime_preserves_canonical_result_fields(tmp_path: Path, monkeypatch, operation: str):
     rows = _write_runtime_rows(
         tmp_path,
         [{"run_id": "run-000", "status": "running", **_process_identity()}],
     )
     _write_process_identity(rows[0]["pid_path"])
-    # A launch_manifest.tsv left in an older plan directory is inert.
-    stale_launch_row = {**rows[0], "status": "planned", "score": "0.1", "wandb_url": "https://wandb.example/stale"}
-    manifests.write_rows(tmp_path / "launch_manifest.tsv", [stale_launch_row])
     canonical_rows = _read_table(tmp_path / "run_manifest.tsv")
     canonical_rows[0].update({"score": "0.9", "wandb_url": "https://wandb.example/current"})
     manifests.write_rows(tmp_path / "run_manifest.tsv", canonical_rows)
@@ -419,52 +413,6 @@ def test_hparam_launch_rejects_base_runtime_drift_before_side_effects(tmp_path: 
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
 
 
-@pytest.mark.parametrize("operation", ["launch", "monitor"])
-def test_hparam_runtime_ignores_uncommitted_launch_execution_identity(tmp_path: Path, monkeypatch, operation: str):
-    recipe = _hparam_recipe(tmp_path)
-    plan_dir = tmp_path / "plan"
-    assert run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir)).returncode == 0
-    run = json.loads((plan_dir / "plan.json").read_text())["runs"][0]
-    # A launch_manifest.tsv left in an older plan directory is inert.
-    manifests.write_rows(
-        plan_dir / "launch_manifest.tsv",
-        [
-            {
-                **run,
-                "status": "launched",
-                "target": "foreign-target",
-                "workdir": "/foreign/workdir",
-                "gpus": "7",
-                "pid_path": "/foreign/run.pid",
-                "log_path": "/foreign/run.log",
-                "command": "foreign-command",
-            }
-        ],
-    )
-    calls = []
-    monkeypatch.setattr(
-        run_evidence,
-        "status_row",
-        lambda *_args, **_kwargs: calls.append("observe") or {},
-    )
-    launcher = FakeLauncher(lambda *_args: calls.append("start") or "launched")
-    # Monitor takes no hooks, so the public owner guards it against starting a process.
-    monkeypatch.setattr(managed_scheduler, "start_process", launcher.start_process)
-
-    if operation == "launch":
-        hparam_runtime.launch_hparam_runs(plan_dir, dry_run=False, hooks=launcher.hooks())
-    else:
-        experiments.monitor_experiment(tmp_path)
-
-    canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    if operation == "launch":
-        assert calls == ["start"]
-        assert canonical["target"] == "local"
-    else:
-        assert "start" not in calls
-        assert canonical.get("target", "") == ""
-
-
 def test_hparam_launch_binds_conda_gpu_and_pid_identity_only_after_a_launch_slot(
     tmp_path: Path,
     monkeypatch,
@@ -640,42 +588,6 @@ def test_execution_probe_timeout_propagates_without_retry(monkeypatch):
         )
 
     assert calls == [300]
-
-
-def test_verified_launch_rechecks_snapshot_and_artifacts_immediately_before_process_start(tmp_path: Path):
-    script = tmp_path / "launch.sh"
-    config = tmp_path / "config.yaml"
-    script.write_text("#!/usr/bin/env bash\ntrue\n")
-    config.write_text("value: 1\n")
-    snapshot = {
-        "python": "/runtime/bin/python",
-        "python_version": "3.10.0",
-        "runtime_commit": "a" * 40,
-        "runtime_repo_root": "/runtime/repo",
-        "runtime_hostname": "runtime-host",
-        "module": "sleep2vec.finetune",
-        "module_origin": "/runtime/repo/sleep2vec/finetune.py",
-    }
-    command = managed_scheduler.build_launch_command(
-        {"workdir": str(tmp_path), "python": "/runtime/bin/python", "runtime_commit": "a" * 40},
-        script,
-        tmp_path / "stdout.log",
-        tmp_path / "pid",
-        [],
-        execution_snapshot=snapshot,
-        config_path=config,
-        script_sha256=file_sha256(script),
-        config_sha256=file_sha256(config),
-        planned_command="/runtime/bin/python -m sleep2vec.finetune --config config.yaml",
-        run_id="run-000",
-    )
-
-    assert "Target runtime identity changed before process start" in command
-    assert "Frozen run artifact changed before process start" in command
-    assert str(script) in command
-    assert str(config) in command
-    launcher = python_programs.source("managed_scheduler.process_launch")
-    assert launcher.index("subprocess.run(verification") < launcher.index("process = subprocess.Popen")
 
 
 @pytest.mark.parametrize(

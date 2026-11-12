@@ -28,7 +28,7 @@ from agent_tools.manifests import write_rows
 def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monkeypatch):
     root = tmp_path / "experiment"
     _init_workspace(root)
-    plan_dir, _row = _add_plan(
+    _add_plan(
         root,
         step_id="tune",
         task="hparam_tune",
@@ -62,8 +62,6 @@ def test_experiment_status_is_zero_write_and_ignores_projections(tmp_path, monke
     assert _workspace_files(root) == before
 
     (root / "experiment_manifest.tsv").write_text("not\ta\tvalid\tprojection\n")
-    (root / "run_status.tsv").write_text("not\ta\tvalid\tprojection\n")
-    (plan_dir / "launch_manifest.tsv").write_text("status\ncompleted\n")
     (root / "reports").mkdir()
     (root / "reports" / "monitor.md").write_text("completed\n")
     (root / "events.jsonl").write_text("not-json\n")

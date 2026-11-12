@@ -68,8 +68,6 @@ def test_hparam_stop_cancels_unlaunched_run_without_runtime_probes(tmp_path: Pat
     assert hparam_runtime.stop_hparam_run(plan_dir, run["run_id"], reason=reason) == tmp_path / "run_manifest.tsv"
 
     canonical = _read_table(tmp_path / "run_manifest.tsv")[0]
-    assert not (plan_dir / "run_status.tsv").exists()
-    assert not (plan_dir / "launch_manifest.tsv").exists()
     assert canonical["status"] == "stopped"
     assert canonical["stop_reason"] == reason
     assert canonical["stopped_at"] == now
