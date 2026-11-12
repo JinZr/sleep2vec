@@ -37,5 +37,5 @@ evaluates (`config.final_eval.yaml`, or `config.source.yaml` when no explicit
 final-test config is required) against its plan-time SHA-256 and stops on a
 mismatch.
 If final script generation is skipped, stale `final_external_test.sh` and
-frozen final-test config artifacts must be blocked or removed under explicit
-overwrite approval.
+frozen final-test config artifacts must be blocked; publish into a fresh
+output directory instead of reusing one that holds them.

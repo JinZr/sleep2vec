@@ -114,7 +114,6 @@ def test_survival_preset_does_not_require_sidecar_files(tmp_path: Path):
                     "meaning": "train from scratch",
                 },
                 "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
     )
@@ -299,7 +298,6 @@ def test_hparam_tune_blocks_on_base_config_blocking_issues(tmp_path: Path):
             "label_name": {"value": "ahi", "source": "explicit_recipe"},
             "external_test_locked": {"value": True, "source": "explicit_recipe"},
             "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
         },
     }
@@ -335,7 +333,6 @@ def test_hparam_tune_requires_local_selection_policy_even_when_base_has_it(tmp_p
             "task": {"value": "hparam_tune", "source": "explicit_recipe"},
             "label_name": {"value": "ahi", "source": "explicit_recipe"},
             "external_test_locked": {"value": True, "source": "explicit_recipe"},
-            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
         },
     }
@@ -375,7 +372,6 @@ def test_hparam_tune_blocks_when_selection_metric_conflicts_with_config(tmp_path
             "label_name": {"value": "ahi", "source": "explicit_recipe"},
             "external_test_locked": {"value": True, "source": "explicit_recipe"},
             "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
         },
     }

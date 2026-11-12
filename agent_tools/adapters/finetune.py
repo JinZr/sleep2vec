@@ -34,7 +34,7 @@ class FinetuneAdapter(TaskAdapter):
     task = "finetune"
 
     recipe_extra_fields = frozenset({"artifacts", "evaluation_policy", "execution", "inputs", "runtime"})
-    artifact_fields = frozenset({"overwrite", "results_csv_path", "version_name"})
+    artifact_fields = frozenset({"results_csv_path", "version_name"})
     contract_sections = {
         "inputs": frozenset(
             {"ckpt_path", "config", "data_backend", "label_name", "pretrained_backbone_path", "init_checkpoint_path"}

@@ -33,7 +33,6 @@ runtime:
 artifacts:
   version_name: tiny-fixture
   results_csv_path: results/tiny_fixture_results.csv
-  overwrite: false
 
 evaluation_policy:
   selection_metric: val_ahi_pearson
@@ -56,9 +55,6 @@ decisions:
     value: val
     source: explicit_recipe
   external_test_locked:
-    value: false
-    source: explicit_recipe
-  overwrite_policy:
     value: false
     source: explicit_recipe
   required_channels:

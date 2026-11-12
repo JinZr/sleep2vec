@@ -467,7 +467,7 @@ def _recipe_field_value(field: str, recipe: dict) -> Any:
     value: Any = _MISSING
     for section, key in spec.read_path:
         owner = recipe[section] if isinstance(recipe.get(section), dict) else {}
-        if key in owner:  # present-but-falsy values (e.g. overwrite=False) count as a hit
+        if key in owner:  # present-but-falsy values (e.g. external_test_locked=False) count as a hit
             value = owner[key]
             break
     if spec.none_is_missing and value is None:

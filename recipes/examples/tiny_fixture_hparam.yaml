@@ -24,9 +24,6 @@ search:
   parameters:
     runtime.lr: [1.0e-6]
 
-artifacts:
-  overwrite: false
-
 evaluation_policy:
   selection_metric: val_ahi_pearson
   selection_mode: max
@@ -48,9 +45,6 @@ decisions:
     source: explicit_recipe
   train_val_test_policy:
     value: val
-    source: explicit_recipe
-  overwrite_policy:
-    value: false
     source: explicit_recipe
   final_eval_unlock:
     value: false

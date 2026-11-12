@@ -30,7 +30,6 @@ runtime:
 artifacts:
   version_name: sleep2vec2-ppg-ahi-agent-example
   results_csv_path: results/sleep2vec2_ppg_ahi_agent_example.csv
-  overwrite: false
 
 evaluation_policy:
   selection_metric: val_ahi_pearson
@@ -53,8 +52,5 @@ decisions:
     value: val
     source: explicit_recipe
   external_test_locked:
-    value: false
-    source: explicit_recipe
-  overwrite_policy:
     value: false
     source: explicit_recipe

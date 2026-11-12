@@ -331,7 +331,6 @@ def write_finetune_recipe(tmp_path: Path, *, include_label: bool = True, variant
         "artifacts": {
             "results_csv_path": str(tmp_path / "results.csv"),
             "version_name": "unit",
-            "overwrite": False,
         },
         "evaluation_policy": {
             "selection_metric": "val_ahi_pearson",
@@ -348,7 +347,6 @@ def write_finetune_recipe(tmp_path: Path, *, include_label: bool = True, variant
                 "meaning": "train from scratch",
             },
             "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-            "overwrite_policy": {"value": False, "source": "explicit_recipe"},
         },
     }
     return write_yaml(tmp_path / "recipe.yaml", recipe)

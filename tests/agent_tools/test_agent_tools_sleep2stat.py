@@ -29,15 +29,13 @@ def _write_tiny_recipe(tmp_path: Path, payload: dict) -> Path:
     return write_yaml(tmp_path / "tiny_sleep2stat.yaml", payload)
 
 
-def _write_tiny_recipe_with_run_dir(tmp_path: Path, run_dir: Path, *, overwrite_policy: bool = False) -> Path:
+def _write_tiny_recipe_with_run_dir(tmp_path: Path, run_dir: Path) -> Path:
     config_payload = yaml.safe_load((REPO_ROOT / "recipes/examples/fixtures/tiny_sleep2stat_config.yaml").read_text())
     config_payload["run"]["output_dir"] = str(run_dir)
     config = write_yaml(tmp_path / "tiny_sleep2stat_config.yaml", config_payload)
     payload = _tiny_recipe_payload()
     payload["inputs"]["config"] = str(config)
     payload["artifacts"]["run_dir"] = str(run_dir)
-    payload["artifacts"]["overwrite"] = overwrite_policy
-    payload["decisions"]["overwrite_policy"]["value"] = overwrite_policy
     return _write_tiny_recipe(tmp_path, payload)
 
 
@@ -122,11 +120,11 @@ def test_sleep2stat_existing_run_output_dir_blocks_before_command_generation(tmp
     assert not (output_dir / "run.sh").exists()
 
 
-def test_sleep2stat_existing_run_output_dir_blocks_even_with_overwrite_policy(tmp_path: Path):
+def test_sleep2stat_existing_run_output_dir_blocks(tmp_path: Path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "old.txt").write_text("old")
-    recipe_path = _write_tiny_recipe_with_run_dir(tmp_path, run_dir, overwrite_policy=True)
+    recipe_path = _write_tiny_recipe_with_run_dir(tmp_path, run_dir)
     output_dir = tmp_path / "plan"
 
     report = build_plan(recipe_path=recipe_path, output_dir=output_dir)
@@ -241,13 +239,12 @@ def test_sleep2stat_yasa_plan_adds_record_preflight_and_summary_types(tmp_path: 
             "task": "sleep2stat",
             "inputs": {"config": str(config), "split": ["test"]},
             "runtime": {"device": "cpu", "num_workers": 1, "limit_records": 1, "dry_run": True},
-            "artifacts": {"run_dir": str(tmp_path / "run"), "overwrite": False},
+            "artifacts": {"run_dir": str(tmp_path / "run")},
             "evaluation_policy": {"external_test_locked": True},
             "decisions": {
                 "task": {"value": "sleep2stat", "source": "explicit_recipe"},
                 "sleep2stat_split_policy": {"value": "descriptive", "source": "explicit_recipe"},
                 "sleep2stat_metric_use_policy": {"value": "proxy", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
     )
@@ -431,7 +428,7 @@ def test_sleep2stat_kaldi_relative_manifest_is_not_resolved_under_data_root(tmp_
             "name": "kaldi_relative_manifest",
             "task": "sleep2stat",
             "inputs": {"config": str(config), "split": ["test"]},
-            "artifacts": {"run_dir": str(tmp_path / "run"), "overwrite": False},
+            "artifacts": {"run_dir": str(tmp_path / "run")},
             "evaluation_policy": {"external_test_locked": True},
             "decisions": {
                 "task": {"value": "sleep2stat", "source": "explicit_recipe"},
@@ -440,7 +437,6 @@ def test_sleep2stat_kaldi_relative_manifest_is_not_resolved_under_data_root(tmp_
                     "value": "model outputs are proxy metrics",
                     "source": "explicit_recipe",
                 },
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
     )
@@ -507,7 +503,7 @@ def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: 
             "name": "placeholder_model_ckpt",
             "task": "sleep2stat",
             "inputs": {"config": str(config), "split": ["test"]},
-            "artifacts": {"run_dir": str(tmp_path / "run"), "overwrite": False},
+            "artifacts": {"run_dir": str(tmp_path / "run")},
             "evaluation_policy": {"external_test_locked": True},
             "decisions": {
                 "task": {"value": "sleep2stat", "source": "explicit_recipe"},
@@ -516,7 +512,6 @@ def test_sleep2stat_placeholder_model_ckpt_blocks_as_agent_risk_issue(tmp_path: 
                     "value": "model outputs are proxy metrics",
                     "source": "explicit_recipe",
                 },
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
     )

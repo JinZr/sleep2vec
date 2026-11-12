@@ -80,7 +80,6 @@ def _hparam_recipe(tmp_path: Path) -> Path:
                 "label_name": {"value": "ahi", "source": "explicit_recipe"},
                 "external_test_locked": {"value": True, "source": "explicit_recipe"},
                 "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
             },
         },
@@ -1971,9 +1970,6 @@ def test_single_run_plan_directory_may_equal_fresh_experiment_root(tmp_path: Pat
 def test_repeated_single_run_plan_rejects_registered_output_directory(tmp_path: Path, change_step: bool):
     recipe = write_finetune_recipe(tmp_path)
     payload = yaml.safe_load(recipe.read_text())
-    payload["artifacts"]["overwrite"] = True
-    payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plan"
 
     first = run_cli("plan", "--recipe", str(recipe), "--output-dir", str(plan_dir))
@@ -2107,20 +2103,13 @@ def test_root_single_run_plan_recovers_registered_plan_after_manifest_failure(
     assert not list(tmp_path.glob(".workspace.*.staging"))
 
 
-@pytest.mark.parametrize("overwrite", [False, True])
 @pytest.mark.parametrize("mutate", [False, True], ids=["exact", "drifted"])
 def test_single_run_plan_handles_unowned_publication(
     tmp_path: Path,
     monkeypatch,
-    overwrite: bool,
     mutate: bool,
 ):
     recipe = write_finetune_recipe(tmp_path)
-    if overwrite:
-        payload = yaml.safe_load(recipe.read_text())
-        payload["artifacts"]["overwrite"] = True
-        payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
-        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = tmp_path / "plans" / "interrupted"
     real_publish = plans.publish_staged_plan_locked
 
@@ -2139,7 +2128,7 @@ def test_single_run_plan_handles_unowned_publication(
     if mutate:
         next((plan_dir / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
 
-    if mutate and not overwrite:
+    if mutate:
         with pytest.raises(ValueError, match="differs from deterministic regeneration"):
             plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
         assert run_artifacts.plan_tree_sha256(plan_dir) != frozen_tree

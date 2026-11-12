@@ -89,7 +89,6 @@ PRESET_FIELDS = frozenset(
         "n_tokens",
         "num_workers",
         "output_template",
-        "overwrite",
         "shuffle",
         "split",
         "stride_tokens",
@@ -238,7 +237,6 @@ def preset_cli_args(preset: dict[str, Any]) -> list[Any]:
         "--no-allow-missing-channels",
     )
     append_option(args, "--min-channels", preset.get("min_channels"))
-    append_bool_option(args, preset.get("overwrite"), "--overwrite")
     append_option(args, "--num-workers", preset.get("num_workers"))
     append_bool_option(args, preset.get("dry_run"), "--dry-run")
     append_option(args, "--manifest-output", preset.get("manifest_output"))

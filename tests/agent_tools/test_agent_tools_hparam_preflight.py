@@ -64,7 +64,6 @@ def _recipe(tmp_path: Path, *, task: str = "hparam_tune") -> tuple[Path, Path]:
                     "label_name": {"value": "ahi", "source": "explicit_recipe"},
                     "external_test_locked": {"value": True, "source": "explicit_recipe"},
                     "train_val_test_policy": {"value": "val", "source": "explicit_recipe"},
-                    "overwrite_policy": {"value": False, "source": "explicit_recipe"},
                     "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
                 },
             },
@@ -638,20 +637,13 @@ def test_root_hparam_registration_recovery_rejects_plan_drift(tmp_path: Path, mo
     assert not _staging_dirs(workspace, workspace)
 
 
-@pytest.mark.parametrize("overwrite", [False, True])
 @pytest.mark.parametrize("mutate", [False, True], ids=["exact", "drifted"])
 def test_hparam_plan_handles_unowned_publication(
     tmp_path: Path,
     monkeypatch,
-    overwrite: bool,
     mutate: bool,
 ):
     recipe, workspace = _recipe(tmp_path)
-    if overwrite:
-        payload = yaml.safe_load(recipe.read_text())
-        payload["artifacts"] = {**payload.get("artifacts", {}), "overwrite": True}
-        payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
-        recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
     plan_dir = workspace / "plans" / "tune"
     monkeypatch.setattr(
         execution_snapshot, "inspect_execution_target", lambda execution, runs, **_kwargs: _snapshot(execution, runs)
@@ -673,7 +665,7 @@ def test_hparam_plan_handles_unowned_publication(
     if mutate:
         next((plan_dir / "runs").glob("*/run.json")).write_text('{"tampered": true}\n')
 
-    if mutate and not overwrite:
+    if mutate:
         with pytest.raises(ValueError, match="differs from deterministic regeneration"):
             plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
         assert run_artifacts.plan_tree_sha256(plan_dir) != frozen_tree
@@ -716,34 +708,6 @@ def test_hparam_complete_recovery_rejects_foreign_canonical_row(tmp_path: Path, 
     assert "Frozen run field differs" in report.blocking_issues()[0].message
     assert field in report.blocking_issues()[0].message
     assert manifest_path.read_bytes() == before
-
-
-def test_hparam_preflight_failure_preserves_existing_overwrite_destination(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["artifacts"] = {**payload.get("artifacts", {}), "overwrite": True}
-    payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    plan_dir = workspace / "plans" / "tune"
-    plan_dir.mkdir(parents=True)
-    stale = plan_dir / "plan.json"
-    sentinel = plan_dir / "unrelated.txt"
-    stale.write_text('{"old": true}\n')
-    sentinel.write_text("preserve me\n")
-    before = _workspace_files(workspace)
-
-    def inspect(_execution, _runs, *, plan_label):
-        raise RuntimeError("Target execution identity preflight failed: unit")
-
-    monkeypatch.setattr(execution_snapshot, "inspect_execution_target", inspect)
-
-    report = plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert report.exit_code == 1
-    assert "Target execution identity preflight failed" in report.blocking_issues()[0].message
-    assert _workspace_files(workspace) == before
-    assert stale.read_text() == '{"old": true}\n'
-    assert sentinel.read_text() == "preserve me\n"
 
 
 def test_hparam_staging_uses_destination_filesystem_ancestor(tmp_path: Path, monkeypatch):
@@ -791,44 +755,6 @@ def test_hparam_plan_directory_may_equal_experiment_root(tmp_path: Path, monkeyp
     assert (workspace / "run_manifest.tsv").is_file()
     assert run_artifacts.read_hparam_plan(workspace)["runs"][0]["run_id"] == "run-000"
     assert read_run_manifest(workspace)[0]["status"] == "planned"
-
-
-def test_hparam_overwrite_publish_failure_restores_existing_plan(tmp_path: Path, monkeypatch):
-    recipe, workspace = _recipe(tmp_path)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["artifacts"] = {**payload.get("artifacts", {}), "overwrite": True}
-    payload["decisions"]["overwrite_policy"] = {"value": True, "source": "explicit_recipe"}
-    recipe.write_text(yaml.safe_dump(payload, sort_keys=False))
-    plan_dir = workspace / "plans" / "tune"
-    plan_dir.mkdir(parents=True)
-    (plan_dir / "plan.json").write_text('{"old": true}\n')
-    (plan_dir / "unrelated.txt").write_text("preserve me\n")
-    before = _workspace_files(workspace)
-    real_replace = Path.replace
-    failed = False
-
-    def fail_during_publish(path, target):
-        nonlocal failed
-        target = Path(target)
-        if not failed and path.parent.name.endswith(".staging") and target == plan_dir / "plan.md":
-            failed = True
-            raise OSError(errno.EIO, "injected publish failure")
-        return real_replace(path, target)
-
-    monkeypatch.setattr(Path, "replace", fail_during_publish)
-    monkeypatch.setattr(
-        execution_snapshot,
-        "inspect_execution_target",
-        lambda execution, runs, **_kwargs: _snapshot(execution, runs),
-    )
-
-    with pytest.raises(OSError, match="injected publish failure"):
-        plans.build_plan(recipe_path=recipe, output_dir=plan_dir)
-
-    assert failed is True
-    assert _workspace_files(workspace) == before
-    assert _staging_dirs(workspace, plan_dir) == []
-    assert not list(workspace.parent.rglob(f".{plan_dir.name}.*.backup"))
 
 
 def test_staged_plan_publish_rejects_existing_run_directory(tmp_path: Path):

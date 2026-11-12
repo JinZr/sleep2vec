@@ -31,7 +31,6 @@ runtime:
 
 artifacts:
   run_dir: results/sleep2stat/tiny_fixture
-  overwrite: false
 
 evaluation_policy:
   external_test_locked: true
@@ -45,7 +44,4 @@ decisions:
     source: explicit_recipe
   sleep2stat_metric_use_policy:
     value: "Tiny fixture uses signal-derived SpO2 summary only; no clinical respiratory labels are inferred."
-    source: explicit_recipe
-  overwrite_policy:
-    value: false
     source: explicit_recipe

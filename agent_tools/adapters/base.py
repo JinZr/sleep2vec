@@ -90,7 +90,7 @@ class TaskAdapter:
     extra_decision_fields: frozenset[str] = frozenset()
     #: Decision field -> (recipe section, field) materialization target.
     #: Only declared fields are (re)targeted; shared defaults (e.g.
-    #: overwrite_policy -> (artifacts, overwrite)) apply otherwise.
+    #: min_channels -> (preset, min_channels)) apply otherwise.
     decision_recipe_targets: Mapping[str, tuple[str, str]] = {}
     #: Variants rejected with FAIL "{variant} does not support {task}.".
     unsupported_variants: frozenset[str] = frozenset()
@@ -197,6 +197,11 @@ class TaskAdapter:
 
     def frozen_input_paths(self, recipe: dict[str, JsonValue]) -> list[tuple[str, Path]]:
         """Local external inputs whose content identity is frozen in the plan."""
+        return []
+
+    def external_output_paths(self, recipe: dict[str, JsonValue]) -> list[Path]:
+        """Files outside the plan directory that the generated command writes; they are single-use, so plan
+        publication fails when any already exists."""
         return []
 
     def runtime_fields(self, variant: Any) -> frozenset[str]:

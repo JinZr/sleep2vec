@@ -176,10 +176,6 @@ def test_plan_allows_existing_workspace_events_for_new_plan(tmp_path: Path):
 
 def test_plan_requires_fresh_directory_for_existing_blocked_artifact(tmp_path: Path):
     recipe = write_finetune_recipe(tmp_path, include_label=False)
-    payload = yaml.safe_load(recipe.read_text())
-    payload["decisions"].pop("overwrite_policy")
-    payload["artifacts"].pop("overwrite")
-    write_yaml(recipe, payload)
     output_dir = tmp_path / "plan"
     output_dir.mkdir()
     blocked_plan = output_dir / "plan.blocked.md"
@@ -546,7 +542,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
     recipe["decisions"]["task"] = {"value": task, "source": "explicit_recipe"}
     if task == "infer":
         recipe["evaluation_policy"] = {"external_test_locked": True}
-        recipe["artifacts"] = {"overwrite": False}
+        recipe.pop("artifacts")
     elif task == "preset_prepare":
         recipe.pop("artifacts")
         recipe.pop("evaluation_policy")
@@ -557,7 +553,7 @@ def test_non_hparam_run_script_commits_lifecycle_from_any_cwd(
         recipe.pop("runtime")
         recipe["inputs"] = {"config": recipe["inputs"]["config"]}
         recipe["evaluation_policy"] = {"external_test_locked": True}
-        recipe["artifacts"] = {"overwrite": False}
+        recipe.pop("artifacts")
     recipe_path.write_text(yaml.safe_dump(recipe, sort_keys=False))
     recipe["_recipe_path"] = str(recipe_path.resolve())
     plan_contract.bind_plan_context(recipe)

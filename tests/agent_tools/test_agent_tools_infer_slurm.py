@@ -122,7 +122,6 @@ def _infer_slurm_recipe(tmp_path: Path, *, variant: str, task: str, runtime_comm
                     "walltime": "00:01:00",
                 },
             },
-            "artifacts": {"overwrite": False},
             "evaluation_policy": {"external_test_locked": True, "final_test_unlocked": False},
             "decisions": {
                 "task": {"value": task, "source": "explicit_recipe"},
@@ -130,7 +129,6 @@ def _infer_slurm_recipe(tmp_path: Path, *, variant: str, task: str, runtime_comm
                 "ckpt_path": {"value": str(checkpoint), "source": "explicit_recipe"},
                 "eval_split": {"value": "val", "source": "explicit_recipe"},
                 "final_eval_unlock": {"value": False, "source": "explicit_recipe"},
-                "overwrite_policy": {"value": False, "source": "explicit_recipe"},
             },
         },
     )

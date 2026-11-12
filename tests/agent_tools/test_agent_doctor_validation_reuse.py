@@ -95,7 +95,7 @@ def test_user_decisions_retry_rules(tmp_path: Path):
 
     # A newly exposed decision needs a fresh doctor directory; the earlier file is neither merged nor overwritten.
     authored = yaml.safe_load(recipe.read_text())
-    authored["decisions"]["overwrite_policy"]["value"] = "ASK_USER"
+    authored["decisions"]["train_val_test_policy"]["value"] = "ASK_USER"
     recipe.write_text(yaml.safe_dump(authored, sort_keys=False))
     stale = run_cli(
         "doctor", "--recipe", str(recipe), "--user-decisions", str(template), "--output-dir", str(doctor_dir)
@@ -110,7 +110,7 @@ def test_user_decisions_retry_rules(tmp_path: Path):
     assert delta.returncode == 2
     decisions = yaml.safe_load((delta_dir / "decisions.yaml").read_text())["decisions"]
     assert decisions["label_name"]["value"] == "ahi"
-    assert decisions["overwrite_policy"]["value"] == "ASK_USER"
+    assert decisions["train_val_test_policy"]["value"] == "ASK_USER"
 
 
 def test_plan_freezes_and_hashes_the_single_config_read(tmp_path: Path, monkeypatch):

@@ -55,8 +55,7 @@ class InferAdapter(TaskAdapter):
     extra_decision_fields = frozenset(
         {"config", "external_test_locked", "final_eval_unlock", "pretrained_backbone_path"}
     )
-    recipe_extra_fields = frozenset({"artifacts", "evaluation_policy", "execution", "inputs", "runtime"})
-    artifact_fields = frozenset({"overwrite"})
+    recipe_extra_fields = frozenset({"evaluation_policy", "execution", "inputs", "runtime"})
     contract_sections = {"inputs": _INPUT_FIELDS, "evaluation_policy": _EVALUATION_FIELDS}
     preset_path_recipe_field = "inference_preset_path"
     validates_dataset_paths = True
