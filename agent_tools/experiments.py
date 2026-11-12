@@ -27,7 +27,6 @@ from . import (
     experiment_tracking as tracking,
     experiment_workspace,
     managed_scheduler,
-    python_programs,
     run_artifacts as artifacts,
     run_evidence as evidence,
 )
@@ -153,7 +152,9 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
 
         def preflight(*_scheduler_state: object) -> execution_snapshot.ExecutionSnapshotResult:
             # The scheduler passes the manifest state read under this same lock, which is previous for this run.
-            # Script-based preset runs freeze no module execution snapshot; the start command re-verifies artifacts.
+            # Script-based preset runs freeze no module execution snapshot. The launch command itself runs the
+            # runtime_identity check (planned commit, clean runtime, frozen artifacts) right before process start,
+            # and its failure is recorded as launch_failed.
             if previous["status"] not in managed_scheduler.LAUNCHABLE_STATUSES:
                 return None, False
             # A preset spawns only after its launched claim persists, so identity the scheduler bound to a still
@@ -163,21 +164,6 @@ def launch_preset_run(plan_dir: str | Path, *, dry_run: bool = True) -> managed_
                 raise ValueError("Preset run already has launch evidence; refusing another launch attempt.")
             if (Path(run["run_dir"]) / "pid").exists():
                 raise ValueError("Preset PID receipt already exists; refusing another launch attempt.")
-            probe = execution_snapshot.run_execution_command(
-                execution,
-                [
-                    execution["python"],
-                    "-c",
-                    python_programs.source("managed_scheduler.runtime_identity"),
-                    "agent_tools.experiment_workspace",
-                    "{}",
-                    "[]",
-                    str(execution["runtime_commit"]),
-                ],
-            )
-            if probe.returncode != 0:
-                detail = probe.stderr.strip() or probe.stdout.strip() or f"exit code {probe.returncode}"
-                raise RuntimeError(f"Preset runtime preflight failed: {detail}")
             return None, False
 
         def claim_and_start(_frozen_execution: object, command: str) -> tuple[str, str]:
