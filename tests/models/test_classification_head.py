@@ -4,12 +4,12 @@ import pytest
 import torch
 import torch.nn as nn
 
-from sleep2vec.downstreams.channel_aggregation import build_channel_aggregator
 
-
+@pytest.mark.parametrize("package_name", ["sleep2vec", "sleep2vec2"])
 @pytest.mark.parametrize("is_sequence", [False, True])
-def test_concat_projects_each_channel_and_preserves_order(is_sequence: bool):
-    aggregator = build_channel_aggregator("concat", feature_dim=4, n_mods=2, projection_dim=2)
+def test_concat_projects_each_channel_and_preserves_order(package_name: str, is_sequence: bool):
+    module = importlib.import_module(f"{package_name}.downstreams.channel_aggregation")
+    aggregator = module.build_channel_aggregator("concat", feature_dim=4, n_mods=2, projection_dim=2)
     with torch.no_grad():
         aggregator.projection.weight.copy_(torch.eye(4)[:2])
         aggregator.projection.bias.zero_()

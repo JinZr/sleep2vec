@@ -89,7 +89,7 @@ Change the narrowest owner that already handles the behavior. Reuse public facad
 
 - Register and build components through existing registries and factories.
 - Keep tokenization-to-encoder flow in the pretrain model and temporal/channel/head flow in the downstream model.
-- In root `sleep2vec`, the optional `model.head.channel_agg.kwargs.projection_dim` for `concat` sets the per-channel feature width before fusion. The shared trainable projection belongs to the downstream head and preserves the token grid.
+- In `sleep2vec` and `sleep2vec2`, the optional `model.head.channel_agg.kwargs.projection_dim` for `concat` sets the per-channel feature width before fusion. The shared trainable projection belongs to the downstream head and preserves the token grid.
 - Keep layer mix and LoRA/DoRA insertion in downstream composition, not entrypoints.
 - Keep loss and epoch-reduction semantics in Lightning modules and metric owners.
 
