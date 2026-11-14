@@ -13,7 +13,7 @@ import time
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.strategies.ddp import DDPStrategy
 import torch
 import wandb
@@ -309,7 +309,7 @@ def supervised(args, config_bundle):
             strategy=DDPStrategy(find_unused_parameters=True),
             # strategy=DeepSpeedStrategy(config="ds_config.json"),  # ← 就这行！
             benchmark=True,
-            logger=logger,
+            logger=[logger, CSVLogger(save_dir=str(exp_root), name="metrics")],
             max_epochs=args.epochs,
             gradient_clip_val=args.gradient_clip_val,
             accumulate_grad_batches=args.accumulate_grad_batches,

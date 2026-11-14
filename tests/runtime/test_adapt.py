@@ -37,6 +37,7 @@ def _load_adapt_module() -> ModuleType:
     stubbed_modules["pytorch_lightning.callbacks"].ModelCheckpoint = object
     stubbed_modules["pytorch_lightning.callbacks.early_stopping"].EarlyStopping = object
     stubbed_modules["pytorch_lightning.loggers"].WandbLogger = object
+    stubbed_modules["pytorch_lightning.loggers"].CSVLogger = lambda *args, **kwargs: object()
     stubbed_modules["pytorch_lightning.strategies"].DDPStrategy = object
     stubbed_modules["pytorch_lightning.strategies"].DeepSpeedStrategy = object
     stubbed_modules["data.samplers"].handles_distributed_sharding = lambda _sampler: False

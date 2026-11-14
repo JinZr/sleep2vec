@@ -65,6 +65,7 @@ def _load_finetune_module(module_name: str, monkeypatch: pytest.MonkeyPatch) -> 
     stubbed_modules["pytorch_lightning.callbacks"].ModelCheckpoint = object
     stubbed_modules["pytorch_lightning.callbacks.early_stopping"].EarlyStopping = object
     stubbed_modules["pytorch_lightning.loggers"].WandbLogger = object
+    stubbed_modules["pytorch_lightning.loggers"].CSVLogger = lambda *args, **kwargs: object()
     stubbed_modules["pytorch_lightning.strategies.ddp"].DDPStrategy = lambda **_kwargs: object()
     stubbed_modules["wandb"].run = None
     stubbed_modules["wandb"].finish = lambda: None

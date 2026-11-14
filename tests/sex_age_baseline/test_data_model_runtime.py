@@ -1281,17 +1281,19 @@ def test_finetune_creates_wandb_logger_like_sleep2vec(tmp_path: Path, monkeypatc
     with pytest.raises(RuntimeError, match="stop before fit"):
         baseline_runtime.train_and_save(args, cfg)
 
-    assert calls == [
-        {
-            "project": expected_project,
-            "name": "psg-finetune-sex-age-baseline-multilabel-unit-tag",
-            "group": "frozen-group",
-            "mode": mode,
-            "save_dir": "./wandb_logs",
-            "log_model": False,
-        },
-        "logger",
-    ]
+    from pytorch_lightning.loggers import CSVLogger
+
+    assert calls[0] == {
+        "project": expected_project,
+        "name": "psg-finetune-sex-age-baseline-multilabel-unit-tag",
+        "group": "frozen-group",
+        "mode": mode,
+        "save_dir": "./wandb_logs",
+        "log_model": False,
+    }
+    assert calls[1][0] == "logger"
+    assert isinstance(calls[1][1], CSVLogger)
+    assert Path(calls[1][1].log_dir).parent.name == "metrics"
 
 
 def test_accumulation_uses_actual_optimizer_step_budget(tmp_path: Path, monkeypatch):
@@ -1315,6 +1317,10 @@ def test_accumulation_uses_actual_optimizer_step_budget(tmp_path: Path, monkeypa
     assert checkpoint["global_step"] == 2
     assert checkpoint["lr_schedulers"][0]["last_epoch"] == 2
     assert checkpoint["optimizer_states"][0]["param_groups"][0]["lr"] == pytest.approx(args.lr * 0.2)
+    metrics = pd.read_csv(tmp_path / "log-finetune" / "accumulation" / "metrics" / "version_0" / "metrics.csv")
+    validation = metrics.dropna(subset=[cfg.finetune.task.monitor])
+    assert validation["epoch"].tolist() == [0, 1]
+    assert metrics["train_loss_epoch"].notna().sum() == 2
 
 
 def _scheduler_training_args(config: Path, tmp_path: Path, version_name: str, **scheduler) -> Namespace:
