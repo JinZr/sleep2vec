@@ -20,6 +20,17 @@ follow the consultation and experiment-management policy in
 | Agent planning and experiments | `agent_tools` | agent tooling and managed experiment owners |
 | Standalone variants | `sleep2vec2`, `sleep2expert`, `sex_age_baseline` | package-local maintainers |
 
+## Local Training Metrics
+
+Pretraining, adaptation and finetuning in all three model packages, plus
+`sex_age_baseline` training, always attach a Lightning `CSVLogger` alongside
+W&B. Read `<run directory>/metrics/version_N/metrics.csv` for numeric epoch,
+step and logged training/validation metrics, including non-best validation
+results. Metrics are flushed during training even when W&B is disabled.
+A resumed invocation uses a new `version_N` directory so prior metrics survive.
+This applies to new processes using the updated entrypoints; do not modify
+frozen runtimes or inject logging into active jobs.
+
 ## Preprocessing And Presets
 
 Canonical flow:

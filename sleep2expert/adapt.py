@@ -8,7 +8,7 @@ import typing as t
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.strategies import DDPStrategy, DeepSpeedStrategy
 import torch
 import wandb
@@ -307,7 +307,7 @@ def sleep2vec_adapt(args):
         strategy=strategy,
         benchmark=True,
         use_distributed_sampler=use_distributed_sampler,
-        logger=logger,
+        logger=[logger, CSVLogger(save_dir=str(exp_dir), name="metrics")],
         max_epochs=args.epochs,
         log_every_n_steps=5,
         num_sanity_val_steps=0,

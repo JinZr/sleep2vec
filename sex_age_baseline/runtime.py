@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback, EarlyStopping, ModelCheckpoint
-from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DistributedSampler
@@ -379,7 +379,12 @@ def train_and_save(args: Namespace, cfg: BaselineConfig) -> None:
         log_model=False,
     )
     try:
-        trainer = _trainer(args, callbacks=callbacks if epochs else (), training=epochs > 0, logger=logger)
+        trainer = _trainer(
+            args,
+            callbacks=callbacks if epochs else (),
+            training=epochs > 0,
+            logger=[logger, CSVLogger(save_dir=str(run_dir), name="metrics")] if epochs else logger,
+        )
         if epochs:
             trainer.fit(module, val_dataloaders=val_loader)
         best_path = (
